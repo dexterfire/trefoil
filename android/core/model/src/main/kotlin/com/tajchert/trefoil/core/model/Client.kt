@@ -172,6 +172,8 @@ interface TrefoilClient {
     suspend fun preflight(environmentId: String, route: EnvironmentRoute, allowInsecureHttp: Boolean, timeoutMillis: Long): Boolean = false
     /** True when a route switch now cannot abandon an in-flight mutation (no pending dispatch, launch, respond, stop, thread action). */
     fun isIdleForRouteSwitch(): Boolean = false
+    /** Pings the live connection: true when a pong arrives within [timeoutMillis]; otherwise the connection fails (its drop handling runs) and false. */
+    suspend fun verifyLink(timeoutMillis: Long): Boolean = true
     suspend fun disconnect()
     suspend fun selectThread(threadId: String)
     suspend fun refreshScreens() { error("Remote screens are unavailable") }

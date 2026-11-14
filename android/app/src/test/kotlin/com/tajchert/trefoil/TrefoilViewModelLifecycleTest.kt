@@ -27,6 +27,7 @@ class TrefoilViewModelLifecycleTest {
     private lateinit var client: T3Client
     private lateinit var mutable: MutableStateFlow<ClientState>
     private val environment = SavedEnvironment("fixture", "Fixture", "https://fixture.invalid", "fixture")
+    private val sent = java.util.Collections.synchronizedList(mutableListOf<String>())
 
     @Before fun setUp() {
         model = TrefoilViewModel(RuntimeEnvironment.getApplication())
@@ -37,7 +38,8 @@ class TrefoilViewModelLifecycleTest {
         mutable.value = ClientState(environment = environment, connection = ConnectionStatus.Connected,
             selectedThreadId = "thread", canWrite = true)
         val socketType = Class.forName("okhttp3.WebSocket")
-        val socket = Proxy.newProxyInstance(socketType.classLoader, arrayOf(socketType)) { _, method, _ ->
+        val socket = Proxy.newProxyInstance(socketType.classLoader, arrayOf(socketType)) { _, method, args ->
+            if (method.name == "send" && args?.singleOrNull() is String) sent += args.single() as String
             when (method.returnType) { java.lang.Boolean.TYPE -> true; java.lang.Long.TYPE -> 0L; else -> null }
         }
         T3Client::class.java.getDeclaredField("socket").apply { isAccessible = true }.set(client, socket)
@@ -142,6 +144,44 @@ class TrefoilViewModelLifecycleTest {
         dropConnection(); advance(30_000)
         assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
         model.onDefaultNetwork(2); advance(2_000)
+        assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+    }
+
+    private fun pings() = sent.count { it.contains("\"Ping\"") }
+
+    @Test fun unchangedDefaultNetworkDoesNotCheckTheLink() {
+        armLiveConnection()
+        model.onDefaultNetwork(1); model.onDefaultNetwork(1); advance(30_000)
+        assertEquals(0, pings())
+        assertEquals(ConnectionStatus.Connected, model.state.value.connection)
+        assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
+    }
+
+    @Test fun networkChangePingsTheLinkAndASilentLinkReconnectsWithoutBackoff() {
+        armLiveConnection()
+        model.onDefaultNetwork(1); model.onDefaultNetwork(2); advance(0)
+        assertEquals(1, pings())
+        advance(LINK_CHECK_TIMEOUT_MS - 1)
+        assertEquals(ConnectionStatus.Connected, model.state.value.connection)
+        assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
+        advance(1)
+        // Dropped and already walking the plan: no initial 2 s backoff.
+        assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+        assertTrue(model.connectionAttempt.value.id > 0)
+    }
+
+    @Test fun answeredLinkCheckKeepsTheConnectionAndLaterDropsWaitTheBackoff() {
+        armLiveConnection()
+        model.onDefaultNetwork(1); model.onDefaultNetwork(2); advance(0)
+        assertEquals(1, pings())
+        T3Client::class.java.getDeclaredMethod("receive", kotlinx.serialization.json.JsonObject::class.java).apply { isAccessible = true }
+            .invoke(client, kotlinx.serialization.json.buildJsonObject { put("_tag", kotlinx.serialization.json.JsonPrimitive("Pong")) })
+        advance(LINK_CHECK_TIMEOUT_MS + 1)
+        assertEquals(ConnectionStatus.Connected, model.state.value.connection)
+        assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
+        dropConnection(); advance(1_999)
+        assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
+        advance(1)
         assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
     }
 
