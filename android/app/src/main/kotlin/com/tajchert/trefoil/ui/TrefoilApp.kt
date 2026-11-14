@@ -81,7 +81,7 @@ fun TrefoilApp(
         var showScreens by rememberSaveable(state.environment?.id) { mutableStateOf(false) }
         var showUsage by rememberSaveable { mutableStateOf(false) }
         LaunchedEffect(usageOpenRequest) {
-            if (usageOpenRequest != null) { showUsage = true; choosingEnvironment = false; onOpenUsage() }
+            if (usageOpenRequest != null) { showUsage = true; choosingEnvironment = false; if (state.canReadUsage) onOpenUsage() }
         }
         LaunchedEffect(state.environment?.id, state.canReadUsage) {
             if (showUsage && state.canReadUsage) onOpenUsage()
@@ -130,7 +130,8 @@ fun TrefoilApp(
             onMachines = { choosingEnvironment = true; showThread = false },
             onConnectMachine = { adding = true },
             onScreens = if (connected) ({ showScreens = true }) else null,
-            onUsage = if (state.connection == ConnectionStatus.Connected) ({ showUsage = true; onOpenUsage() }) else null,
+            // Offline the screen shows cached limits; only a connection that can read usage fetches (the effect above covers a later connect).
+            onUsage = if (connected) ({ showUsage = true; if (state.canReadUsage) onOpenUsage() }) else null,
             onDisconnect = if (connected) ({ onDisconnect(); choosingEnvironment = true; showThread = false }) else null,
         )
         val needsYou = remember(state.threads) { threadSections(threadShelves(state.threads), ThreadFilter.NeedsYou).sumOf { it.threads.size } }
@@ -163,7 +164,7 @@ fun TrefoilApp(
                                 MachinesScreen(state, savedEnvironments, { choosingEnvironment = false; onConnect(it) }, onForget, { pairing = true }, { sshConnecting = true },
                                     { onDisconnect(); choosingEnvironment = true; showThread = false },
                                     onBack = if (connected) ({ choosingEnvironment = false }) else null,
-                                    modifier = Modifier.weight(1f).windowInsetsPadding(BottomBarsAndIme), probes = machineProbes, onUsage = shell.onUsage,
+                                    modifier = Modifier.weight(1f).windowInsetsPadding(BottomBarsAndIme), probes = machineProbes,
                                     onAllowLocalHttp = { environment, allowed -> onAllowLocalNetworkHttp(environment.id, allowed) })
                             }
                             showScreens -> Column(Modifier.fillMaxSize().then(if (screenFullscreen) Modifier else Modifier.windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Vertical)))) {

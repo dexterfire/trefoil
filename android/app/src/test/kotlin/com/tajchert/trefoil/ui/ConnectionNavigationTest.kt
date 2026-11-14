@@ -20,34 +20,72 @@ class ConnectionNavigationTest {
     private val fixture = ClientState(environment = environment, connection = ConnectionStatus.Connected,
         projects = listOf(Project("p", "Project")), threads = listOf(ThreadSummary("t", "p", "Fixture thread")))
 
-    @Test fun usageOpensFromSettingsAndConnectedMachine() {
+    private val limited = fixture.copy(canReadUsage = true, providers = listOf(ProviderInstance("a", "codex", "Codex",
+        usageLimits = ProviderUsageLimits("", listOf(UsageLimitWindow("w", "weekly", "Weekly", 62.0))))))
+    private fun setApp(state: ClientState, onOpenUsage: () -> Unit) = compose.setContent {
+        TrefoilApp(state, listOf(environment), { _, _, _ -> }, {}, {}, {}, {}, { _, _, _ -> }, null, {}, {}, {}, {}, {}, {}, {}, onOpenUsage = onOpenUsage)
+    }
+    private fun limitChip() = compose.onNode(hasContentDescription("Limits and usage", substring = true) and hasClickAction())
+
+    @Test fun limitsAndUsageOpensFromOverflowMenu() {
         var opened = 0
-        compose.setContent {
-            TrefoilApp(fixture, listOf(environment), { _, _, _ -> }, {}, {}, {}, {}, { _, _, _ -> }, null, {}, {}, {}, {}, {}, {}, {},
-                onOpenUsage = { opened++ })
-        }
-        compose.onNodeWithContentDescription("Settings").performClick()
-        compose.onNodeWithText("Usage").performClick()
+        setApp(limited) { opened++ }
+        compose.onNodeWithContentDescription("More").performClick()
+        compose.onNodeWithText("Limits & usage").performClick()
+        compose.onNodeWithText("Offline · showing last known data").assertDoesNotExist()
         compose.runOnIdle { assertEquals(1, opened) }
     }
 
-    @Test fun usageOpenedFromMachinesReturnsToMachinesOnBack() {
-        var back: androidx.activity.OnBackPressedDispatcher? = null
-        compose.setContent {
-            back = androidx.activity.compose.LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
-            TrefoilApp(fixture, listOf(environment), { _, _, _ -> }, {}, {}, {}, {}, { _, _, _ -> }, null, {}, {}, {}, {}, {}, {}, {})
-        }
-        compose.onNodeWithContentDescription("Settings").performClick()
-        compose.onNodeWithText("Machines").performClick()
-        compose.onNodeWithContentDescription("Open usage").performClick()
-        compose.onNodeWithText("Machines").assertDoesNotExist()
-        compose.runOnUiThread { back!!.onBackPressed() }
-        compose.onNodeWithText("Machines").assertExists()
+    @Test fun limitChipShowsTightestLimitAndOpensTheScreen() {
+        var opened = 0
+        setApp(limited) { opened++ }
+        compose.onNodeWithContentDescription("Limits and usage, lowest limit 38% left").assertHasClickAction()
+        compose.onNodeWithText("38%").assertExists()
+        limitChip().performClick()
+        compose.onNodeWithText("Limits & usage").assertExists()
+        compose.runOnIdle { assertEquals(1, opened) }
     }
 
-    @Test fun connectedMachineShowsUsageLine() {
-        compose.setContent { TrefoilTheme { MachinesScreen(fixture, listOf(environment), {}, {}, {}, {}, {}, {}, onUsage = {}) } }
-        compose.onNodeWithContentDescription("Open usage").assertExists()
+    @Test @Config(sdk = [35], qualifiers = "w320dp-h800dp") fun limitChipDropsItsNumberOnNarrowHeaders() {
+        setApp(limited) {}
+        compose.onNodeWithContentDescription("Limits and usage, lowest limit 38% left").assertHasClickAction()
+        compose.onNodeWithText("38%").assertDoesNotExist()
+    }
+
+    @Test fun limitChipWithoutDataIsIconOnly() {
+        setApp(fixture.copy(canReadUsage = true)) {}
+        compose.onNodeWithContentDescription("Limits and usage").assertHasClickAction()
+        compose.onAllNodesWithText("%", substring = true).assertCountEquals(0)
+    }
+
+    @Test fun disconnectedOpensCachedLimitsWithoutFetching() {
+        var opened = 0
+        val state = mutableStateOf(limited.copy(connection = ConnectionStatus.Disconnected, canReadUsage = false))
+        compose.setContent {
+            TrefoilApp(state.value, listOf(environment), { _, _, _ -> }, {}, {}, {}, {}, { _, _, _ -> }, null, {}, {}, {}, {}, {}, {}, {}, onOpenUsage = { opened++ })
+        }
+        limitChip().performClick()
+        compose.onNodeWithText("Offline · showing last known data").assertExists()
+        compose.runOnIdle { assertEquals(0, opened) }
+        // The fetch happens once the connection can read usage.
+        compose.runOnIdle { state.value = limited }
+        compose.runOnIdle { assertEquals(1, opened) }
+    }
+
+    @Test fun disconnectedOverflowEntryOpensCachedLimitsWithoutFetching() {
+        var opened = 0
+        setApp(limited.copy(connection = ConnectionStatus.Disconnected, canReadUsage = false)) { opened++ }
+        compose.onNodeWithContentDescription("More").performClick()
+        compose.onNodeWithText("Limits & usage").performClick()
+        compose.onNodeWithText("Offline · showing last known data").assertExists()
+        compose.runOnIdle { assertEquals(0, opened) }
+    }
+
+    @Test fun machinesScreenNoLongerRepeatsLimits() {
+        compose.setContent { TrefoilTheme { MachinesScreen(limited, listOf(environment), {}, {}, {}, {}, {}, {}) } }
+        compose.onNodeWithText("Machines").assertExists()
+        compose.onAllNodesWithText("left", substring = true).assertCountEquals(0)
+        compose.onNodeWithContentDescription("Open usage").assertDoesNotExist()
     }
 
     @Test fun restoredPhoneDetailWithoutSelectionReturnsToList() {

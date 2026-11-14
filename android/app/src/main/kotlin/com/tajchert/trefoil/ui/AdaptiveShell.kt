@@ -90,12 +90,12 @@ internal fun MachineStatusIndicator(status: MachineStatus, modifier: Modifier = 
     if (status.inProgress) WorkingSpinner(modifier, size = size * 1.6f, color = status.color(c)) else StatusDot(status.color(c), modifier, size = size)
 }
 
-/** Sliders button with the app menu (screen sessions, machines, connect, disconnect). */
+/** Overflow (⋮) button with the app menu (screen sessions, limits & usage, machines, connect, disconnect). */
 @Composable
 internal fun ShellMenuButton(state: ClientState, actions: ShellActions, tint: Color) {
     var open by remember { mutableStateOf(false) }
     Box {
-        IconButton(onClick = { open = true }) { Icon(TfIcons.Settings, "Settings", Modifier.size(22.dp), tint = tint) }
+        IconButton(onClick = { open = true }) { Icon(TfIcons.More, "More", Modifier.size(22.dp), tint = tint) }
         DropdownMenu(open, { open = false }) { ShellMenuItems(state, actions) { open = false } }
     }
 }
@@ -104,12 +104,13 @@ internal fun ShellMenuButton(state: ClientState, actions: ShellActions, tint: Co
 internal fun railLabel(name: String): String =
     name.trim().split(Regex("\\s+")).firstOrNull { it.isNotBlank() }?.take(8) ?: "Machine"
 
-/** Items of the settings menu; split out so previews can render them without a popup window. */
+/** Items of the overflow menu; split out so previews can render them without a popup window. */
 @Composable
 internal fun ColumnScope.ShellMenuItems(state: ClientState, actions: ShellActions, close: () -> Unit) {
     if (actions.onScreens != null) DropdownMenuItem(text = { Text("Screen sessions") }, enabled = !state.busy,
         leadingIcon = { Icon(TfIcons.Screens, null, Modifier.size(20.dp)) }, onClick = { close(); actions.onScreens.invoke() })
-    if (actions.onUsage != null) DropdownMenuItem(text = { Text("Usage") }, onClick = { close(); actions.onUsage.invoke() })
+    if (actions.onUsage != null) DropdownMenuItem(text = { Text("Limits & usage") },
+        leadingIcon = { Icon(TfIcons.Gauge, null, Modifier.size(20.dp)) }, onClick = { close(); actions.onUsage.invoke() })
     DropdownMenuItem(text = { Text("Machines") }, leadingIcon = { Icon(TfIcons.Desktop, null, Modifier.size(20.dp)) },
         onClick = { close(); actions.onMachines() })
     DropdownMenuItem(text = { Text("Connect machine") }, enabled = !state.busy, leadingIcon = { Icon(TfIcons.Plus, null, Modifier.size(20.dp)) },

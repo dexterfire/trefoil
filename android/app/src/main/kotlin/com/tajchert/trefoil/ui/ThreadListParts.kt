@@ -44,21 +44,26 @@ import com.tajchert.trefoil.core.model.*
 @Composable
 internal fun ThreadListHeader(state: ClientState, shell: ShellActions?, railLayout: Boolean, canCreate: Boolean, create: () -> Unit, onSearch: () -> Unit) {
     val c = Tf.colors
-    Row(Modifier.fillMaxWidth().height(64.dp).padding(start = if (railLayout) 20.dp else 14.dp, end = if (railLayout) 8.dp else 6.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-        if (railLayout) {
-            Text(state.environment?.name ?: "Threads", Modifier.weight(1f).semantics { heading() }, style = MaterialTheme.typography.headlineSmall,
-                color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        } else {
-            Box(Modifier.weight(1f)) { MachinePill(state, onClick = { shell?.onMachines?.invoke() }) }
-        }
-        IconButton(onClick = onSearch) { Icon(TfIcons.Search, "Search", Modifier.size(22.dp), tint = c.text) }
-        if (railLayout) {
-            Surface(onClick = create, enabled = canCreate, shape = RoundedCornerShape(14.dp), color = if (canCreate) c.accent else c.s2,
-                contentColor = if (canCreate) c.onAccent else c.muted, modifier = Modifier.padding(start = 4.dp).size(44.dp).semantics { contentDescription = "New thread" }) {
-                Box(contentAlignment = Alignment.Center) { Icon(TfIcons.Plus, null, Modifier.size(22.dp)) }
+    BoxWithConstraints {
+        // The machine name has priority: narrow headers show the limit gauge without its number.
+        val limitNumber = maxWidth >= 340.dp
+        Row(Modifier.fillMaxWidth().height(64.dp).padding(start = if (railLayout) 20.dp else 14.dp, end = if (railLayout) 8.dp else 6.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+            if (railLayout) {
+                Text(state.environment?.name ?: "Threads", Modifier.weight(1f).semantics { heading() }, style = MaterialTheme.typography.headlineSmall,
+                    color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            } else {
+                Box(Modifier.weight(1f)) { MachinePill(state, onClick = { shell?.onMachines?.invoke() }) }
+                shell?.onUsage?.let { openUsage -> LimitChip(remember(state.providers) { tightestLimitPercent(state.providers) }, limitNumber, openUsage) }
             }
-        } else if (shell != null) ShellMenuButton(state, shell, c.text)
+            IconButton(onClick = onSearch) { Icon(TfIcons.Search, "Search", Modifier.size(22.dp), tint = c.text) }
+            if (railLayout) {
+                Surface(onClick = create, enabled = canCreate, shape = RoundedCornerShape(14.dp), color = if (canCreate) c.accent else c.s2,
+                    contentColor = if (canCreate) c.onAccent else c.muted, modifier = Modifier.padding(start = 4.dp).size(44.dp).semantics { contentDescription = "New thread" }) {
+                    Box(contentAlignment = Alignment.Center) { Icon(TfIcons.Plus, null, Modifier.size(22.dp)) }
+                }
+            } else if (shell != null) ShellMenuButton(state, shell, c.text)
+        }
     }
 }
 

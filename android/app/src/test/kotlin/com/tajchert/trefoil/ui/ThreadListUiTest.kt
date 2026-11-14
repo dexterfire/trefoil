@@ -89,8 +89,8 @@ class ThreadListUiTest {
     @Test fun headerOpensMachinesAndAppMenu() {
         val env = SavedEnvironment("fixture", "Mac mini", "https://fixture.invalid", "fixture-token")
         compose.setContent { TrefoilApp(fixture.copy(environment = env), listOf(env), { _, _, _ -> }, {}, {}, {}, {}, { _, _, _ -> }, null, {}, {}, {}, {}, {}, {}, {}) }
-        compose.onNodeWithContentDescription("Settings").performClick()
-        listOf("Screen sessions", "Machines", "Connect machine", "Disconnect machine").forEach { compose.onNodeWithText(it).assertExists() }
+        compose.onNodeWithContentDescription("More").performClick()
+        listOf("Screen sessions", "Limits & usage", "Machines", "Connect machine", "Disconnect machine").forEach { compose.onNodeWithText(it).assertExists() }
         compose.onNodeWithText("Screen sessions").performClick()
         compose.onNodeWithContentDescription("Back to conversations").performClick()
         compose.onNodeWithContentDescription("Switch machine").assertExists()

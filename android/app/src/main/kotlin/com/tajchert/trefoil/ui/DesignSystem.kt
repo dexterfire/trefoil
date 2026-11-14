@@ -98,6 +98,8 @@ object TfIcons {
     val Server by lazy { strokeIcon("server", rect(4f, 4f, 16f, 7f, 2f), rect(4f, 13f, 16f, 7f, 2f), "M8 7.5h.01M8 16.5h.01") }
     /** Screen sessions (camera-like frame). */
     val Screens by lazy { strokeIcon("screens", rect(3f, 5f, 18f, 12f, 2f), "M8 21h8M12 17v4") }
+    /** Speedometer: limits and usage. */
+    val Gauge by lazy { strokeIcon("gauge", "M5.6 18.4a9 9 0 1 1 12.8 0", "M12 12l4-4", circle(12f, 12f, 1.2f)) }
     val Trash by lazy { strokeIcon("trash", "M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3") }
     val Disconnect by lazy { strokeIcon("disconnect", "M9 15l-2 2a3 3 0 0 1-4.2-4.2l2-2M15 9l2-2a3 3 0 0 1 4.2 4.2l-2 2M4 4l16 16") }
     val Refresh by lazy { strokeIcon("refresh", "M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6") }

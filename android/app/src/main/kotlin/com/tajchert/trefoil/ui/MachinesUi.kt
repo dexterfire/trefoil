@@ -56,7 +56,6 @@ internal fun MachinesScreen(
     onPair: () -> Unit, onSsh: () -> Unit, onDisconnect: () -> Unit,
     onBack: (() -> Unit)?, modifier: Modifier = Modifier,
     probes: Map<String, MachineProbe> = emptyMap(),
-    onUsage: (() -> Unit)? = null,
     onAllowLocalHttp: (SavedEnvironment, Boolean) -> Unit = { _, _ -> },
     expandedRoutes: Set<String> = emptySet(),
 ) {
@@ -80,7 +79,7 @@ internal fun MachinesScreen(
                 item { Text("SAVED", style = TrefoilType.section, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = 20.dp, bottom = 10.dp)) }
                 items(saved, key = { it.id }) { environment ->
                     MachineCard(environment, state.environment?.id == environment.id, state, machineStatus(environment, state, probes), onConnect = { onConnect(environment) },
-                        onForget = { forgetting = environment }, onDisconnect = onDisconnect, modifier = Modifier.padding(bottom = 10.dp), onUsage = onUsage,
+                        onForget = { forgetting = environment }, onDisconnect = onDisconnect, modifier = Modifier.padding(bottom = 10.dp),
                         onAllowLocalHttp = { onAllowLocalHttp(environment, it) }, routesExpanded = environment.id in expandedRoutes)
                 }
             }
@@ -112,7 +111,7 @@ private fun machineSubtitle(environment: SavedEnvironment): String =
 private fun MachineCard(
     environment: SavedEnvironment, current: Boolean, state: ClientState, status: MachineStatus,
     onConnect: () -> Unit, onForget: () -> Unit, onDisconnect: () -> Unit, modifier: Modifier = Modifier,
-    onUsage: (() -> Unit)? = null, onAllowLocalHttp: (Boolean) -> Unit = {}, routesExpanded: Boolean = false,
+    onAllowLocalHttp: (Boolean) -> Unit = {}, routesExpanded: Boolean = false,
 ) {
     val c = Tf.colors
     var menu by remember { mutableStateOf(false) }
@@ -143,8 +142,6 @@ private fun MachineCard(
             Text(environment.name, style = TrefoilType.rowTitle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(machineSubtitle(environment), style = TrefoilType.mono, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
             if (activeRoute != null) RouteBadge(activeRoute.kind, Modifier.padding(top = 6.dp))
-            if (live && onUsage != null) Text(usageSummaryLine(state.providers), style = TrefoilType.meta, color = c.accent,
-                modifier = Modifier.padding(top = 6.dp).clickable(role = Role.Button, onClick = onUsage).semantics { contentDescription = "Open usage" })
             if (!live && status != MachineStatus.Unknown && status != MachineStatus.Offline) {
                 Text(if (status.inProgress) "${status.label}…" else status.label, style = TrefoilType.meta,
                     color = if (status.inProgress) c.muted else status.color(c), maxLines = 1, modifier = Modifier.padding(top = 6.dp))
@@ -164,7 +161,7 @@ private fun MachineCard(
         Box {
             IconButton(onClick = { menu = true }, Modifier.size(40.dp)) { Icon(TfIcons.More, "Options for ${environment.name}", Modifier.size(20.dp), tint = c.muted) }
             DropdownMenu(menu, { menu = false }, containerColor = c.sheet, shape = RoundedCornerShape(16.dp)) {
-                MachineMenuItems(current, live, state, onUsage, onDisconnect, onForget) { menu = false }
+                MachineMenuItems(current, state, onDisconnect, onForget) { menu = false }
             }
         }
     }
@@ -180,11 +177,10 @@ private fun MachineCard(
 /** Items of the machine card overflow menu; split out so previews can render them without a popup window. */
 @Composable
 internal fun ColumnScope.MachineMenuItems(
-    current: Boolean, live: Boolean, state: ClientState,
-    onUsage: (() -> Unit)?, onDisconnect: () -> Unit, onForget: () -> Unit, close: () -> Unit,
+    current: Boolean, state: ClientState,
+    onDisconnect: () -> Unit, onForget: () -> Unit, close: () -> Unit,
 ) {
     val c = Tf.colors
-    if (live && onUsage != null) DropdownMenuItem(text = { Text("Usage") }, onClick = { close(); onUsage() })
     if (current) DropdownMenuItem(
         text = { Text("Disconnect") }, leadingIcon = { Icon(TfIcons.Disconnect, null, Modifier.size(20.dp)) },
         onClick = { close(); onDisconnect() })
