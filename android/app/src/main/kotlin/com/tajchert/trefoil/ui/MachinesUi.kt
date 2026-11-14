@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -56,6 +57,8 @@ internal fun MachinesScreen(
     onBack: (() -> Unit)?, modifier: Modifier = Modifier,
     probes: Map<String, MachineProbe> = emptyMap(),
     onUsage: (() -> Unit)? = null,
+    onAllowLocalHttp: (SavedEnvironment, Boolean) -> Unit = { _, _ -> },
+    expandedRoutes: Set<String> = emptySet(),
 ) {
     val c = Tf.colors
     var forgetting by remember { mutableStateOf<SavedEnvironment?>(null) }
@@ -77,7 +80,8 @@ internal fun MachinesScreen(
                 item { Text("SAVED", style = TrefoilType.section, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = 20.dp, bottom = 10.dp)) }
                 items(saved, key = { it.id }) { environment ->
                     MachineCard(environment, state.environment?.id == environment.id, state, machineStatus(environment, state, probes), onConnect = { onConnect(environment) },
-                        onForget = { forgetting = environment }, onDisconnect = onDisconnect, modifier = Modifier.padding(bottom = 10.dp), onUsage = onUsage)
+                        onForget = { forgetting = environment }, onDisconnect = onDisconnect, modifier = Modifier.padding(bottom = 10.dp), onUsage = onUsage,
+                        onAllowLocalHttp = { onAllowLocalHttp(environment, it) }, routesExpanded = environment.id in expandedRoutes)
                 }
             }
             item {
@@ -108,19 +112,23 @@ private fun machineSubtitle(environment: SavedEnvironment): String =
 private fun MachineCard(
     environment: SavedEnvironment, current: Boolean, state: ClientState, status: MachineStatus,
     onConnect: () -> Unit, onForget: () -> Unit, onDisconnect: () -> Unit, modifier: Modifier = Modifier,
-    onUsage: (() -> Unit)? = null,
+    onUsage: (() -> Unit)? = null, onAllowLocalHttp: (Boolean) -> Unit = {}, routesExpanded: Boolean = false,
 ) {
     val c = Tf.colors
     var menu by remember { mutableStateOf(false) }
+    var showRoutes by rememberSaveable(environment.id) { mutableStateOf(routesExpanded) }
     val icon = if (environment.ssh != null) TfIcons.Server else TfIcons.Desktop
     val live = current && state.connection == ConnectionStatus.Connected
     val shape = RoundedCornerShape(20.dp)
     val working = if (live) state.threads.count { !it.archived && threadIsWorking(it) } else 0
     val needsYou = if (live) state.threads.count { !it.archived && threadIndicator(it).kind in setOf("attention", "input") } else 0
+    val activeRoute = if (live) state.activeRoute else null
+    val routeCount = routeRows(environment, activeRoute).size
+    Column(modifier.fillMaxWidth().clip(shape).background(c.s1).border(if (current) 2.dp else 1.dp, if (current) c.accent else c.line, shape)) {
     Row(
-        modifier.fillMaxWidth().clip(shape).background(c.s1).border(if (current) 2.dp else 1.dp, if (current) c.accent else c.line, shape)
+        Modifier.fillMaxWidth()
             .combinedClickable(enabled = !state.busy, role = Role.Button, onClick = onConnect, onLongClick = { menu = true })
-            .semantics { stateDescription = status.label }
+            .semantics { stateDescription = listOfNotNull(status.label, activeRoute?.let { "via ${routeKindLabel(it.kind)}" }).joinToString(", ") }
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
@@ -134,6 +142,7 @@ private fun MachineCard(
         Column(Modifier.weight(1f)) {
             Text(environment.name, style = TrefoilType.rowTitle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(machineSubtitle(environment), style = TrefoilType.mono, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+            if (activeRoute != null) RouteBadge(activeRoute.kind, Modifier.padding(top = 6.dp))
             if (live && onUsage != null) Text(usageSummaryLine(state.providers), style = TrefoilType.meta, color = c.accent,
                 modifier = Modifier.padding(top = 6.dp).clickable(role = Role.Button, onClick = onUsage).semantics { contentDescription = "Open usage" })
             if (!live && status != MachineStatus.Unknown && status != MachineStatus.Offline) {
@@ -158,6 +167,13 @@ private fun MachineCard(
                 MachineMenuItems(current, live, state, onUsage, onDisconnect, onForget) { menu = false }
             }
         }
+    }
+    Row(Modifier.fillMaxWidth().clickable(role = Role.Button) { showRoutes = !showRoutes }.semantics { stateDescription = if (showRoutes) "Expanded" else "Collapsed" }
+        .padding(start = 16.dp, end = 12.dp, top = 2.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(if (routeCount == 1) "1 route" else "$routeCount routes", style = TrefoilType.meta, color = c.muted, modifier = Modifier.weight(1f))
+        Icon(if (showRoutes) TfIcons.ChevronDown else TfIcons.ChevronRight, if (showRoutes) "Hide routes" else "Show routes", Modifier.size(18.dp), tint = c.muted)
+    }
+    if (showRoutes) RoutesSection(environment, activeRoute, onAllowLocalHttp, Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp), enabled = !state.busy)
     }
 }
 
@@ -211,7 +227,7 @@ internal fun PairDialog(busy: Boolean, dismiss: () -> Unit, attempt: ConnectionA
     AlertDialog(onDismissRequest = dismiss, containerColor = c.sheet, shape = RoundedCornerShape(28.dp),
         icon = { Icon(TfIcons.Link, null, tint = c.accent) }, title = { Text("Pair an environment") }, text = {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.verticalScroll(rememberScrollState())) {
-            Text("Paste the pairing link from your T3 server. Trefoil verifies the environment before connecting.", color = c.muted)
+            Text("Paste a pairing link from your T3 server. A link from any address works, including a T3 Connect tunnel address (https://…t3coderelay.com/pair#token=…). Trefoil verifies the environment before connecting.", color = c.muted)
             OutlinedTextField(name, { name = it; error = null }, enabled = !busy, label = { Text("Display name") }, singleLine = true, shape = TfFieldShape, colors = tfFieldColors(), modifier = Modifier.fillMaxWidth())
             OutlinedTextField(url, { url = it; error = null }, enabled = !busy, label = { Text("Pairing link") }, visualTransformation = PasswordVisualTransformation(),
                 textStyle = TrefoilType.mono.copy(fontSize = 14.sp, color = c.text), shape = TfFieldShape, colors = tfFieldColors(), modifier = Modifier.fillMaxWidth(), maxLines = 3)

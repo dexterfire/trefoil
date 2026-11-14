@@ -18,7 +18,9 @@ import androidx.compose.ui.unit.dp
 import com.tajchert.trefoil.core.model.*
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.performScrollToNode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -101,6 +103,8 @@ class MachinesRenderTest {
         compose.setContent { TrefoilTheme { MachinesScreen(connected, probedSaved, {}, {}, {}, {}, {}, null, probes = probes) } }
         mapOf("Mac mini" to "Connected", "MacBook Pro" to "Online", "home-server" to "Checking", "Studio" to "Sign-in rejected",
             "Raspberry Pi" to "Unreachable", "old-box" to "Not checked").forEach { (name, status) ->
+            // Cards carry a routes row, so later machines can sit below the lazy list's visible window.
+            compose.onNode(hasScrollAction()).performScrollToNode(hasText(name))
             compose.onNode(hasText(name) and hasStateDescription(status), useUnmergedTree = false).assertExists()
         }
     }
