@@ -5,6 +5,7 @@ import com.tajchert.trefoil.core.ssh.SshConnectionException
 import com.tajchert.trefoil.core.ssh.SshHostKeyException
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -80,8 +81,18 @@ class MachineProberTest {
     }
 
     @Test fun directTimeoutAndFailuresAreUnreachable() = runBlocking {
-        assertEquals(MachineProbe.Unreachable, MachineProber({ _, _ -> awaitCancellation() }, { _, _ -> error("unused") }, directTimeoutMillis = 50).probe(direct, emptyList()))
+        assertEquals(MachineProbe.Unreachable, MachineProber({ _, _ -> awaitCancellation() }, { _, _ -> error("unused") }, directTimeoutMillis = { 50 }).probe(direct, emptyList()))
         assertEquals(MachineProbe.Unreachable, MachineProber({ _, _ -> error("boom") }, { _, _ -> error("unused") }).probe(direct, emptyList()))
+    }
+
+    @Test fun deadRoutesNeverStarveTheTunnelOfAFullPlan() = runTest {
+        val tailnet = EnvironmentRoute(RouteKind.Tailnet, "https://mac.tail1234.ts.net/", RouteSource.Learned)
+        val public = EnvironmentRoute(RouteKind.Public, "https://mac.example/", RouteSource.Paired)
+        val machine = direct.copy(routes = listOf(lan, tailnet, public, tunnel))
+        // Lan, Tailnet and Public hang for their whole budget (3 + 3 + 8 s); the tunnel still gets its turn.
+        val prober = MachineProber({ _, routes -> probeRoutes(routes) { if (it.kind == RouteKind.Tunnel) MachineProbe.Online else awaitCancellation() } }, { _, _ -> error("unused") })
+        assertEquals(MachineProbe.Online, prober.probe(machine, emptyList()))
+        assertEquals(24_000L, directGroupTimeoutMillis(listOf(lan, tailnet, public, tunnel)))
     }
 
     @Test fun sshWithoutSavedCredentialsStaysUnknownWithoutConnecting() = runBlocking {
