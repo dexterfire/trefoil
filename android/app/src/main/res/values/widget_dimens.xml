@@ -2,4 +2,6 @@
     <!-- Shared widget limits. -->
     <dimen name="widget_max_resize_width">624dp</dimen>
     <dimen name="widget_max_resize_height">600dp</dimen>
+    <!-- Container corner radius; Android 12+ uses the launcher's radius (values-v31). -->
+    <dimen name="widget_corner_radius">16dp</dimen>
 </resources>

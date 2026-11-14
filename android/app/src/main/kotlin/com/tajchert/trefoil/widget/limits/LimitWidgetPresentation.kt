@@ -3,6 +3,12 @@ package com.tajchert.trefoil.widget.limits
 import com.tajchert.trefoil.core.model.UsageLimitWindow
 import com.tajchert.trefoil.ui.formatUsageReset
 import com.tajchert.trefoil.widget.UsageWidgetProvider
+import com.tajchert.trefoil.widget.WidgetChromeParts
+import com.tajchert.trefoil.widget.WIDGET_HEADER_DP
+import com.tajchert.trefoil.widget.WIDGET_PAD_V
+import com.tajchert.trefoil.widget.widgetFooterDp
+import com.tajchert.trefoil.widget.widgetContentHeight
+import com.tajchert.trefoil.widget.widgetContentWidth
 import java.time.Instant
 import kotlin.math.floor
 
@@ -33,24 +39,16 @@ internal fun limitNotice(provider: UsageWidgetProvider): String =
         else -> provider.limits?.notice ?: "Limits not available"
     }
 
-internal fun compactBarCapacity(heightDp: Float, fontScale: Float): Int =
-    floor((heightDp - 16).coerceAtLeast(0f) / (30 * fontScale.coerceAtLeast(1f)))
-        .toInt()
-        .coerceIn(1, 9)
+/** Height of one compact limit row (mark, label, meter, percent on one line). */
+internal fun compactLimitRowDp(fontScale: Float): Float = 20f * fontScale.coerceAtLeast(1f)
 
-internal fun compactProviders(
-    providers: List<UsageWidgetProvider>,
-    capacity: Int,
-    now: Long,
-): List<UsageWidgetProvider> =
-    providers
-        .sortedBy { provider ->
-            orderedGauges(listOf(provider), now).firstOrNull()?.let {
-                if (hasReset(it.window, now) || !it.window.usedPercent.isFinite()) 101
-                else it.window.remainingPercent
-            } ?: 102
-        }
-        .take(capacity.coerceAtLeast(1))
+/** Compact rows that fit in [bodyDp]: the two tightest limits at the default 1-row size, up to three. */
+internal fun compactLimitCapacity(bodyDp: Float, fontScale: Float): Int =
+    floor(bodyDp.coerceAtLeast(0f) / compactLimitRowDp(fontScale)).toInt().coerceIn(1, 3)
+
+/** The tightest limits across all providers (expired or unavailable windows last). */
+internal fun compactGauges(providers: List<UsageWidgetProvider>, capacity: Int, now: Long): List<LimitGauge> =
+    orderedGauges(providers, now).take(capacity.coerceAtLeast(1))
 
 internal data class GaugeGrid(
     val columns: Int,
@@ -66,23 +64,22 @@ internal data class GaugeGrid(
         if (total > capacity && capacity > 1) capacity - 1 else minOf(total, capacity)
 }
 
+/** Ring cell height: gauge plus two 12sp label lines. */
+internal fun gaugeCellDp(fontScale: Float): Float = 80f * fontScale.coerceAtLeast(1f)
+
+/** Rows win over the footer: the header shows when one row fits under it, the footer only in leftover space. */
 internal fun gaugeGrid(widthDp: Float, heightDp: Float, fontScale: Float): GaugeGrid {
     val scale = fontScale.coerceAtLeast(1f)
-    val header = widthDp >= 240 && heightDp >= 240 * scale
-    val footer = !header && heightDp >= 220 * scale
-    val columns = floor((widthDp - 16).coerceAtLeast(1f) / (72 * scale)).toInt().coerceIn(1, 5)
-    val rows =
-        floor(
-                (heightDp - 16 - if (header) 52 * scale else if (footer) 18 * scale else 0f)
-                    .coerceAtLeast(1f) / (92 * scale)
-            )
-            .toInt()
-            .coerceIn(1, 8)
+    val cell = gaugeCellDp(fontScale)
+    val header = widthDp >= 120 && heightDp >= WIDGET_HEADER_DP + WIDGET_PAD_V + cell
+    val body = widgetContentHeight(heightDp, fontScale, WidgetChromeParts(header, footer = false))
+    val columns = floor(widgetContentWidth(widthDp) / (72 * scale)).toInt().coerceIn(1, 5)
+    val rows = floor(body / cell).toInt().coerceIn(1, 8)
     return GaugeGrid(
         columns,
         rows,
         header,
         widthDp >= 144 * scale && heightDp >= 108 * scale,
-        footer,
+        header && body - rows * cell >= widgetFooterDp(fontScale),
     )
 }

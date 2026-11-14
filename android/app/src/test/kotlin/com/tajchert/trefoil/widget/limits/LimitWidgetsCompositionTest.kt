@@ -18,6 +18,7 @@ import com.tajchert.trefoil.widget.EXTRA_OPEN_USAGE_TAB
 import com.tajchert.trefoil.widget.RefreshUsageWidgetsAction
 import com.tajchert.trefoil.widget.TrefoilWidgetTheme
 import com.tajchert.trefoil.widget.UsageWidgetSamples
+import com.tajchert.trefoil.widget.WIDGET_SIGNED_OUT_TEXT
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -38,9 +39,23 @@ class LimitWidgetsCompositionTest {
         setContext(context)
         setAppWidgetSize(DpSize(180.dp, 48.dp))
         provideComposable { TrefoilWidgetTheme { LimitBarsContent(snapshot, now) } }
-        onNode(hasTextEqualTo("12% left")).assertExists()
-        onNode(hasTextEqualTo("80% left")).assertDoesNotExist()
+        onNode(hasTextEqualTo("12%")).assertExists()
+        onNode(hasTextEqualTo("80%")).assertDoesNotExist()
     }
+
+    @Test
+    fun `bars compact default shows the two tightest limits with severity values`() =
+        runGlanceAppWidgetUnitTest {
+            setContext(context)
+            setAppWidgetSize(DpSize(180.dp, 64.dp))
+            provideComposable { TrefoilWidgetTheme { LimitBarsContent(snapshot, now) } }
+            onNode(hasTextEqualTo("Opus weekly")).assertExists()
+            onNode(hasTextEqualTo("12%")).assertExists()
+            onNode(hasTextEqualTo("38%")).assertExists()
+            onNode(hasTextEqualTo("80%")).assertDoesNotExist()
+            onNode(hasContentDescription("Claude, Opus weekly, 12% left")).assertExists()
+            onNode(hasContentDescription("Refresh usage")).assertDoesNotExist()
+        }
 
     @Test
     fun `bars medium shows provider groups reset pace notice and refresh`() =
@@ -48,8 +63,9 @@ class LimitWidgetsCompositionTest {
             setContext(context)
             setAppWidgetSize(DpSize(300.dp, 240.dp))
             provideComposable { TrefoilWidgetTheme { LimitBarsContent(snapshot, now) } }
-            onNode(hasTextEqualTo("Usage limits")).assertExists()
-            onNode(hasTextEqualTo("Studio")).assertExists()
+            onNode(hasTextEqualTo("Limits")).assertExists()
+            onNode(hasTextEqualTo("Studio · 3m ago"))
+                .assertHasRunCallbackClickAction<RefreshUsageWidgetsAction>()
             onNode(hasText("2h 5m")).assertExists()
             onNode(hasText("ahead of pace")).assertExists()
             onNode(hasTextEqualTo("No subscription limits")).assertExists()
@@ -83,8 +99,7 @@ class LimitWidgetsCompositionTest {
                         else LimitBarsContent(null, now)
                     }
                 }
-                onNode(hasTextEqualTo("Open Trefoil")).assertExists()
-                onNode(hasTextEqualTo("Connect to a machine to see usage")).assertExists()
+                onNode(hasTextEqualTo(WIDGET_SIGNED_OUT_TEXT)).assertExists()
                 onNode(
                         hasStartActivityClickAction(
                             Intent(context, MainActivity::class.java)
@@ -119,7 +134,8 @@ class LimitWidgetsCompositionTest {
         onNode(hasTextEqualTo("12%")).assertExists()
         onNode(hasTextEqualTo("80%")).assertExists()
         onNode(hasTextEqualTo("2h 5m")).assertExists()
-        onNode(hasText("Updated 3m ago"))
+        onNode(hasTextEqualTo("Lowest limits")).assertExists()
+        onNode(hasContentDescription("Refresh usage"))
             .assertHasRunCallbackClickAction<RefreshUsageWidgetsAction>()
     }
 
@@ -172,7 +188,7 @@ class LimitWidgetsCompositionTest {
             )
         val masks = createRingMasks(context, many)
         provideComposable { TrefoilWidgetTheme { LimitRingsContent(many, masks, now) } }
-        onNode(hasTextEqualTo("Limit gauges")).assertExists()
+        onNode(hasTextEqualTo("Lowest limits")).assertExists()
         onNode(hasTextEqualTo("+16 more")).assertExists()
     }
 

@@ -39,8 +39,7 @@ class UsageWidgetCompositionTest {
                 setContext(context)
                 setAppWidgetSize(size)
                 provideComposable { UsageWidgetContent(kind, null, emptyPreferences()) }
-                onNode(hasTextEqualTo("Open Trefoil")).assertExists()
-                onNode(hasTextEqualTo("Connect to a machine to see usage")).assertExists()
+                onNode(hasTextEqualTo(WIDGET_SIGNED_OUT_TEXT)).assertExists()
             }
             runGlanceAppWidgetUnitTest {
                 val snapshot = UsageWidgetSamples.snapshot()
@@ -58,11 +57,14 @@ class UsageWidgetCompositionTest {
                             )
                             .assertExists()
                     "chart" ->
-                        onNode(hasText("max/day")).let {
+                        onNode(hasText("peak")).let {
                             if (size.height >= 100.dp) it.assertExists()
                             else it.assertDoesNotExist()
                         }
-                    else -> onNode(hasTextEqualTo("Top usage · 7 days")).assertExists()
+                    // The tiny size drops the header and keeps the top row.
+                    else ->
+                        if (size.height >= 100.dp) onNode(hasText("Top usage")).assertExists()
+                        else onNode(hasTextEqualTo("claude-opus-5-5")).assertExists()
                 }
                 onAllNodes(GlanceNodeMatcher<MappedNode>("all nodes") { true })
                     .assertAll(
@@ -84,9 +86,11 @@ class UsageWidgetCompositionTest {
         provideComposable {
             UsageWidgetContent("summary", UsageWidgetSamples.snapshot(), emptyPreferences())
         }
-        onNode(hasTextEqualTo("Today · est.")).assertExists()
-        onNode(hasTextEqualTo("7 days · est.")).assertExists()
-        onNode(hasTextEqualTo("30 days · est.")).assertExists()
+        onNode(hasTextEqualTo("Today")).assertExists()
+        onNode(hasText("tokens")).assertExists()
+        onNode(hasTextEqualTo("7 days")).assertExists()
+        onNode(hasTextEqualTo("30 days")).assertExists()
+        onNode(hasText("Studio · ")).assertHasRunCallbackClickAction<RefreshUsageWidgetsAction>()
         onNode(hasText("Cache saved")).assertExists()
         onNode(hasText("Top provider")).assertExists()
         onNode(hasText("Top model")).assertExists()
@@ -129,7 +133,7 @@ class UsageWidgetCompositionTest {
                 mutablePreferencesOf(UsageWidgetKeys.range to "Month"),
             )
         }
-        onNode(hasTextEqualTo("Usage chart · 7 days")).assertExists()
+        onNode(hasTextEqualTo("Last 7 days")).assertExists()
         onNode(hasTextEqualTo("30d")).assertDoesNotExist()
     }
 
@@ -144,7 +148,8 @@ class UsageWidgetCompositionTest {
                 mutablePreferencesOf(UsageWidgetKeys.grouping to "Providers"),
             )
         }
-        onNode(hasTextEqualTo("Name · tokens · est. cost · records")).assertExists()
+        onNode(hasTextEqualTo("Top usage")).assertExists()
+        onNode(hasTextEqualTo("Records")).assertExists()
         onNode(hasTextEqualTo("Providers"))
             .assertHasRunCallbackClickAction<SelectUsageWidgetAction>(
                 androidx.glance.action.actionParametersOf(
@@ -180,6 +185,23 @@ class UsageWidgetCompositionTest {
     }
 
     @Test
+    fun headerlessCompactTableKeepsRangeCycle() = runGlanceAppWidgetUnitTest {
+        setContext(context)
+        setAppWidgetSize(DpSize(210.dp, 100.dp))
+        val stale = UsageWidgetSamples.snapshot().copy(updatedAtMillis = System.currentTimeMillis() - 3 * 60 * 60_000)
+        provideComposable { UsageWidgetContent("table", stale, emptyPreferences()) }
+        onNode(hasTextEqualTo("Top usage · 7 days")).assertDoesNotExist()
+        onNode(hasTextEqualTo("7 days"))
+            .assertHasRunCallbackClickAction<SelectUsageWidgetAction>(
+                androidx.glance.action.actionParametersOf(
+                    UsageActionKeys.widget to "table",
+                    UsageActionKeys.field to "cycle",
+                    UsageActionKeys.value to "next",
+                )
+            )
+    }
+
+    @Test
     fun missingRangeIsInlineAndStaleDataOffersRefresh() {
         for (kind in listOf("summary", "chart", "table")) runGlanceAppWidgetUnitTest {
             setContext(context)
@@ -197,8 +219,9 @@ class UsageWidgetCompositionTest {
                     mutablePreferencesOf(UsageWidgetKeys.range to "Month"),
                 )
             }
-            onNode(hasTextEqualTo("No data yet for 30 days")).assertExists()
-            onNode(hasText("Updated 3h"))
+            onNode(hasTextEqualTo(if (kind == "summary") "No data yet for today" else "No data yet for 30 days"))
+                .assertExists()
+            onNode(hasText("Studio · 3h 0m ago"))
                 .assertHasRunCallbackClickAction<RefreshUsageWidgetsAction>()
         }
     }

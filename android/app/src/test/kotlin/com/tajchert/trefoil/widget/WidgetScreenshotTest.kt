@@ -65,4 +65,18 @@ class WidgetScreenshotTest {
     @Test fun limitRings() = shot("limit-rings", 220, 220) {
         TrefoilWidgetTheme { LimitRingsContent(snapshot, createRingMasks(context, snapshot), now) }
     }
+    @Test fun usageChartStale() = shot("usage-chart-stale", 280, 190) {
+        UsageWidgetContent("chart", snapshot.copy(updatedAtMillis = System.currentTimeMillis() - 3 * 60 * 60_000L), emptyPreferences())
+    }
+    @Test fun signedOut() = shot("signed-out", 180, 110) { UsageWidgetContent("summary", null, emptyPreferences()) }
+
+    // Dark home screens: the same fixed palette from values-night.
+    @Test @Config(qualifiers = "+night") fun usageSummaryDark() = shot("usage-summary-dark", 210, 140) { UsageWidgetContent("summary", snapshot, emptyPreferences()) }
+    @Test @Config(qualifiers = "+night") fun usageChartDark() = shot("usage-chart-dark", 320, 200) { UsageWidgetContent("chart", snapshot, emptyPreferences()) }
+    @Test @Config(qualifiers = "+night") fun usageTableDark() = shot("usage-table-dark", 400, 300) { UsageWidgetContent("table", snapshot, emptyPreferences()) }
+    @Test @Config(qualifiers = "+night") fun limitBarsDark() = shot("limit-bars-dark", 300, 240) { TrefoilWidgetTheme { LimitBarsContent(snapshot, now) } }
+    @Test @Config(qualifiers = "+night") fun limitBarsCompactDark() = shot("limit-bars-compact-dark", 256, 115) { TrefoilWidgetTheme { LimitBarsContent(snapshot, now) } }
+    @Test @Config(qualifiers = "+night") fun limitRingsDark() = shot("limit-rings-dark", 172, 224) {
+        TrefoilWidgetTheme { LimitRingsContent(snapshot, createRingMasks(context, snapshot), now) }
+    }
 }

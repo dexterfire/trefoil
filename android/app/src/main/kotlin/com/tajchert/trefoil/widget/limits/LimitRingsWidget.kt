@@ -7,18 +7,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.glance.*
-import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.SizeMode
-import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.provideContent
 import androidx.glance.layout.*
 import androidx.glance.semantics.contentDescription
 import androidx.glance.semantics.semantics
-import androidx.glance.text.Text
-import androidx.glance.text.TextStyle
+import com.tajchert.trefoil.R
 import com.tajchert.trefoil.widget.*
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.SharingStarted
@@ -97,7 +93,7 @@ internal fun LimitRingsContent(
     now: Long = System.currentTimeMillis(),
 ) {
     if (snapshot == null) {
-        LimitsNotConnected()
+        WidgetMessage(WIDGET_SIGNED_OUT_TEXT, UsageWidgetTab.Limits)
         return
     }
     val size = LocalSize.current
@@ -106,10 +102,19 @@ internal fun LimitRingsContent(
     val gauges = orderedGauges(snapshot.providers, now)
     val visible = gauges.take(grid.visibleCount(gauges.size))
     val more = gauges.size - visible.size
-    Column(limitsRoot(), horizontalAlignment = Alignment.CenterHorizontally) {
-        if (grid.showHeader) LimitHeader("Limit gauges", snapshot, now)
+    val parts = WidgetChromeParts(grid.showHeader, grid.showFooter)
+    val body = widgetContentHeight(size.height.value, scale, parts)
+    WidgetScaffold(
+        "Lowest limits",
+        snapshot,
+        UsageWidgetTab.Limits,
+        parts,
+        snapshot.limitsUpdatedAtMillis ?: snapshot.updatedAtMillis,
+        now,
+        bodyAlignment = Alignment.CenterVertically,
+    ) {
         if (gauges.isEmpty()) {
-            LimitNote(
+            WidgetStateLine(
                 snapshot.providers.firstOrNull()?.let(::limitNotice)
                     ?: "No provider limits reported"
             )
@@ -117,6 +122,13 @@ internal fun LimitRingsContent(
             // At most 8 rows, each with at most 5 cells. The overflow chip occupies a cell.
             val cells: List<LimitGauge?> =
                 visible + if (more > 0 && grid.capacity > 1) listOf(null) else emptyList()
+            val diameter =
+                minOf(
+                        64f,
+                        widgetContentWidth(size.width.value) / grid.columns - 8,
+                        body / grid.rows - if (grid.detailed) 34 * scale else if (size.height.value >= 90 * scale) 18 * scale else 0f,
+                    )
+                    .coerceAtLeast(20f)
             cells.chunked(grid.columns).forEach { row ->
                 Row(
                     GlanceModifier.fillMaxWidth().defaultWeight(),
@@ -126,32 +138,17 @@ internal fun LimitRingsContent(
                         Box(GlanceModifier.defaultWeight(), contentAlignment = Alignment.Center) {
                             if (gauge == null)
                                 Box(
-                                    GlanceModifier.background(WidgetPalette.track)
-                                        .cornerRadius(12.dp)
-                                        .padding(6.dp)
+                                    GlanceModifier.background(ImageProvider(R.drawable.widget_pill), ContentScale.FillBounds, ColorFilter.tint(WidgetPalette.track))
+                                        .padding(horizontal = 10.dp, vertical = 6.dp)
                                 ) {
-                                    LimitNote("+$more more")
+                                    WidgetText("+$more more", color = WidgetPalette.text)
                                 }
-                            else
-                                GaugeCell(
-                                    gauge,
-                                    masks,
-                                    now,
-                                    grid,
-                                    size.width.value,
-                                    size.height.value,
-                                    scale,
-                                )
+                            else GaugeCell(gauge, masks, now, grid, diameter, size.height.value, scale)
                         }
                     }
                 }
             }
         }
-        if (grid.showFooter)
-            LimitNote(
-                "${widgetStatus(snapshot, snapshot.limitsUpdatedAtMillis ?: snapshot.updatedAtMillis, now)} · ${snapshot.machineName}",
-                GlanceModifier.clickable(widgetRefreshAction(snapshot, UsageWidgetTab.Limits)),
-            )
     }
 }
 
@@ -161,25 +158,15 @@ private fun GaugeCell(
     masks: LimitRingMasks?,
     now: Long,
     grid: GaugeGrid,
-    width: Float,
+    diameter: Float,
     height: Float,
     scale: Float,
 ) {
     val expired = hasReset(gauge.window, now)
     val unavailable = !gauge.window.usedPercent.isFinite()
     val color =
-        if (expired || unavailable) GlanceTheme.colors.onSurfaceVariant
+        if (expired || unavailable) WidgetPalette.muted
         else WidgetPalette.remaining(gauge.window.remainingPercent)
-    val diameter =
-        minOf(
-                64f,
-                (width - 16) / grid.columns - 8,
-                (height -
-                    16 -
-                    if (grid.showHeader) 52 * scale else if (grid.showFooter) 18 * scale else 0f) /
-                    grid.rows - if (grid.detailed) 32 * scale else 0f,
-            )
-            .coerceAtLeast(20f)
     Column(
         GlanceModifier.semantics {
             contentDescription =
@@ -209,22 +196,23 @@ private fun GaugeCell(
                         )
                     }
             }
-            Text(
+            WidgetText(
                 if (expired) "Reset"
                 else if (unavailable) "—" else "${gauge.window.remainingPercent}%",
-                maxLines = 1,
-                style = TextStyle(color = color, fontSize = if (diameter < 40) 11.sp else 16.sp),
+                color = color,
+                sizeSp = if (diameter < 40) WIDGET_NOTE_SP else 16,
+                bold = true,
             )
         }
         if (grid.detailed) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                LimitProviderMark(gauge.provider.driver)
-                LimitNote(gauge.window.label)
+            Row(GlanceModifier.padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                WidgetProviderMark(gauge.provider.driver, sizeDp = 12)
+                WidgetText(gauge.window.label, color = WidgetPalette.text)
             }
-            LimitNote(limitResetText(gauge.window, now, compact = true))
+            WidgetText(limitResetText(gauge.window, now, compact = true))
         } else if (height >= 90 * scale) {
-            if (expired) LimitNote("Reset since last check")
-            else LimitNote(gauge.provider.displayName)
+            if (expired) WidgetText("Reset since last check")
+            else WidgetText(gauge.provider.displayName)
         }
     }
 }

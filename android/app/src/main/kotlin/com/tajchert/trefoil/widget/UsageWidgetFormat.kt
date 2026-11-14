@@ -10,15 +10,22 @@ import com.tajchert.trefoil.ui.formatUsageDuration
 /** Snapshots older than this are labelled stale (the periodic refresh runs every 30 minutes). */
 const val WIDGET_STALE_AFTER_MS = 2 * 60 * 60_000L
 
-/** "Updated just now" / "Updated 5m ago" / "Updated 3h 10m ago". */
+/** "just now" / "5m ago" / "3h 10m ago". */
 fun widgetFreshness(updatedAtMillis: Long, now: Long): String {
     val age = (now - updatedAtMillis).coerceAtLeast(0)
-    return if (age < 60_000) "Updated just now" else "Updated ${formatUsageDuration(age)} ago"
+    return if (age < 60_000) "just now" else "${formatUsageDuration(age)} ago"
 }
 
-/** Status line: the last refresh problem (e.g. "Open Trefoil to refresh this machine.") leads, then freshness. */
-fun widgetStatus(snapshot: UsageWidgetSnapshot, updatedAtMillis: Long, now: Long): String =
-    snapshot.lastError?.let { "${it.removeSuffix(".")} · ${widgetFreshness(updatedAtMillis, now)}" } ?: widgetFreshness(updatedAtMillis, now)
+/**
+ * Footer line: "Studio · 3m ago". The last refresh problem (e.g. "Open Trefoil to refresh this
+ * machine.") replaces the machine name so the hint is never truncated away.
+ */
+fun widgetFooterText(snapshot: UsageWidgetSnapshot, updatedAtMillis: Long, now: Long): String =
+    "${snapshot.lastError?.removeSuffix(".") ?: snapshot.machineName} · ${widgetFreshness(updatedAtMillis, now)}"
+
+/** Stale data or a failed refresh: the footer stays visible and is marked. */
+fun widgetAlert(snapshot: UsageWidgetSnapshot, updatedAtMillis: Long, now: Long): Boolean =
+    snapshot.lastError != null || isWidgetStale(updatedAtMillis, now)
 
 fun isWidgetStale(updatedAtMillis: Long, now: Long): Boolean = now - updatedAtMillis > WIDGET_STALE_AFTER_MS
 

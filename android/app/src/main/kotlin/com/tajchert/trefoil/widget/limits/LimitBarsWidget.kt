@@ -5,19 +5,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.glance.*
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
-import androidx.glance.appwidget.LinearProgressIndicator
 import androidx.glance.appwidget.SizeMode
-import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.lazy.LazyColumn
 import androidx.glance.appwidget.lazy.itemsIndexed
 import androidx.glance.appwidget.provideContent
 import androidx.glance.layout.*
-import androidx.glance.text.Text
-import androidx.glance.text.TextStyle
+import androidx.glance.semantics.contentDescription
+import androidx.glance.semantics.semantics
 import com.tajchert.trefoil.core.model.UsageLimitWindow
 import com.tajchert.trefoil.ui.usagePace
 import com.tajchert.trefoil.widget.*
@@ -45,62 +42,108 @@ internal fun LimitBarsContent(
     now: Long = System.currentTimeMillis(),
 ) {
     if (snapshot == null) {
-        LimitsNotConnected()
+        WidgetMessage(WIDGET_SIGNED_OUT_TEXT, UsageWidgetTab.Limits)
         return
     }
     val size = LocalSize.current
     val scale = LocalContext.current.resources.configuration.fontScale
     val compact = size.height.value < 150 * scale || size.width.value < 150
-    val stale = isWidgetStale(snapshot.limitsUpdatedAtMillis ?: snapshot.updatedAtMillis, now)
-    Column(limitsRoot()) {
-        if (!compact) LimitHeader("Usage limits", snapshot, now)
-        if (snapshot.providers.isEmpty()) LimitNote("No provider limits reported")
-        if (compact) {
-            val showFreshness = stale && size.height.value >= 90 * scale
-            if (showFreshness)
-                LimitNote(
-                    widgetStatus(
-                        snapshot,
-                        snapshot.limitsUpdatedAtMillis ?: snapshot.updatedAtMillis,
-                        now,
-                    ),
-                    GlanceModifier.clickable(widgetRefreshAction(snapshot, UsageWidgetTab.Limits)),
+    val updatedAt = snapshot.limitsUpdatedAtMillis ?: snapshot.updatedAtMillis
+    val alert = widgetAlert(snapshot, updatedAt, now)
+    if (compact) {
+        // Two tightest limits by default; the header appears once a row fits under it.
+        val parts = widgetChromeParts(size.height.value, scale, 2 * compactLimitRowDp(scale), alert)
+        val gauges =
+            compactGauges(
+                snapshot.providers,
+                compactLimitCapacity(widgetContentHeight(size.height.value, scale, parts), scale),
+                now,
+            )
+        WidgetScaffold(
+            "Lowest limits",
+            snapshot,
+            UsageWidgetTab.Limits,
+            parts,
+            updatedAt,
+            now,
+            bodyAlignment = Alignment.CenterVertically,
+        ) {
+            if (gauges.isEmpty())
+                WidgetStateLine(
+                    snapshot.providers.firstOrNull()?.let(::limitNotice) ?: "No provider limits reported"
                 )
-            val providers =
-                compactProviders(
-                    snapshot.providers,
-                    compactBarCapacity(
-                        size.height.value - if (showFreshness) 18 * scale else 0f,
-                        scale,
-                    ),
+            gauges.forEach { CompactLimitRow(it, now, size.width.value, scale) }
+        }
+        return
+    }
+    val parts = widgetChromeParts(size.height.value, scale, 60f * scale, alert)
+    WidgetScaffold("Limits", snapshot, UsageWidgetTab.Limits, parts, updatedAt, now) {
+        if (snapshot.providers.isEmpty()) WidgetStateLine("No provider limits reported")
+        Row(GlanceModifier.fillMaxWidth().defaultWeight()) {
+            val columns = if (size.width.value >= 400) 2 else 1
+            val columnWidth = (widgetContentWidth(size.width.value) - (columns - 1) * 16f) / columns
+            repeat(columns) { column ->
+                if (column > 0) Spacer(GlanceModifier.width(16.dp))
+                ProviderBarList(
+                    snapshot.providers.filterIndexed { index, _ -> index % columns == column },
                     now,
+                    GlanceModifier.defaultWeight(),
+                    size.width.value / columns >= 250 && scale <= 1.3f,
+                    columnWidth,
                 )
-            providers.forEach { provider ->
-                val window = orderedGauges(listOf(provider), now).firstOrNull()?.window
-                if (window == null) LimitNote("${provider.displayName} · ${limitNotice(provider)}")
-                else
-                    LimitBar(
-                        window,
-                        now,
-                        "${provider.displayName} · ${window.label}",
-                        compact = true,
-                        compactReset = size.width.value >= 230 * scale,
-                    )
-            }
-        } else {
-            Row(GlanceModifier.fillMaxWidth().defaultWeight()) {
-                val columns = if (size.width.value >= 400) 2 else 1
-                repeat(columns) { column ->
-                    if (column > 0) Spacer(GlanceModifier.width(12.dp))
-                    ProviderBarList(
-                        snapshot.providers.filterIndexed { index, _ -> index % columns == column },
-                        now,
-                        GlanceModifier.defaultWeight(),
-                        size.width.value / columns >= 250 && scale <= 1.3f,
-                    )
-                }
             }
         }
+    }
+}
+
+/** "12% left" when the number has room, otherwise "12%". */
+private fun limitValueText(window: UsageLimitWindow, now: Long, long: Boolean): String =
+    if (hasReset(window, now)) "Reset" else if (!window.usedPercent.isFinite()) "—"
+    else if (long) "${window.remainingPercent}% left" else "${window.remainingPercent}%"
+
+private fun limitColor(window: UsageLimitWindow, now: Long) =
+    if (hasReset(window, now) || !window.usedPercent.isFinite()) WidgetPalette.muted
+    else WidgetPalette.remaining(window.remainingPercent)
+
+@Composable
+private fun CompactLimitRow(gauge: LimitGauge, now: Long, widthDp: Float, scale: Float) {
+    val window = gauge.window
+    val color = limitColor(window, now)
+    val meter = widthDp >= 200 * scale
+    val hasMark = widgetProviderIcon(gauge.provider.driver) != null
+    Row(
+        GlanceModifier.fillMaxWidth().height(compactLimitRowDp(scale).dp).semantics {
+            contentDescription =
+                "${gauge.provider.displayName}, ${window.label}, " +
+                    if (hasReset(window, now)) "Reset since last check"
+                    else if (!window.usedPercent.isFinite()) "Unavailable"
+                    else "${window.remainingPercent}% left"
+        },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        WidgetProviderMark(gauge.provider.driver)
+        WidgetText(
+            if (hasMark) window.label else "${gauge.provider.displayName} · ${window.label}",
+            GlanceModifier.defaultWeight(),
+            color = WidgetPalette.text,
+            sizeSp = WIDGET_NOTE_SP,
+        )
+        if (meter) {
+            Spacer(GlanceModifier.width(8.dp))
+            WidgetMeter(
+                if (hasReset(window, now) || !window.usedPercent.isFinite()) 0f else window.remainingPercent / 100f,
+                color,
+                48f,
+                GlanceModifier.width(48.dp),
+            )
+        }
+        Spacer(GlanceModifier.width(8.dp))
+        WidgetText(
+            limitValueText(window, now, widthDp >= 260 * scale),
+            color = color,
+            sizeSp = WIDGET_TITLE_SP,
+            bold = true,
+        )
     }
 }
 
@@ -117,6 +160,7 @@ private fun ProviderBarList(
     now: Long,
     modifier: GlanceModifier,
     pace: Boolean,
+    widthDp: Float,
 ) {
     val openUsage = openUsageAction(LocalContext.current, UsageWidgetTab.Limits)
     val entries =
@@ -124,7 +168,7 @@ private fun ProviderBarList(
             listOf(BarEntry(provider)) +
                 provider.limits?.windows.orEmpty().map { BarEntry(provider, it) }
         }
-    LazyColumn(modifier.cornerRadius(12.dp)) {
+    LazyColumn(modifier) {
         itemsIndexed(
             entries,
             itemId = { _, entry ->
@@ -135,21 +179,16 @@ private fun ProviderBarList(
                 } and Long.MAX_VALUE
             },
         ) { _, entry ->
-            Column(GlanceModifier.fillMaxWidth().clickable(openUsage).padding(vertical = 5.dp)) {
+            Column(GlanceModifier.fillMaxWidth().clickable(openUsage).padding(vertical = 4.dp)) {
                 if (entry.window != null)
-                    LimitBar(entry.window, now, entry.window.label, showPace = pace)
+                    LimitBar(entry.window, now, entry.window.label, widthDp, showPace = pace)
                 else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        LimitProviderMark(entry.provider.driver)
-                        Text(
-                            entry.provider.displayName,
-                            maxLines = 1,
-                            style =
-                                TextStyle(color = GlanceTheme.colors.onSurface, fontSize = 13.sp),
-                        )
+                        WidgetProviderMark(entry.provider.driver)
+                        WidgetText(entry.provider.displayName, color = WidgetPalette.text, sizeSp = WIDGET_TITLE_SP, bold = true)
                     }
                     if (entry.provider.limits?.windows.isNullOrEmpty())
-                        LimitNote(limitNotice(entry.provider))
+                        WidgetText(limitNotice(entry.provider))
                 }
             }
         }
@@ -161,50 +200,37 @@ private fun LimitBar(
     window: UsageLimitWindow,
     now: Long,
     label: String,
-    compact: Boolean = false,
+    widthDp: Float,
     showPace: Boolean = false,
-    compactReset: Boolean = false,
 ) {
     val expired = hasReset(window, now)
     val stale = expired || !window.usedPercent.isFinite()
-    val color =
-        if (stale) GlanceTheme.colors.onSurfaceVariant
-        else WidgetPalette.remaining(window.remainingPercent)
-    Column(GlanceModifier.fillMaxWidth().padding(bottom = if (compact) 4.dp else 2.dp)) {
-        Row(GlanceModifier.fillMaxWidth()) {
-            Text(
-                if (compactReset && !expired)
-                    "$label · ${limitResetText(window, now, compact = true)}"
-                else label,
+    val color = limitColor(window, now)
+    Column(GlanceModifier.fillMaxWidth()) {
+        Row(GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            WidgetText(
+                label,
                 GlanceModifier.defaultWeight(),
-                maxLines = 1,
-                style =
-                    TextStyle(
-                        color =
-                            if (stale) GlanceTheme.colors.onSurfaceVariant
-                            else GlanceTheme.colors.onSurface,
-                        fontSize = 12.sp,
-                    ),
+                color = if (stale) WidgetPalette.muted else WidgetPalette.text,
+                sizeSp = WIDGET_TITLE_SP,
             )
-            Text(
+            WidgetText(
                 if (expired) "Reset since last check"
                 else if (stale) "Unavailable" else "${window.remainingPercent}% left",
-                maxLines = 1,
-                style = TextStyle(color = color, fontSize = 12.sp),
+                color = color,
+                sizeSp = WIDGET_TITLE_SP,
+                bold = !stale,
             )
         }
-        LinearProgressIndicator(
-            progress = if (stale) 0f else window.remainingPercent / 100f,
-            modifier = GlanceModifier.fillMaxWidth().height(4.dp),
-            color = color,
-            backgroundColor = WidgetPalette.track,
-        )
-        if (!compact && !expired) {
+        Spacer(GlanceModifier.height(4.dp))
+        WidgetMeter(if (stale) 0f else window.remainingPercent / 100f, color, widthDp, heightDp = 6)
+        if (!expired) {
             val reset = limitResetText(window, now)
-            LimitNote(
+            WidgetText(
                 if (showPace && !stale)
                     listOfNotNull(reset, usagePace(window, now)).joinToString(" · ")
-                else reset
+                else reset,
+                GlanceModifier.padding(top = 2.dp),
             )
         }
     }

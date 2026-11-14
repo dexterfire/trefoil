@@ -1,0 +1,4 @@
+<resources>
+    <!-- Widget container surface (dark); the rest of the fixed palette is WidgetPalette in widget/WidgetChrome.kt. -->
+    <color name="widget_surface">#FF161919</color>
+</resources>

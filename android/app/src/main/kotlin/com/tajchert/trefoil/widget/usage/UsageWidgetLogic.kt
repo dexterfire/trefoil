@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.ui.formatUsageTokens
 import com.tajchert.trefoil.ui.formatUsageUsd
+import com.tajchert.trefoil.widget.widgetContentWidth
 import kotlin.math.floor
 
 /** Conservative single-line estimate; numbers stay legible as columns and system fonts change. */
@@ -93,7 +94,10 @@ internal fun barHeight(value: Double, max: Double, available: Float): Float {
 }
 
 internal data class UsageFit(val width: Float, val height: Float, val fontScale: Float) {
-    private val scale = fontScale.coerceAtLeast(1f)
+    val scale = fontScale.coerceAtLeast(1f)
+    val contentWidth: Float
+        get() = widgetContentWidth(width)
+
     val summaryColumns: Boolean
         get() = width >= 210 * scale && height >= 140 * scale
 
@@ -102,9 +106,6 @@ internal data class UsageFit(val width: Float, val height: Float, val fontScale:
 
     val tight: Boolean
         get() = height < 100 * scale
-
-    val footer: Boolean
-        get() = height >= 180 * scale
 
     val controls: Boolean
         get() = width >= 280 * scale && height >= 230 * scale
@@ -115,18 +116,7 @@ internal data class UsageFit(val width: Float, val height: Float, val fontScale:
     val barLabels: Boolean
         get() = width / 7 >= 30 * scale && height >= 150 * scale
 
-    fun chartHeight(hasFooter: Boolean, labels: Boolean): Float {
-        val reserved =
-            (if (tight) 8f else 24f) +
-                (27f +
-                    (if (tight) 0f else 47f) +
-                    (if (controls) 36f else 0f) +
-                    (if (hasFooter) 16f else 0f) +
-                    (if (labels) 16f else 0f)) * scale +
-                4f
-        return (height - reserved).coerceIn(1f, 160f)
-    }
-
-    fun rows(reserved: Float): Int =
-        floor((height - reserved) / (44 * scale)).toInt().coerceAtLeast(1)
+    /** Table rows (about 36dp each) that fit in [availableDp]; at least one. */
+    fun rows(availableDp: Float): Int =
+        floor(availableDp / (36 * scale)).toInt().coerceAtLeast(1)
 }
