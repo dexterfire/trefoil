@@ -165,4 +165,81 @@ class ThreadPresentationTest {
         assertEquals("", relativeThreadTime("invalid", 0))
         assertEquals("now", relativeThreadTime("2026-11-06T09:00:00Z", 0))
     }
+
+    private fun waiting(id: String, kind: String = "approval", title: String = "Thread $id") = ThreadSummary(id, "p", title, "running", pendingRequestKind = kind)
+    private fun quiet(id: String) = ThreadSummary(id, "p", "Thread $id", "completed")
+
+    @Test fun threadsToAnnounceSkipsKnownAndOpenThreads() {
+        val needs = listOf(waiting("known"), waiting("open"), waiting("new"))
+        assertEquals(listOf("new"), threadsToAnnounce(setOf("known"), needs, "open").map { it.id })
+        assertEquals(emptyList<String>(), threadsToAnnounce(setOf("known", "open", "new"), needs, null).map { it.id })
+    }
+
+    @Test fun needsYouThreadsSkipArchivedSettledAndSnoozedThreads() {
+        val now = java.time.Instant.parse("2026-11-07T12:00:00Z").toEpochMilli()
+        val threads = listOf(waiting("live"), waiting("archived").copy(archived = true), waiting("settled").copy(settledOverride = "settled", settledAt = "2026-11-06T09:00:00Z"),
+            waiting("snoozed").copy(pendingRequestKind = null, snoozedUntil = "2099-01-01T00:00:00Z"), quiet("quiet"))
+        assertEquals(listOf("live"), needsYouThreads(threads, now).map { it.id })
+    }
+
+    @Test fun attentionStepAdoptsTheFirstFreshSnapshotSilentlyAndThenFiresOnEntryOnly() {
+        val a = waiting("a"); val b = waiting("b"); val c = waiting("c", "user_input")
+        var track = AttentionTrack()
+        fun step(env: String? = "env", connected: Boolean = true, fresh: Boolean = true, threads: List<ThreadSummary>, open: String? = null): List<String> {
+            val result = attentionStep(track, env, connected, fresh, threads, open); track = result.track; return result.announce.map { it.id }
+        }
+        assertEquals(emptyList<String>(), step(fresh = false, threads = listOf(a)))
+        assertNull(track.needsYouIds)
+        assertEquals(emptyList<String>(), step(threads = listOf(a)))
+        assertEquals(setOf("a"), track.needsYouIds)
+        assertEquals(emptyList<String>(), step(threads = listOf(a, quiet("x"))))
+        assertEquals(listOf("b"), step(threads = listOf(a, b)))
+        assertEquals(emptyList<String>(), step(threads = listOf(a, b)))
+        // The open thread never fires, and does not fire later either.
+        assertEquals(emptyList<String>(), step(threads = listOf(a, b, c), open = "c"))
+        assertEquals(emptyList<String>(), step(threads = listOf(a, b, c)))
+        // Leaving and re-entering fires again.
+        assertEquals(emptyList<String>(), step(threads = listOf(a, c)))
+        assertEquals(listOf("b"), step(threads = listOf(a, b, c)))
+    }
+
+    @Test fun attentionStepForgetsTheBaselineOnReconnectAndEnvironmentSwitch() {
+        val a = waiting("a"); val b = waiting("b")
+        var track = attentionStep(AttentionTrack(), "env", true, true, listOf(a), null).track
+        // Disconnect, then reconnect with a stale cache and a fresh snapshot: nothing fires for threads that started waiting meanwhile.
+        track = attentionStep(track, "env", false, false, listOf(a), null).track
+        assertNull(track.needsYouIds)
+        assertTrue(attentionStep(track, "env", true, false, listOf(a), null).also { track = it.track }.announce.isEmpty())
+        assertTrue(attentionStep(track, "env", true, true, listOf(a, b), null).also { track = it.track }.announce.isEmpty())
+        assertEquals(setOf("a", "b"), track.needsYouIds)
+        // Switching environment starts over even when already connected and fresh.
+        val switched = attentionStep(track, "other", true, true, listOf(b), null)
+        assertTrue(switched.announce.isEmpty()); assertEquals("other", switched.track.environmentId); assertEquals(setOf("b"), switched.track.needsYouIds)
+    }
+
+    @Test fun attentionMessageNamesTheKindOrTheCount() {
+        assertNull(attentionMessage(emptyList()))
+        assertEquals(AttentionMessage("Fix login needs approval", "a"), attentionMessage(listOf(waiting("a", title = "Fix login"))))
+        assertEquals(AttentionMessage("Fix login needs input", "a"), attentionMessage(listOf(waiting("a", "user_input", "Fix login"))))
+        assertEquals(AttentionMessage("Fix login needs attention", "a"), attentionMessage(listOf(waiting("a", "auth_refresh", "Fix login"))))
+        assertEquals("Untitled conversation needs approval", attentionMessage(listOf(waiting("a", title = "")))?.text)
+        assertEquals(AttentionMessage("2 threads need you", null, listOf("a", "b")), attentionMessage(listOf(waiting("a"), waiting("b"))))
+        assertTrue(attentionMessage(listOf(waiting("a", title = "x".repeat(200))))!!.text.length < 90)
+    }
+
+    @Test fun queuedMessageIsDroppedOnceItsThreadsAreOpenOrNoLongerWaiting() {
+        val one = attentionMessage(listOf(waiting("a")))!!
+        val many = attentionMessage(listOf(waiting("a"), waiting("b")))!!
+        assertTrue(attentionStillRelevant(one, listOf(waiting("a")), null))
+        assertFalse(attentionStillRelevant(one, listOf(waiting("a")), "a"))
+        assertFalse(attentionStillRelevant(one, listOf(waiting("b")), null))
+        assertTrue(attentionStillRelevant(many, listOf(waiting("b")), "a"))
+        assertFalse(attentionStillRelevant(many, emptyList(), null))
+    }
+
+    @Test fun backDescriptionCountsWaitingThreads() {
+        assertEquals("Back to threads", backDescription(0))
+        assertEquals("Back to threads, 1 thread needs you", backDescription(1))
+        assertEquals("Back to threads, 3 threads need you", backDescription(3))
+    }
 }

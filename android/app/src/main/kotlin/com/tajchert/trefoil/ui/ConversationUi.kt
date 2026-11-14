@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.platform.testTag
@@ -52,6 +53,8 @@ internal fun Conversation(
     /** "Subagent of <parent title>" header subtitle for subagent children. */
     subtitle: String? = null,
     onOpenAgents: (() -> Unit)? = null,
+    /** Other threads waiting for the user; shown as a badge on the back arrow. */
+    otherNeedsYou: Int = 0,
 ) {
     val c = Tf.colors
     // A draft hides whatever thread was previously selected; its first message creates the real thread.
@@ -146,7 +149,7 @@ internal fun Conversation(
             ConversationHeader(
                 title = if (draft != null) "New thread" else thread?.title?.ifBlank { "Untitled conversation" } ?: "Conversation",
                 projectTitle = project?.title, branch = thread?.branch?.takeIf { it.isNotBlank() },
-                workLabel = workLabel.takeIf { state.activeRunId != null }, onBack = onBack, actions = actions, subtitle = subtitle)
+                workLabel = workLabel.takeIf { state.activeRunId != null }, onBack = onBack, actions = actions, subtitle = subtitle, otherNeedsYou = otherNeedsYou)
             HorizontalDivider(color = c.line)
             Box(Modifier.weight(1f)) {
                 LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -199,10 +202,14 @@ internal fun Conversation(
 }
 
 @Composable
-private fun ConversationHeader(title: String, projectTitle: String?, branch: String?, workLabel: String?, onBack: (() -> Unit)?, actions: @Composable RowScope.() -> Unit, subtitle: String? = null) {
+private fun ConversationHeader(title: String, projectTitle: String?, branch: String?, workLabel: String?, onBack: (() -> Unit)?, actions: @Composable RowScope.() -> Unit, subtitle: String? = null, otherNeedsYou: Int = 0) {
     val c = Tf.colors
     Row(Modifier.fillMaxWidth().heightIn(min = 68.dp).padding(start = if (onBack != null) 4.dp else 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        if (onBack != null) IconButton(onClick = onBack, modifier = Modifier.size(44.dp)) { Icon(TfIcons.Back, "Back to threads", Modifier.size(22.dp)) }
+        if (onBack != null) IconButton(onClick = onBack, modifier = Modifier.size(44.dp)) {
+            BadgedBox(badge = {
+                if (otherNeedsYou > 0) Badge(Modifier.clearAndSetSemantics {}, containerColor = c.amber, contentColor = c.onAccent) { Text(if (otherNeedsYou > 9) "9+" else otherNeedsYou.toString()) }
+            }) { Icon(TfIcons.Back, backDescription(otherNeedsYou), Modifier.size(22.dp)) }
+        }
         Column(Modifier.weight(1f).padding(start = if (onBack != null) 2.dp else 0.dp)) {
             Text(title, style = TrefoilType.rowTitle, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (subtitle != null) Text(subtitle, style = TrefoilType.meta, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)

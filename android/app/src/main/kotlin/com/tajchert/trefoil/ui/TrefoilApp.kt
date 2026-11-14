@@ -15,6 +15,11 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.tajchert.trefoil.core.model.*
+import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import com.tajchert.trefoil.ui.screens.ScreenViewerState
@@ -134,13 +139,51 @@ fun TrefoilApp(
             onUsage = if (connected) ({ showUsage = true; if (state.canReadUsage) onOpenUsage() }) else null,
             onDisconnect = if (connected) ({ onDisconnect(); choosingEnvironment = true; showThread = false }) else null,
         )
-        val needsYou = remember(state.threads) { threadSections(threadShelves(state.threads), ThreadFilter.NeedsYou).sumOf { it.threads.size } }
+        val needsYouThreads = remember(state.threads) { needsYouThreads(state.threads) }
+        val needsYou = needsYouThreads.size
+        // The conversation counts as open only while it is on screen; the list, machines, usage and screens hide it.
+        var wideLayout by remember { mutableStateOf(false) }
+        val openThreadId = state.selectedThreadId.takeIf {
+            draft == null && it != null && (wideLayout || showThread) && connected && !choosingEnvironment && !showUsage && !showScreens
+        }
+        val otherNeedsYou = if (state.connection == ConnectionStatus.Connected) needsYouThreads.count { it.id != openThreadId } else 0
+        // A thread that enters Needs you while another screen is open surfaces as a snackbar. Detection only queues the
+        // message; one long-lived collector shows them in turn so a state update never dismisses a snackbar on screen.
+        val attention = remember { Channel<AttentionMessage>(Channel.UNLIMITED) }
+        var attentionTrack by remember { mutableStateOf(AttentionTrack()) }
+        LaunchedEffect(state.threads, state.environment?.id, state.connection, state.canRead, openThreadId) {
+            val step = attentionStep(attentionTrack, state.environment?.id, state.connection == ConnectionStatus.Connected, state.canRead, state.threads, openThreadId)
+            attentionTrack = step.track
+            attentionMessage(step.announce)?.let { attention.trySend(it) }
+        }
+        val openAttention by rememberUpdatedState<(String?) -> Unit> { id ->
+            choosingEnvironment = false; showUsage = false; showScreens = false
+            if (id != null && state.threads.any { it.id == id }) select(id) else { cancelDraft(); showThread = false }
+        }
+        val attentionRelevant by rememberUpdatedState<(AttentionMessage) -> Boolean> {
+            state.connection == ConnectionStatus.Connected && attentionStillRelevant(it, needsYouThreads, openThreadId)
+        }
+        // Messages belong to one environment: switching or losing it drops what is queued and dismisses what is showing.
+        LaunchedEffect(attention, state.environment?.id) {
+            while (attention.tryReceive().isSuccess) { /* drop messages queued for the previous environment */ }
+            for (message in attention) {
+                if (!attentionRelevant(message)) continue
+                // Only this message's presentation is cancelled when it stops being relevant, queued or showing; the Undo snackbar is its own coroutine.
+                coroutineScope {
+                    val shown = async { snackbar.showSnackbar(message.text, "Open", duration = SnackbarDuration.Short) }
+                    val guard = launch { snapshotFlow { attentionRelevant(message) }.first { !it }; shown.cancel() }
+                    shown.join(); guard.cancel()
+                    if (!shown.isCancelled && shown.getCompleted() == SnackbarResult.ActionPerformed) openAttention(message.threadId)
+                }
+            }
+        }
         val c = Tf.colors
         Scaffold(containerColor = c.bg, contentColor = c.text, contentWindowInsets = WindowInsets(0),
             snackbarHost = { SnackbarHost(snackbar, Modifier.navigationBarsPadding().imePadding()) }) { padding ->
             BoxWithConstraints(Modifier.padding(padding).fillMaxSize().windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal))) {
                 val layout = shellLayout(maxWidth.value)
                 val twoPane = layout != ShellLayout.Phone
+                SideEffect { wideLayout = twoPane }
                 val machines = !connected || choosingEnvironment
                 BackHandler(showUsage) { showUsage = false }
                 BackHandler(!showUsage && !showScreens && ((choosingEnvironment && connected) || (showThread && !twoPane && !machines) || (backParent != null && !machines && (twoPane || showThread)))) {
@@ -194,6 +237,7 @@ fun TrefoilApp(
                                                     onBack = if (backParent != null) ({ select(backParent.id) }) else if (twoPane) null else ({ cancelDraft(); showThread = false }),
                                                     onOpenParent = parentThread?.let { p -> { select(p.id) } },
                                                     onOpenAgents = if (roster != null) ({ showAgents = true }) else null,
+                                                    otherNeedsYou = otherNeedsYou,
                                                     subtitle = selectedThread?.takeIf { draft == null && it.relationshipToParent == "subagent" }?.let { t -> parentThread?.let { "Subagent of ${it.title}" } ?: "Subagent" },
                                                     actions = {
                                                         if (selectedThreadActionsVisible(twoPane, showThread, draft, state.selectedThreadId)) {

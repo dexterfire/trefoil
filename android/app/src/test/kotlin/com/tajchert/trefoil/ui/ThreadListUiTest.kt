@@ -68,6 +68,49 @@ class ThreadListUiTest {
         compose.onNodeWithText("Keep activity in the right order").assertExists()
         compose.onNodeWithText("Review the connection flow").assertDoesNotExist()
     }
+    @Test fun waitingThreadShowsItsKindBeforeThePreviewAndOtherRowsStayUnchanged() {
+        val threads = listOf(
+            ThreadSummary("ask", "trefoil", "Needs a yes", "running", pendingRequestKind = "approval", latestMessage = "\nRun ./gradlew test?"),
+            ThreadSummary("bare", "trefoil", "Needs input bare", "running", pendingRequestKind = "user_input"),
+            ThreadSummary("done", "trefoil", "Plain thread", "completed", latestMessage = "All green."),
+            ThreadSummary("bad", "trefoil", "Broken thread", "failed"))
+        compose.setContent { TrefoilTheme { ThreadList(fixture.copy(threads = threads), {}, {}) } }
+        compose.onNodeWithText("Needs approval").assertExists()
+        compose.onNodeWithText(" · Run ./gradlew test?").assertExists()
+        compose.onNodeWithText("Needs input").assertExists()
+        compose.onNodeWithText("All green.").assertExists()
+        compose.onNodeWithText("Failed").assertExists()
+    }
+    @Test fun snackbarAnnouncesOnlyThreadsThatEnterNeedsYouAndOpensThem() {
+        val env = SavedEnvironment("fixture", "Fixture", "https://fixture.invalid", "fixture-token")
+        val quiet = ThreadSummary("late", "trefoil", "Late bloomer", "completed")
+        val already = ThreadSummary("early", "trefoil", "Already waiting", "running", pendingRequestKind = "approval")
+        val state = androidx.compose.runtime.mutableStateOf(fixture.copy(environment = env, canRead = true, threads = listOf(quiet, already)))
+        compose.setContent { TrefoilApp(state.value, emptyList(), { _, _, _ -> }, {},
+            { id -> state.value = state.value.copy(selectedThreadId = id) }, {}, {}, { _, _, _ -> }, null, {}, {}, {}, {}, {}, {}, {}) }
+        compose.waitForIdle()
+        compose.onNodeWithText("Open").assertDoesNotExist()
+        // First snapshot was adopted silently; a thread that now enters Needs you is announced once.
+        state.value = state.value.copy(threads = listOf(quiet.copy(pendingRequestKind = "user_input"), already))
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("Late bloomer needs input").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Open").performClick()
+        compose.waitForIdle()
+        assertEquals("late", state.value.selectedThreadId)
+    }
+
+    @Test fun snackbarIsDroppedWhenTheConnectionIsLost() {
+        val env = SavedEnvironment("fixture", "Fixture", "https://fixture.invalid", "fixture-token")
+        val quiet = ThreadSummary("late", "trefoil", "Late bloomer", "completed")
+        val state = androidx.compose.runtime.mutableStateOf(fixture.copy(environment = env, canRead = true, threads = listOf(quiet)))
+        compose.setContent { TrefoilApp(state.value, emptyList(), { _, _, _ -> }, {},
+            { id -> state.value = state.value.copy(selectedThreadId = id) }, {}, {}, { _, _, _ -> }, null, {}, {}, {}, {}, {}, {}, {}) }
+        compose.waitForIdle()
+        state.value = state.value.copy(threads = listOf(quiet.copy(pendingRequestKind = "approval")))
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("Late bloomer needs approval").fetchSemanticsNodes().isNotEmpty() }
+        state.value = state.value.copy(connection = ConnectionStatus.Reconnecting)
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("Late bloomer needs approval").fetchSemanticsNodes().isEmpty() }
+    }
+
     @Test fun returningFromConversationRetainsCollapsedShelvesAndSearch() {
         val state = androidx.compose.runtime.mutableStateOf(fixture.copy(environment = SavedEnvironment("fixture", "Fixture", "https://fixture.invalid", "fixture-token")))
         compose.setContent { TrefoilApp(state.value, emptyList(), { _, _, _ -> }, {},
