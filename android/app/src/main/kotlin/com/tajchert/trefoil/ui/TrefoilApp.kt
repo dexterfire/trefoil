@@ -85,8 +85,10 @@ fun TrefoilApp(
         var seedPrompt by rememberSaveable { mutableStateOf<String?>(null) }
         var showScreens by rememberSaveable(state.environment?.id) { mutableStateOf(false) }
         var showUsage by rememberSaveable { mutableStateOf(false) }
+        // A widget request picks the tab; the header chip and menu always open Limits.
+        var usageTab by rememberSaveable { mutableIntStateOf(0) }
         LaunchedEffect(usageOpenRequest) {
-            if (usageOpenRequest != null) { showUsage = true; choosingEnvironment = false; if (state.canReadUsage) onOpenUsage() }
+            if (usageOpenRequest != null) { usageTab = usageOpenRequest.second.ordinal; showUsage = true; choosingEnvironment = false; if (state.canReadUsage) onOpenUsage() }
         }
         LaunchedEffect(state.environment?.id, state.canReadUsage) {
             if (showUsage && state.canReadUsage) onOpenUsage()
@@ -136,7 +138,7 @@ fun TrefoilApp(
             onConnectMachine = { adding = true },
             onScreens = if (connected) ({ showScreens = true }) else null,
             // Offline the screen shows cached limits; only a connection that can read usage fetches (the effect above covers a later connect).
-            onUsage = if (connected) ({ showUsage = true; if (state.canReadUsage) onOpenUsage() }) else null,
+            onUsage = if (connected) ({ usageTab = 0; showUsage = true; if (state.canReadUsage) onOpenUsage() }) else null,
             onDisconnect = if (connected) ({ onDisconnect(); choosingEnvironment = true; showThread = false }) else null,
         )
         val needsYouThreads = remember(state.threads) { needsYouThreads(state.threads) }
@@ -200,7 +202,7 @@ fun TrefoilApp(
                         when {
                             showUsage -> key(usageOpenRequest?.first) {
                                 UsageScreen(state, usage, { showUsage = false }, onRefreshUsage, onUsageRange, onRetryUsage,
-                                    Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars), initialTab = usageOpenRequest?.second?.ordinal ?: 0)
+                                    Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars), initialTab = usageTab)
                             }
                             machines -> Column(Modifier.fillMaxSize().statusBarsPadding()) {
                                 ConnectionBanner(state, onReconnect)
