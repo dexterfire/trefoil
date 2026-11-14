@@ -72,6 +72,20 @@ fun Conversation_AgentWorking_Dark() = Screen(fx.workingState(), dark = true)
 @PreviewTest
 @Preview(showBackground = true, widthDp = 400, heightDp = 800)
 @Composable
+fun Conversation_BackBadge_Light() = Frame {
+    Conversation(fx.chatState(), send = {}, interrupt = {}, respond = { _, _, _ -> }, onBack = {}, onOpenAgents = null, otherNeedsYou = 2)
+}
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, heightDp = 800, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun Conversation_BackBadge_Dark() = Frame(dark = true) {
+    Conversation(fx.chatState(), send = {}, interrupt = {}, respond = { _, _, _ -> }, onBack = {}, onOpenAgents = null, otherNeedsYou = 2)
+}
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, heightDp = 800)
+@Composable
 fun Conversation_Disconnected_ReadOnly_Light() = Screen(fx.disconnectedState())
 
 @PreviewTest

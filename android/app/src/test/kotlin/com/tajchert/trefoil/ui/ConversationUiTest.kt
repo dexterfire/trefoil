@@ -70,6 +70,21 @@ class ConversationUiTest {
         compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
     }
 
+    @Test fun backArrowBadgesOtherWaitingThreadsAndNamesThemForAccessibility() {
+        val count = mutableStateOf(2)
+        compose.setContent { MaterialTheme { Conversation(ClientState(selectedThreadId = "fixture"), {}, {}, { _, _, _ -> }, onBack = {}, otherNeedsYou = count.value) } }
+        compose.onNodeWithContentDescription("Back to threads, 2 threads need you").assertExists()
+        count.value = 0
+        compose.onNodeWithContentDescription("Back to threads").assertExists()
+        compose.onNodeWithContentDescription("Back to threads, 2 threads need you").assertDoesNotExist()
+    }
+
+    @Test fun noBackArrowMeansNoBadgeOnWideLayouts() {
+        compose.setContent { MaterialTheme { Conversation(ClientState(selectedThreadId = "fixture"), {}, {}, { _, _, _ -> }, onBack = null, otherNeedsYou = 2) } }
+        compose.onNodeWithContentDescription("Back to threads, 2 threads need you").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Back to threads").assertDoesNotExist()
+    }
+
     @Test fun disconnectedConversationDisablesApprovalAndSendButRetainsDraftEditing() {
         compose.setContent { MaterialTheme { Conversation(ClientState(selectedThreadId = "fixture", requests = listOf(RuntimeRequest("approval", "Run fixture command"))), {}, {}, { _, _, _ -> }) } }
         compose.onNodeWithText("Reply…").performTextInput("Draft")

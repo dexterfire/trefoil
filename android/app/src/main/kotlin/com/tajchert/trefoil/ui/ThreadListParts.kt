@@ -209,8 +209,13 @@ internal fun ThreadRow(state: ClientState, thread: ThreadSummary, project: Proje
                 val preview = thread.latestMessage.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }
                 val needs = indicator.kind in setOf("attention", "input")
                 when {
+                    // A waiting thread always names what it wants; the label keeps its width and the preview gives way.
+                    needs -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(indicator.label, style = TrefoilType.preview, color = c.amber, maxLines = 1, softWrap = false)
+                        if (preview != null) Text(" · $preview", Modifier.weight(1f, fill = false), style = TrefoilType.preview, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                     preview != null -> Text(preview, style = TrefoilType.preview, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    needs || indicator.kind == "error" -> Text(indicator.label, style = TrefoilType.preview, color = if (needs) c.amber else c.red, maxLines = 1)
+                    indicator.kind == "error" -> Text(indicator.label, style = TrefoilType.preview, color = c.red, maxLines = 1)
                 }
                 // Project name keeps its full width; only the branch gives way. The agent mark sits in a fixed slot at the row's bottom-right.
                 Row(Modifier.padding(top = 6.dp).heightIn(min = 24.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
