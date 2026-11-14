@@ -1,10 +1,14 @@
 package com.tajchert.trefoil.core.model
 
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.serialization.Serializable
 
 @Serializable
-data class SavedEnvironment(val id: String, val name: String, val baseUrl: String, val accessToken: String, val ssh: SshProfile? = null, val allowInsecureHttp: Boolean = false) {
+data class SavedEnvironment(val id: String, val name: String, val baseUrl: String, val accessToken: String, val ssh: SshProfile? = null, val allowInsecureHttp: Boolean = false,
+    /** Learned routes only (see Routes.kt); the paired address stays in [baseUrl]. Defaults keep old vault JSON decodable. */
+    val routes: List<EnvironmentRoute> = emptyList()) {
     override fun toString() = "SavedEnvironment(credentials=***)"
 }
 data class Project(val id: String, val title: String, val path: String = "")
@@ -143,6 +147,8 @@ data class ClientState(
     val threadStopSupported: Boolean = false,
     /** Session grants `diagnostics:read`, which `server.getUsageSummary` requires. Limits only need read access. */
     val canReadUsage: Boolean = false,
+    /** Route of the live connection. For SSH: `EnvironmentRoute(Ssh, <ephemeral loopback>, Paired)`, display only, never persisted. */
+    val activeRoute: EnvironmentRoute? = null,
 )
 
 /** A mutation may or may not have been applied; reconcile from server state, never resend it. */
@@ -152,7 +158,20 @@ class UncertainOutcomeException(message: String) : IllegalStateException(message
 interface TrefoilClient {
     val state: StateFlow<ClientState>
     suspend fun pair(pairingUrl: String, name: String, allowInsecureHttp: Boolean = false): SavedEnvironment
+    /** Connects to `environment.baseUrl` as a single route; sets [ClientState.activeRoute] to the classified paired route. */
     suspend fun connect(environment: SavedEnvironment)
+    /**
+     * Connect through the first route in [routes] (all non-Ssh, already in preference order) whose descriptor
+     * answers as environment.id; the bearer is sent only to that route. Sets ClientState.activeRoute.
+     * Throws PairingException if none answers (message names the last failure).
+     */
+    suspend fun connect(environment: SavedEnvironment, routes: List<EnvironmentRoute>) { connect(environment.copy(baseUrl = routes.first().baseUrl)) }
+    /** Route hints from the connected host: once after each successful connect (directEndpoints from server.getConfig + link-state), then on each subscribeServerConfig snapshot whose directEndpoints change. */
+    val routeHints: Flow<RouteHints> get() = emptyFlow()
+    /** Credential-free preflight: true when route answers /.well-known/t3/environment as environmentId (protocol 2) within timeoutMillis. Applies URL policy with allowInsecureHttp. */
+    suspend fun preflight(environmentId: String, route: EnvironmentRoute, allowInsecureHttp: Boolean, timeoutMillis: Long): Boolean = false
+    /** True when a route switch now cannot abandon an in-flight mutation (no pending dispatch, launch, respond, stop, thread action). */
+    fun isIdleForRouteSwitch(): Boolean = false
     suspend fun disconnect()
     suspend fun selectThread(threadId: String)
     suspend fun refreshScreens() { error("Remote screens are unavailable") }

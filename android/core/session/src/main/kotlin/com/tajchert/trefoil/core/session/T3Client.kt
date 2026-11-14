@@ -128,7 +128,7 @@ class T3Client(
             if (state.value.environment?.id != environment.id) usageCache.clear()
             val retained = environmentStates[environment.id] ?: ClientState()
             projection = JsonObject(emptyMap())
-            update { retained.copy(environment = environment, connection = ConnectionStatus.Connecting, canWrite = false, canRead = false, canReadUsage = false, busy = false, error = null, settlementUndo = null, threadActionsConfigured = false) }
+            update { retained.copy(environment = environment, connection = ConnectionStatus.Connecting, canWrite = false, canRead = false, canReadUsage = false, busy = false, error = null, settlementUndo = null, threadActionsConfigured = false, activeRoute = null) }
         }
         try {
             val base = url(environment.baseUrl, environment.allowInsecureHttp)
@@ -180,7 +180,8 @@ class T3Client(
                 provider.objects("models").map { ModelOption(provider.string("instanceId"), it.string("slug"), it.string("name"), modes) }
             }
             val defaultMode = RuntimeMode.fromWire(config.obj("settings").string("defaultRuntimeMode"))
-            update { it.copy(connection = ConnectionStatus.Connected, canReadUsage = mayReadUsage, models = models, providers = providerInstances(config), defaultRuntimeMode = defaultMode, threadStopSupported = threadStop,
+            val route = EnvironmentRoute(if (environment.ssh != null) RouteKind.Ssh else classifyRoute(environment.baseUrl, environment.tunnelHost()), environment.baseUrl, RouteSource.Paired)
+            update { it.copy(connection = ConnectionStatus.Connected, activeRoute = route, canReadUsage = mayReadUsage, models = models, providers = providerInstances(config), defaultRuntimeMode = defaultMode, threadStopSupported = threadStop,
                 selectedModel = it.selectedModel?.let { selected -> models.firstOrNull { m -> m.instanceId == selected.instanceId && m.model == selected.model } ?: selected }) }
             subscribe("orchestration.subscribeShell", buildJsonObject {
                 put("requestCompletionMarker", true)
@@ -257,7 +258,7 @@ class T3Client(
         shellReady = false; threadReady = false; authorized = false; previewAuthorized = false
         resetScreens()
         undoPlan = null
-        update { it.copy(connection = ConnectionStatus.Error, canWrite = false, canRead = false, canReadUsage = false, busy = false, error = message, threadActionsConfigured = false, settlementUndo = null) }
+        update { it.copy(connection = ConnectionStatus.Error, canWrite = false, canRead = false, canReadUsage = false, busy = false, error = message, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
         pending.values.forEach { it.completeExceptionally(IllegalStateException(message)) }; pending.clear()
         streams.clear(); heartbeat?.cancel(); socket?.cancel(); socket = null
     }
@@ -272,7 +273,7 @@ class T3Client(
         pending.clear(); streams.clear(); threadSubscription = null; shellReady = false; threadReady = false; authorized = false; previewAuthorized = false
         resetScreens()
         undoPlan = null
-        update { it.copy(connection = ConnectionStatus.Disconnected, canWrite = false, canRead = false, canReadUsage = false, busy = false, error = reason ?: it.error, threadActionsConfigured = false, settlementUndo = null) }
+        update { it.copy(connection = ConnectionStatus.Disconnected, canWrite = false, canRead = false, canReadUsage = false, busy = false, error = reason ?: it.error, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
     }
 
     private fun usageEnvironment(): SavedEnvironment {

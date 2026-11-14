@@ -311,6 +311,16 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         resumeEnvironment = null; cancelSsh()
         action("Could not disconnect.") { connectionMutex.withLock { disconnectCurrent() } }
     }
+    /** Saves per-machine consent for plain HTTP to literal private LAN addresses; applies from the next connect. */
+    fun allowLocalNetworkHttp(environmentId: String, allowed: Boolean) = action("Could not save the local network setting.") {
+        initialized.await()
+        vaultMutex.withLock {
+            val current = _environments.value.firstOrNull { it.id == environmentId } ?: return@withLock
+            if (current.allowInsecureHttp == allowed) return@withLock
+            save(_environments.value.map { if (it.id == environmentId) it.copy(allowInsecureHttp = allowed) else it })
+            selectedEnvironment?.takeIf { it.id == environmentId }?.let { selectedEnvironment = it.copy(allowInsecureHttp = allowed) }
+        }
+    }
     fun forget(environment: SavedEnvironment) = action("Could not remove saved credentials.") {
         if (drafts.environmentId == environment.id || state.value.environment?.id == environment.id) clearDraft()
         if (selectedEnvironment?.id == environment.id || state.value.environment?.id == environment.id) cancelSsh()
