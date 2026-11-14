@@ -1,5 +1,11 @@
 # Android releases
 
+Release `0.14.0` (`versionCode = 22`) adds T3 Connect routes: each machine keeps LAN, Tailscale,
+HTTPS, SSH and T3 Connect tunnel addresses learned from the host, connects through them in order
+after an identity check, switches to a faster route when one answers, auto-reconnects after an
+unexpected drop, and shows routes and LAN HTTP consent per machine. See `docs/T3_CONNECT_TUNNEL.md`.
+Check tunnel connect and route switching against a real environment on a device.
+
 Release `0.13.0` (`versionCode = 21`) previews images inside expanded tool rows (local image
 reads and structured tool-output images) with full-screen zoom, and keeps hydrated images across
 compact snapshots. Check image retrieval against a real environment on a device.
