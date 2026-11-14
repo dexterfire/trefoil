@@ -18,7 +18,8 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class UsageScreenTest {
     @get:Rule val compose = createComposeRule()
-    private val state = ClientState(environment = SavedEnvironment("m", "Mac mini", "https://fixture.example", "fixture"))
+    private val state = ClientState(environment = SavedEnvironment("m", "Mac mini", "https://fixture.example", "fixture"), connection = ConnectionStatus.Connected, canReadUsage = true)
+    private val offlineState = state.copy(connection = ConnectionStatus.Disconnected, canReadUsage = false)
     private val report = UsageReport(
         "m", UsageRange.Week, "2026-01-01", "2026-01-07", "UTC", "2026-01-07T12:00:00Z",
         totalCostUsd = 12.34, tokens = UsageTokens(uncachedInput = 1000, cachedInput = 200, output = 300), cacheSavingsUsd = 2.0,
@@ -50,8 +51,9 @@ class UsageScreenTest {
         compose.onNodeWithText("$12.34").assertExists()
         compose.onNodeWithText("Estimated from model pricing").assertExists()
         compose.onNodeWithText("Cache saved $2.00").assertExists()
-        compose.onNodeWithContentDescription("Daily cost. Peak 2026-01-07: $10.00").assertExists()
+        compose.onNodeWithContentDescription("Daily cost, 7 days. Peak Wed, Jan 7: $10.00").assertExists()
         compose.onNodeWithText("Codex").assertExists()
+        compose.onAllNodesWithText("$10.00 · 81%").assertCountEquals(2)
         compose.onNodeWithText("model-fixture").performScrollTo().assertExists()
         compose.onNodeWithText("Tokens").performClick()
         compose.onNodeWithText("1.5K").assertExists()
@@ -63,6 +65,7 @@ class UsageScreenTest {
         var backs = 0
         var refreshes = 0
         compose.setContent { TrefoilTheme { UsageScreen(state, UsageUiState(), { backs++ }, { refreshes++ }, { selected = it }, {}) } }
+        compose.onNodeWithText("Limits & usage").assertExists()
         compose.onNodeWithText("Mac mini").assertExists()
         compose.onNodeWithContentDescription("Back").performClick()
         compose.onNodeWithContentDescription("Refresh usage").performClick()
@@ -90,5 +93,78 @@ class UsageScreenTest {
         compose.onNodeWithText("$12.34").assertExists()
         compose.onNodeWithText("Retry").performClick()
         compose.runOnIdle { assertEquals(2, retries) }
+    }
+
+    private fun limits(checked: java.time.Instant, vararg windows: UsageLimitWindow) = ProviderUsageLimits(checked.toString(), windows.toList())
+
+    @Test fun reachedLimitShowsLimitReachedAndResetTime() {
+        val reset = java.time.Instant.now().plusSeconds(40 * 60 + 30).toString()
+        val providers = listOf(ProviderInstance("a", "claudeAgent", "Claude", usageLimits = limits(java.time.Instant.now(),
+            UsageLimitWindow("s", "session", "5h", 100.0, reset), UsageLimitWindow("w", "weekly", "Weekly", 40.0))))
+        compose.setContent { TrefoilTheme { UsageScreen(state.copy(providers = providers), UsageUiState(), {}, {}, {}, {}) } }
+        compose.onNodeWithText("Limit reached").assertExists()
+        compose.onNodeWithText("0% left").assertDoesNotExist()
+        compose.onNodeWithText("Resets in 40m").assertExists()
+        compose.onNode(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Limit reached")).assertExists()
+        compose.onNodeWithText("60% left").assertExists()
+    }
+
+    @Test fun sameCheckTimeIsShownOnceUnderTheList() {
+        val checked = java.time.Instant.now().minusSeconds(150)
+        val providers = listOf(
+            ProviderInstance("a", "claudeAgent", "Claude", usageLimits = limits(checked, UsageLimitWindow("s", "session", "5h", 10.0))),
+            ProviderInstance("b", "codex", "Codex", usageLimits = limits(checked, UsageLimitWindow("w", "weekly", "Weekly", 20.0))),
+        )
+        compose.setContent { TrefoilTheme { UsageScreen(state.copy(providers = providers), UsageUiState(), {}, {}, {}, {}) } }
+        compose.onNodeWithText("All limits checked 2 min ago").assertExists()
+        compose.onAllNodesWithText("Checked 2 min ago").assertCountEquals(0)
+    }
+
+    @Test fun differentCheckTimesStayOnEachCard() {
+        val now = java.time.Instant.now()
+        val providers = listOf(
+            ProviderInstance("a", "claudeAgent", "Claude", usageLimits = limits(now.minusSeconds(150), UsageLimitWindow("s", "session", "5h", 10.0))),
+            ProviderInstance("b", "codex", "Codex", usageLimits = limits(now.minusSeconds(630), UsageLimitWindow("w", "weekly", "Weekly", 20.0))),
+        )
+        compose.setContent { TrefoilTheme { UsageScreen(state.copy(providers = providers), UsageUiState(), {}, {}, {}, {}) } }
+        compose.onNodeWithText("Checked 2 min ago").assertExists()
+        compose.onNodeWithText("Checked 10 min ago").assertExists()
+        compose.onAllNodesWithText("All limits checked", substring = true).assertCountEquals(0)
+    }
+
+    @Test fun tappingABarShowsThatDaysValue() {
+        compose.setContent { TrefoilTheme { UsageScreen(state, UsageUiState(reports = mapOf(UsageRange.Week to report)), {}, {}, {}, {}) } }
+        compose.onNodeWithText("Cost").performClick()
+        compose.onNodeWithText("Tap a bar to see a day's cost").assertExists()
+        compose.onNodeWithContentDescription("Wed, Jan 7: $10.00").performClick()
+        compose.onNodeWithText("Wed, Jan 7 · $10.00").assertExists()
+    }
+
+    @Test fun offlineShowsCachedDataAndTriggersNoFetch() {
+        var selected: UsageRange? = null
+        var refreshes = 0
+        var retries = 0
+        val providers = listOf(ProviderInstance("a", "codex", "Codex", usageLimits = limits(java.time.Instant.now(), UsageLimitWindow("w", "weekly", "Weekly", 20.0))))
+        val usage = UsageUiState(reports = mapOf(UsageRange.Week to report), failure = UsageFailure.Failed, failureMessage = "Fixture failure", limitsError = "Refresh failed")
+        compose.setContent { TrefoilTheme { UsageScreen(offlineState.copy(providers = providers), usage, {}, { refreshes++ }, { selected = it }, { retries++ }) } }
+        compose.onNodeWithText("Offline · showing last known data").assertExists()
+        compose.onNodeWithText("80% left").assertExists()
+        compose.onNodeWithText("Refresh failed").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Refresh usage").assertDoesNotExist()
+        compose.onNodeWithText("Cost").performClick()
+        compose.onNodeWithText("$12.34").assertExists()
+        compose.onNodeWithText("Fixture failure").assertDoesNotExist()
+        compose.onNodeWithText("Retry").assertDoesNotExist()
+        compose.onNodeWithText("30 days").performClick()
+        compose.onNodeWithText("Not available offline").assertExists()
+        compose.onNodeWithText("7 days").performClick()
+        compose.onNodeWithText("$12.34").assertExists()
+        compose.runOnIdle { assertEquals(null, selected); assertEquals(0, refreshes); assertEquals(0, retries) }
+    }
+
+    @Test fun connectedWithoutUsageAccessIsTreatedAsOffline() {
+        compose.setContent { TrefoilTheme { UsageScreen(state.copy(canReadUsage = false), UsageUiState(), {}, {}, {}, {}) } }
+        compose.onNodeWithText("Usage can't be read on this connection · showing last known data").assertExists()
+        compose.onNodeWithContentDescription("Refresh usage").assertDoesNotExist()
     }
 }

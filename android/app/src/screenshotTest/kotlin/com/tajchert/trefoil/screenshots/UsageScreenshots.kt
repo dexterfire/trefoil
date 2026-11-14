@@ -4,6 +4,7 @@ import android.content.res.Configuration
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.tooling.preview.Preview
 import com.android.tools.screenshot.PreviewTest
+import com.tajchert.trefoil.core.model.ConnectionStatus
 import com.tajchert.trefoil.core.model.ProviderInstance
 import com.tajchert.trefoil.core.model.UsageFailure
 import com.tajchert.trefoil.core.model.UsageRange
@@ -14,10 +15,11 @@ import com.tajchert.trefoil.ui.TrefoilTheme
 @Composable
 private fun UsageShot(
     tab: Int, dark: Boolean = false, usage: UsageUiState = UsageFixtures.usage(),
-    providers: List<ProviderInstance> = UsageFixtures.providers,
+    providers: List<ProviderInstance> = UsageFixtures.providers, offline: Boolean = false,
 ) {
+    val state = UsageFixtures.state(providers)
     TrefoilTheme(darkTheme = dark) {
-        UsageScreen(UsageFixtures.state(providers), usage, onBack = {}, onRefresh = {}, onSelectRange = {}, onRetry = {}, initialTab = tab)
+        UsageScreen(if (offline) state.copy(connection = ConnectionStatus.Disconnected, canRead = false, canWrite = false) else state, usage, onBack = {}, onRefresh = {}, onSelectRange = {}, onRetry = {}, initialTab = tab)
     }
 }
 
@@ -76,4 +78,17 @@ fun Usage_Cost_Loading() { UsageShot(1, usage = UsageUiState(range = UsageRange.
 @Composable
 fun Usage_Cost_Error() {
     UsageShot(1, usage = UsageUiState(range = UsageRange.Week, failure = UsageFailure.Failed, failureMessage = "Could not read usage from the server."))
+}
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, heightDp = 800)
+@Composable
+fun Usage_Limits_Offline() { UsageShot(0, offline = true) }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, heightDp = 800)
+@Composable
+fun Usage_Cost_Offline_NoMonth() {
+    val cached = UsageFixtures.usage(UsageRange.Month)
+    UsageShot(1, usage = cached.copy(reports = cached.reports - UsageRange.Month), offline = true)
 }

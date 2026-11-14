@@ -56,7 +56,7 @@ object UsageFixtures {
 
     fun state(providers: List<ProviderInstance> = this.providers) = ClientState(
         environment = ScreenshotFixtures.workstation, connection = ConnectionStatus.Connected,
-        providers = providers, canRead = true, canWrite = true,
+        providers = providers, canRead = true, canWrite = true, canReadUsage = true,
     )
 
     fun usage(range: UsageRange = UsageRange.Week) = UsageUiState(
