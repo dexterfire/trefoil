@@ -18,8 +18,8 @@ against an actual provider run. No developer threads were modified.
 
 Remaining product work: incremental native event reducers (current full refresh
 uses more bandwidth), bounded history pagination, rich Markdown, attachments,
-diffs/checkpoints, terminals, steer, cloud relay, notifications, automatic reconnect
-backoff, access-token renewal and full provider request UX. Unhandled requests
+diffs/checkpoints, terminals, steer, relay sign-in (needs T3's account system), notifications,
+access-token renewal and full provider request UX. QR scanning is not supported yet. Unhandled requests
 remain visible and direct users to another T3 client. Approval providers without
 basic accept/decline options are not handled in this first UI.
 
@@ -45,6 +45,12 @@ The signed [0.2.0 release](https://github.com/tajchert/trefoil/releases/tag/v0.2
 Current source 0.2.1 corrects retained connection forms, public-key-file validation, visible errors/progress, surrounding username whitespace, and private IPv4 LAN HTTP pairing with explicit consent. IPv6 ULA HTTP is not supported; use HTTPS or SSH for IPv6 remote endpoints. Connection setup cancellation/timeout cleanup has regression coverage. The published 0.2.0 predates these corrections.
 
 0.2.1 verification: 42 tests pass (model/policy, protocol/session, SSH, Compose and credential envelope), lintDebug and both APK builds pass. Android emulator checks confirm retained input on connection refusal, visible/revealed validation errors, public-key rejection and the HTTP consent control for app links. HTTP network policy is tested using isolated fixtures and URL guards; no real user pairing token was consumed during testing. Pairing links are short-lived; generate a fresh one when testing a new build.
+
+## T3 Connect routes
+
+Trefoil learns a machine's LAN, Tailscale and T3 Connect tunnel addresses after pairing and tries them in that order. It switches back to a faster route every 60 seconds and when the network changes, only when no send is in progress. Plain-HTTP LAN routes need per-machine consent. The user behaviour is in [T3 Connect routes](T3_CONNECT_TUNNEL.md).
+
+Relay sign-in, push notifications and QR scanning are not supported yet. Relay sign-in needs T3's account system. Validation of each route on real networks is still pending; this section describes intended behaviour.
 
 ## 0.3.0
 
