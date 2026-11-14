@@ -98,6 +98,53 @@ class TrefoilViewModelLifecycleTest {
         assertEquals(ConnectionStatus.Disconnected, model.state.value.connection)
     }
 
+    private fun field(name: String) = TrefoilViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
+
+    /** As after a successful connect: the machine is saved and the view model owns the live connection. */
+    private fun armLiveConnection() {
+        val initialized = field("initialized").get(model) as kotlinx.coroutines.Deferred<*>
+        val deadline = System.currentTimeMillis() + 5_000
+        while (!initialized.isCompleted && System.currentTimeMillis() < deadline) { shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(5) }
+        assertTrue(initialized.isCompleted)
+        @Suppress("UNCHECKED_CAST")
+        (field("_environments").get(model) as MutableStateFlow<List<SavedEnvironment>>).value = listOf(environment)
+        field("liveEnvironment").set(model, environment)
+    }
+    private fun dropConnection() { mutable.value = mutable.value.copy(connection = ConnectionStatus.Error, canWrite = false, error = "Connection lost") }
+
+    @Test fun unexpectedDropReconnectsThroughThePlanAfterABackoff() {
+        armLiveConnection()
+        dropConnection(); advance(1_999)
+        assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
+        advance(1)
+        assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+        assertTrue(model.connectionAttempt.value.id > 0)
+    }
+
+    @Test fun userDisconnectNeverAutoReconnects() {
+        armLiveConnection()
+        model.disconnect(); advance(100)
+        assertEquals(ConnectionStatus.Disconnected, model.state.value.connection)
+        advance(30_000)
+        assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
+    }
+
+    @Test fun dropWhilePausedLeavesReconnectingToResume() {
+        armLiveConnection()
+        model.pause()
+        dropConnection(); advance(30_000)
+        assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
+    }
+
+    @Test fun dropWhileOfflineReconnectsWhenANetworkReturns() {
+        model.onDefaultNetwork(1); model.onDefaultNetworkLost(1)
+        armLiveConnection()
+        dropConnection(); advance(30_000)
+        assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
+        model.onDefaultNetwork(2); advance(2_000)
+        assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+    }
+
     @Test fun filePickerKeepsSshLoginWhileGraceStillExpires() {
         val login = SshConnectionInput("Fixture", "fixture.invalid", "fixture")
         @Suppress("UNCHECKED_CAST")

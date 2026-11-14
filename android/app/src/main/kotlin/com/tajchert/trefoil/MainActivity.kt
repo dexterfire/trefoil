@@ -1,6 +1,10 @@
 package com.tajchert.trefoil
 
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.content.Intent
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -37,8 +41,26 @@ class MainActivity : ComponentActivity() {
             } else startActivity(when { share -> fileActions.shareIntent(file); install -> fileActions.installIntent(file); else -> fileActions.openIntent(file) })
         } catch (_: Exception) { Toast.makeText(this, "Could not open this download. Check that the file is still available.", Toast.LENGTH_LONG).show() }
     }
-    override fun onStart() { super.onStart(); model.resume() }
-    override fun onStop() { model.pause(); super.onStop() }
+    /** Default-network changes while in the foreground: a better-route check, or a pending reconnect once online. */
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) { model.onDefaultNetwork(network.networkHandle) }
+        override fun onLost(network: Network) { model.onDefaultNetworkLost(network.networkHandle) }
+    }
+    private var networkCallbackRegistered = false
+    override fun onStart() {
+        super.onStart(); model.resume()
+        val connectivity = getSystemService(ConnectivityManager::class.java) ?: return
+        // Too many callbacks or a missing permission: route checks still run every minute.
+        networkCallbackRegistered = try { connectivity.registerDefaultNetworkCallback(networkCallback, Handler(Looper.getMainLooper())); true }
+        catch (_: RuntimeException) { false }
+    }
+    override fun onStop() {
+        if (networkCallbackRegistered) {
+            try { getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(networkCallback) } catch (_: RuntimeException) {}
+            networkCallbackRegistered = false
+        }
+        model.pause(); super.onStop()
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Only a fresh launch consumes the widget intent; recreation (rotation) must not reopen Usage.
