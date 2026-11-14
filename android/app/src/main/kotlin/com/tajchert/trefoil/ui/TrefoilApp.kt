@@ -57,6 +57,7 @@ fun TrefoilApp(
     onRefreshUsage: () -> Unit = {},
     onRetryUsage: () -> Unit = {},
     usageOpenRequest: Pair<Long, com.tajchert.trefoil.widget.UsageWidgetTab>? = null,
+    onAllowLocalNetworkHttp: (String, Boolean) -> Unit = { _, _ -> },
 ) {
     TrefoilTheme {
         val conversationState = rememberSaveableStateHolder()
@@ -149,7 +150,8 @@ fun TrefoilApp(
                                 MachinesScreen(state, savedEnvironments, { choosingEnvironment = false; onConnect(it) }, onForget, { pairing = true }, { sshConnecting = true },
                                     { onDisconnect(); choosingEnvironment = true; showThread = false },
                                     onBack = if (connected) ({ choosingEnvironment = false }) else null,
-                                    modifier = Modifier.weight(1f).windowInsetsPadding(BottomBarsAndIme), probes = machineProbes, onUsage = shell.onUsage)
+                                    modifier = Modifier.weight(1f).windowInsetsPadding(BottomBarsAndIme), probes = machineProbes, onUsage = shell.onUsage,
+                                    onAllowLocalHttp = { environment, allowed -> onAllowLocalNetworkHttp(environment.id, allowed) })
                             }
                             showScreens -> Column(Modifier.fillMaxSize().then(if (screenFullscreen) Modifier else Modifier.windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Vertical)))) {
                                 if (!screenFullscreen) ConnectionBanner(state, onReconnect)

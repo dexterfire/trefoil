@@ -104,6 +104,7 @@ class MainActivity : ComponentActivity() {
                 connectionAttempt = connectionAttempt,
                 onSshKeyPickerActive = { model.sshFilePickerActive = it },
                 machineProbes = machineProbes,
+                onAllowLocalNetworkHttp = model::allowLocalNetworkHttp,
             )
         }
     }

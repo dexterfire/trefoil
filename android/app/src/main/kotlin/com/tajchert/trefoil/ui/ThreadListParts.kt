@@ -67,12 +67,17 @@ internal fun ThreadListHeader(state: ClientState, shell: ShellActions?, railLayo
 internal fun MachinePill(state: ClientState, onClick: () -> Unit) {
     val c = Tf.colors
     val status = machineStatus(state)
+    val route = state.activeRoute?.takeIf { state.connection == ConnectionStatus.Connected }
     Surface(onClick = onClick, shape = RoundedCornerShape(20.dp), color = c.s2, contentColor = c.text,
-        modifier = Modifier.semantics { contentDescription = "Switch machine"; stateDescription = "${state.environment?.name ?: "No machine"}, ${status.label}" }) {
+        modifier = Modifier.semantics {
+            contentDescription = "Switch machine"
+            stateDescription = listOfNotNull(state.environment?.name ?: "No machine", status.label, route?.let { "via ${routeKindLabel(it.kind)}" }).joinToString(", ")
+        }) {
         Row(Modifier.height(40.dp).padding(start = 14.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             StatusDot(status.color(c))
             Text(state.environment?.name ?: "Machines", Modifier.weight(1f, fill = false), fontFamily = InterFamily, fontWeight = FontWeight.SemiBold, fontSize = 15.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (route != null) Icon(routeKindIcon(route.kind), null, Modifier.size(14.dp), tint = c.muted)
             Icon(TfIcons.ChevronDown, null, Modifier.size(18.dp))
         }
     }

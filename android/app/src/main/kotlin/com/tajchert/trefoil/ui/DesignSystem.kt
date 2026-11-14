@@ -101,6 +101,10 @@ object TfIcons {
     val Trash by lazy { strokeIcon("trash", "M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3") }
     val Disconnect by lazy { strokeIcon("disconnect", "M9 15l-2 2a3 3 0 0 1-4.2-4.2l2-2M15 9l2-2a3 3 0 0 1 4.2 4.2l-2 2M4 4l16 16") }
     val Refresh by lazy { strokeIcon("refresh", "M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6") }
+    /** Route kinds: local network, public HTTPS and the T3 Connect tunnel. */
+    val Wifi by lazy { strokeIcon("wifi", "M3 9.5a14 14 0 0 1 18 0M6 13a9.5 9.5 0 0 1 12 0M9 16.5a5 5 0 0 1 6 0", "M12 20h.01") }
+    val Globe by lazy { strokeIcon("globe", circle(12f, 12f, 9f), "M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z") }
+    val Cloud by lazy { strokeIcon("cloud", "M7 18a4 4 0 0 1-.6-7.96A5.5 5.5 0 0 1 17 9.5a4.2 4.2 0 0 1 .5 8.5z") }
 }
 
 /* ---------- Brand mark ---------- */
