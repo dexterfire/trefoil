@@ -1,5 +1,12 @@
 # Android releases
 
+Release `0.15.0` (`versionCode = 23`) puts the tightest limit in the thread-list header, renames
+the screen to Limits & usage (readable chart, reached-limit state, offline view of last known data)
+and drops limits from Machines, restyles all home screen widgets with one chrome and the fixed
+Trefoil palette, signals when another thread needs you (back-arrow badge, snackbar, row label), and
+adds a Paste button and a `t3code://pair` link handler to pairing. Check the widgets on a launcher
+and a `t3code://pair` link from the system camera on a device.
+
 Release `0.14.0` (`versionCode = 22`) adds T3 Connect routes: each machine keeps LAN, Tailscale,
 HTTPS, SSH and T3 Connect tunnel addresses learned from the host, connects through them in order
 after an identity check, switches to a faster route when one answers, auto-reconnects after an
