@@ -17,7 +17,7 @@
 
 Agent file links and attachments can be downloaded to **Downloads/Trefoil**, opened or shared. APK cards also open Android's installer. Download again after rebuilding a file at the same path.
 
-**Early release:** uploading attachments, full Markdown support, diffs, shell terminals, notifications, T3 Connect relay and iOS are still planned. Some provider requests require another T3 client. See [current limits and validation](docs/IMPLEMENTATION_STATUS.md).
+**Early release:** uploading attachments, full Markdown support, diffs, shell terminals, notifications, T3 Connect relay sign-in and iOS are still planned. Some provider requests require another T3 client. See [current limits and validation](docs/IMPLEMENTATION_STATUS.md).
 
 ## Connect
 
@@ -32,6 +32,8 @@ The server must already be installed and running; Trefoil does not install, upda
 3. In Trefoil, choose **Pair an environment**, paste the link and give it a name.
 
 HTTPS endpoints must be reachable from your phone with a trusted certificate. Version 0.3.0 also accepts HTTP on literal private IPv4 LAN addresses after you explicitly enable **Allow unencrypted HTTP on this private network**. That choice is saved per environment; public internet HTTP is blocked. Trefoil supports T3 orchestration protocol **V2**, pinned to the [documented contract](protocol/SPEC.md).
+
+**T3 Connect (tunnel):** turn on **T3 Connect** in T3 Code under **Settings → Sharing & access**. Pair Trefoil once from any address. Trefoil then learns the LAN, Tailscale and tunnel addresses and tries them in that order, switching back to a faster route when one answers. Relay sign-in, push notifications and QR scanning are not supported yet. See [T3 Connect routes](docs/T3_CONNECT_TUNNEL.md).
 
 Tokens are encrypted with Android Keystore and excluded from backups. Forgetting an environment removes its local credentials; revoke the session in T3 to revoke server access. Remote work continues when Trefoil closes. Uncertain writes are never automatically replayed—check the conversation before retrying.
 
