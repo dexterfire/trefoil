@@ -67,6 +67,10 @@ internal fun routeRows(environment: SavedEnvironment, active: EnvironmentRoute?)
 internal fun hasLearnedHttpRoute(environment: SavedEnvironment): Boolean =
     environment.routes.any { it.source == RouteSource.Learned && it.kind != RouteKind.Ssh && isPlainHttp(it.baseUrl) }
 
+/** Paired over plain LAN HTTP: consent was given when pairing, and turning it off would cut the paired address too. */
+internal fun showsLocalHttpConsent(environment: SavedEnvironment): Boolean =
+    hasLearnedHttpRoute(environment) && !(environment.ssh == null && isPlainHttp(environment.baseUrl))
+
 internal fun hasTunnelRoute(environment: SavedEnvironment): Boolean =
     environment.routes.any { it.kind == RouteKind.Tunnel } || environment.candidateRoutes().any { it.kind == RouteKind.Tunnel }
 
@@ -89,7 +93,7 @@ internal fun RoutesSection(environment: SavedEnvironment, active: EnvironmentRou
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("ROUTES", style = TrefoilType.section, color = c.muted)
         rows.forEach { RouteRowItem(it) }
-        if (hasLearnedHttpRoute(environment)) LocalHttpConsent(environment.allowInsecureHttp, enabled, onAllowLocalHttp)
+        if (showsLocalHttpConsent(environment)) LocalHttpConsent(environment.allowInsecureHttp, enabled, onAllowLocalHttp)
         if (!hasTunnelRoute(environment)) TunnelHint()
     }
 }

@@ -51,4 +51,10 @@ class RoutesUiTest {
         assertTrue(hasTunnelRoute(base.copy(baseUrl = "https://prod-0123abcd.t3coderelay.com", routes = listOf(tunnel))))
         assertNull(routeRows(base, null).firstOrNull { it.route.kind == RouteKind.Tunnel })
     }
+
+    @Test fun consentToggleHiddenWhenPairedOverLanHttp() {
+        assertTrue(showsLocalHttpConsent(base.copy(routes = listOf(lanHttp))))
+        assertFalse(showsLocalHttpConsent(base))
+        assertFalse(showsLocalHttpConsent(base.copy(baseUrl = "http://192.168.1.20:3773", allowInsecureHttp = true, routes = listOf(lanHttp))))
+    }
 }
