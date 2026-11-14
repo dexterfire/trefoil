@@ -128,6 +128,16 @@ class MachinesRenderTest {
         assertTrue(MachineStatus.Checking.inProgress); assertFalse(MachineStatus.Reachable.inProgress)
     }
 
+    @Test fun connectedMachineMenuAndCardNoLongerOfferUsage() {
+        val limited = connected.copy(providers = listOf(ProviderInstance("a", "codex", "Codex",
+            usageLimits = ProviderUsageLimits("", listOf(UsageLimitWindow("w", "weekly", "Weekly", 62.0))))))
+        compose.setContent { TrefoilTheme { MachinesScreen(limited, saved, {}, {}, {}, {}, {}, null) } }
+        compose.onNodeWithText("Codex 38% left", substring = true).assertDoesNotExistOrFail()
+        compose.onNodeWithContentDescription("Options for Mac mini").performClick()
+        compose.onNodeWithText("Disconnect").assertExistsOrFail()
+        compose.onNodeWithText("Usage", substring = true).assertDoesNotExistOrFail()
+    }
+
     @Test fun forgetAsksForConfirmationAndDisconnectIsOfferedForCurrentOnly() {
         var forgotten: SavedEnvironment? = null
         var disconnected = false

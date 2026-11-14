@@ -18,6 +18,10 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.android.tools.screenshot.PreviewTest
 import com.tajchert.trefoil.core.model.ClientState
+import com.tajchert.trefoil.core.model.ConnectionStatus
+import com.tajchert.trefoil.core.model.ProviderInstance
+import com.tajchert.trefoil.core.model.ProviderUsageLimits
+import com.tajchert.trefoil.core.model.UsageLimitWindow
 import com.tajchert.trefoil.ui.MachineMenuItems
 import com.tajchert.trefoil.ui.MachinesScreen
 import com.tajchert.trefoil.ui.ShellMenuItems
@@ -25,7 +29,7 @@ import com.tajchert.trefoil.ui.Tf
 import com.tajchert.trefoil.ui.ThreadList
 import com.tajchert.trefoil.ui.TrefoilTheme
 
-// Entry points into the Usage screen. DropdownMenu popups are not captured, so the menu items are
+// Entry points into the Limits & usage screen. DropdownMenu popups are not captured, so the menu items are
 // rendered in a Column with the same container color and shape as the real popup, overlaid on the screen.
 
 private fun usageState(): ClientState = ShellFixtures.connected().copy(providers = UsageFixtures.providers)
@@ -36,8 +40,8 @@ private fun Phone(content: @Composable androidx.compose.foundation.layout.BoxSco
 }
 
 @Composable
-private fun MachinesWithUsage(state: ClientState) =
-    MachinesScreen(state, ShellFixtures.saved, onConnect = {}, onForget = {}, onPair = {}, onSsh = {}, onDisconnect = {}, onBack = {}, probes = ShellFixtures.probes, onUsage = {})
+private fun MachinesScreenOf(state: ClientState) =
+    MachinesScreen(state, ShellFixtures.saved, onConnect = {}, onForget = {}, onPair = {}, onSsh = {}, onDisconnect = {}, onBack = {}, probes = ShellFixtures.probes)
 
 @Composable
 private fun MenuSurface(modifier: Modifier, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
@@ -47,14 +51,14 @@ private fun MenuSurface(modifier: Modifier, content: @Composable androidx.compos
 }
 
 @PreviewTest @Preview(showBackground = true, widthDp = 400, heightDp = 800)
-@Composable fun UsageEntry_MachineCard_Light() = Phone { MachinesWithUsage(usageState()) }
+@Composable fun UsageEntry_MachineCard_Light() = Phone { MachinesScreenOf(usageState()) }
 
 @PreviewTest @Preview(showBackground = true, widthDp = 400, heightDp = 800)
 @Composable fun UsageEntry_MachineMenu_Light() = Phone {
     val state = usageState()
-    MachinesWithUsage(state)
+    MachinesScreenOf(state)
     MenuSurface(Modifier.align(Alignment.TopEnd).padding(top = 150.dp, end = 16.dp)) {
-        MachineMenuItems(current = true, live = true, state = state, onUsage = {}, onDisconnect = {}, onForget = {}, close = {})
+        MachineMenuItems(current = true, state = state, onDisconnect = {}, onForget = {}, close = {})
     }
 }
 
@@ -67,7 +71,28 @@ private fun MenuSurface(modifier: Modifier, content: @Composable androidx.compos
     }
 }
 
-@PreviewTest @Preview(showBackground = true, widthDp = 400, heightDp = 400)
-@Composable fun UsageEntry_ThreadListHeader_Light() = Phone {
-    ThreadList(usageState(), select = {}, create = {}, shell = ShellFixtures.noActions)
+private fun amberState(): ClientState = ShellFixtures.connected().copy(providers = listOf(
+    ProviderInstance("claude", "claudeAgent", "Claude", usageLimits = ProviderUsageLimits("", listOf(UsageLimitWindow("weekly", "weekly", "Weekly", 75.0))))))
+
+@Composable
+private fun HeaderList(state: ClientState, dark: Boolean = false) = TrefoilTheme(darkTheme = dark) {
+    Box(Modifier.fillMaxSize().background(Tf.colors.bg)) { ThreadList(state, select = {}, create = {}, shell = ShellFixtures.noActions) }
 }
+
+@PreviewTest @Preview(showBackground = true, widthDp = 400, heightDp = 400)
+@Composable fun UsageEntry_ThreadListHeader_Light() = HeaderList(usageState())
+
+@PreviewTest @Preview(showBackground = true, widthDp = 400, heightDp = 400, uiMode = android.content.res.Configuration.UI_MODE_NIGHT_YES)
+@Composable fun UsageEntry_ThreadListHeader_Dark() = HeaderList(usageState(), dark = true)
+
+@PreviewTest @Preview(showBackground = true, widthDp = 400, heightDp = 400)
+@Composable fun UsageEntry_ThreadListHeaderAmber_Light() = HeaderList(amberState())
+
+@PreviewTest @Preview(showBackground = true, widthDp = 400, heightDp = 400)
+@Composable fun UsageEntry_ThreadListHeaderNoData_Light() = HeaderList(ShellFixtures.connected())
+
+@PreviewTest @Preview(showBackground = true, widthDp = 400, heightDp = 400)
+@Composable fun UsageEntry_ThreadListHeaderOffline_Light() = HeaderList(usageState().copy(connection = ConnectionStatus.Disconnected, canReadUsage = false))
+
+@PreviewTest @Preview(showBackground = true, widthDp = 320, heightDp = 400)
+@Composable fun UsageEntry_ThreadListHeaderNarrow_Light() = HeaderList(usageState())

@@ -69,16 +69,6 @@ data class UsageUiState(
     val report: UsageReport? get() = reports[range]
 }
 
-/**
- * One line for the connected machine card: lowest remaining window per enabled provider with limits,
- * e.g. "Claude 62% left · Codex 80% left"; "Usage" when no provider reports windows.
- */
-internal fun usageSummaryLine(providers: List<ProviderInstance>): String = providers.mapNotNull { provider ->
-    val remaining = provider.usageLimits?.windows?.minOfOrNull { it.remainingPercent }
-    if (!provider.enabled || remaining == null) null
-    else "${provider.displayName ?: provider.driver.replaceFirstChar { it.titlecase(Locale.ROOT) }} $remaining% left"
-}.joinToString(" · ").ifEmpty { "Usage" }
-
 internal fun usageProviderLabel(driver: String): String = driver.replaceFirstChar { it.titlecase(Locale.ROOT) }
 
 internal fun usageShare(value: Double, total: Double): Float =
