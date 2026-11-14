@@ -229,6 +229,23 @@ class RouteConnectTest {
         collector.cancel()
     }
 
+    @Test fun snapshotBeforeLinkStateFoldsIntoTheFirstCombinedHint() = runBlocking {
+        val host = Host(config = """{"providers":[],"directEndpoints":[{"kind":"lan","httpBaseUrl":"http://192.168.1.20:3773"}]}""",
+            linkState = { MockResponse().setBodyDelay(1, TimeUnit.SECONDS).setBody("""{"linked":true,"tunnelHostname":"prod-fixture.t3coderelay.com"}""") })
+        val client = client()
+        val received = Channel<RouteHints>(Channel.UNLIMITED)
+        val collector = scope.launch { client.routeHints.collect { received.send(it) } }
+        yield(); delay(50)
+        client.connect(environment(host.url))
+        val socket = host.socket.await(); val stream = host.configStream.await()
+        socket.send("""{"_tag":"Chunk","requestId":"$stream","values":[{"version":1,"type":"snapshot","config":{"providers":[],"directEndpoints":[{"kind":"tailnet","httpBaseUrl":"https://box.tail.ts.net"}]}}]}""")
+        val first = withTimeout(5_000) { received.receive() }
+        assertEquals(RouteHints("env-1", listOf(DirectEndpointHint("tailnet", "https://box.tail.ts.net")), TunnelHint.Active("prod-fixture.t3coderelay.com")), first)
+        delay(100)
+        assertTrue("The early snapshot is not emitted separately", received.tryReceive().isFailure)
+        collector.cancel()
+    }
+
     @Test fun hintsStopWithTheConnection() = runBlocking {
         val host = Host(linkState = { MockResponse().setBodyDelay(1, TimeUnit.SECONDS).setBody("""{"linked":true,"tunnelHostname":"prod-fixture.t3coderelay.com"}""") })
         val client = client()

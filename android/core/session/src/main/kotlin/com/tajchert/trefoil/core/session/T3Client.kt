@@ -99,6 +99,8 @@ class T3Client(
     private var directEndpoints: List<DirectEndpointHint>? = null
     private var configSubscription: String? = null
     private var linkStateJob: Job? = null
+    /** Whether the first (getConfig + link-state) hint went out; earlier snapshots only update [directEndpoints]. */
+    private var initialHintSent = false
     /** Mutations between their first local check and their outcome; see [isIdleForRouteSwitch]. */
     private val mutationsInFlight = java.util.concurrent.atomic.AtomicInteger()
     fun millisSinceLastPong(): Long? = synchronized(lifecycleLock) {
@@ -311,7 +313,9 @@ class T3Client(
         configSubscription = runCatching { subscribe("subscribeServerConfig", buildJsonObject {}) { event -> serverConfigEvent(epoch, environment.id, event) } }.getOrNull()
         linkStateJob = scope.launch {
             val tunnel = linkState(base, environment.accessToken)
-            synchronized(lifecycleLock) { if (epoch == generation) hints.tryEmit(RouteHints(environment.id, directEndpoints, tunnel)) }
+            synchronized(lifecycleLock) {
+                if (epoch == generation) { initialHintSent = true; hints.tryEmit(RouteHints(environment.id, directEndpoints, tunnel)) }
+            }
         }
     }
 
@@ -321,7 +325,7 @@ class T3Client(
         val endpoints = directEndpointHints(event.obj("config")) ?: return
         if (endpoints == directEndpoints) return
         directEndpoints = endpoints
-        hints.tryEmit(RouteHints(environmentId, endpoints, TunnelHint.Unknown))
+        if (initialHintSent) hints.tryEmit(RouteHints(environmentId, endpoints, TunnelHint.Unknown))
     }
 
     /** `GET /api/connect/link-state` on the verified route; any failure is [TunnelHint.Unknown] and never fails the connection. */
@@ -405,7 +409,7 @@ class T3Client(
         pending.values.forEach { it.completeExceptionally(IllegalStateException(message)) }; pending.clear()
         streams.clear(); heartbeat?.cancel(); socket?.cancel(); socket = null
     }
-    private fun resetRoute() { activeBase = null; directEndpoints = null; configSubscription = null; linkStateJob?.cancel(); linkStateJob = null }
+    private fun resetRoute() { activeBase = null; directEndpoints = null; initialHintSent = false; configSubscription = null; linkStateJob?.cancel(); linkStateJob = null }
     override suspend fun disconnect() = disconnectNow()
     /** [reason] replaces any stale error when the disconnect was not requested by the user. */
     private fun disconnectNow(reason: String? = null) = synchronized(lifecycleLock) {
