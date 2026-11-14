@@ -57,6 +57,7 @@ fun TrefoilApp(
     onRefreshUsage: () -> Unit = {},
     onRetryUsage: () -> Unit = {},
     usageOpenRequest: Pair<Long, com.tajchert.trefoil.widget.UsageWidgetTab>? = null,
+    pairLinkRequest: Pair<Long, String>? = null,
     onAllowLocalNetworkHttp: (String, Boolean) -> Unit = { _, _ -> },
 ) {
     TrefoilTheme {
@@ -71,6 +72,9 @@ fun TrefoilApp(
         var sshConnecting by remember { mutableStateOf(false) }
         var pairing by rememberSaveable { mutableStateOf(false) }
         var choosingEnvironment by rememberSaveable { mutableStateOf(false) }
+        // A t3code: link opens the pair dialog pre-filled and never submits. Plain remember: the link is not persisted.
+        var pairLink by remember { mutableStateOf<Pair<Long, String>?>(null) }
+        LaunchedEffect(pairing) { if (!pairing) pairLink = null }
         var creating by rememberSaveable { mutableStateOf(false) }
         // First prompt typed in the new-thread sheet; the draft conversation sends it via its composer.
         var seedPrompt by rememberSaveable { mutableStateOf<String?>(null) }
@@ -90,6 +94,15 @@ fun TrefoilApp(
         }
         var submittedSsh by remember { mutableStateOf(false) }
         var submittedPair by remember { mutableStateOf(false) }
+        LaunchedEffect(pairLinkRequest) {
+            if (pairLinkRequest != null) {
+                // Replace the dialog's link rather than stack another one; a never-submitted SSH form is closed like its Cancel button,
+                // other SSH prompts keep the screen and the pair dialog waits behind them (nothing is cancelled).
+                adding = false
+                if (sshConnecting && !submittedSsh && !state.busy && sshLogin == null && sshHostKey == null) { sshConnecting = false; submittedSsh = false; onCancelSsh() }
+                pairLink = pairLinkRequest; submittedPair = false; pairing = true; choosingEnvironment = true; showThread = false
+            }
+        }
         LaunchedEffect(connectionAttempt) {
             if (connectionAttempt.phase == ConnectionPhase.Succeeded) {
                 if (connectionAttempt.kind == ConnectionKind.Ssh && submittedSsh) { sshConnecting = false; submittedSsh = false; choosingEnvironment = false }
@@ -219,7 +232,9 @@ fun TrefoilApp(
             }
         }
         if (sshHostKey != null) SshHostKeyDialog(sshHostKey, onTrustSsh, onCancelSsh)
-        if (pairing) PairDialog(state.busy, { pairing = false; submittedPair = false; onCancelSsh() }, connectionAttempt.takeIf { it.kind == ConnectionKind.Pairing } ?: ConnectionAttempt()) { url, name, insecure -> submittedPair = true; onPair(url, name, insecure) }
+        if (pairing && !sshConnecting && sshLogin == null && sshHostKey == null) key(pairLink?.first) {
+            PairDialog(state.busy, { pairing = false; submittedPair = false; onCancelSsh() }, connectionAttempt.takeIf { it.kind == ConnectionKind.Pairing } ?: ConnectionAttempt(), pairLink?.second.orEmpty()) { url, name, insecure -> submittedPair = true; onPair(url, name, insecure) }
+        }
         if (showAgents && roster != null) ThreadAgentsSheet(roster, state.providers, state.models, steadyWrite, { showAgents = false }, openAgent, onStopSubagent)
         if (creating) NewThreadSheet(state, { creating = false }) { newDraft, prompt ->
             seedPrompt = prompt.trim().takeIf { it.isNotEmpty() }

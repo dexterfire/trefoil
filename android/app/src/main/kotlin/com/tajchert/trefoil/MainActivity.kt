@@ -26,10 +26,18 @@ class MainActivity : ComponentActivity() {
     private fun handleUsageIntent(intent: Intent?) {
         parseUsageWidgetIntent(intent)?.let { usageRequest = ((usageRequest?.first ?: 0) + 1) to it }
     }
+    private var pairLinkRequest by mutableStateOf<Pair<Long, String>?>(null)
+    private fun handlePairLinkIntent(intent: Intent?) {
+        val link = parsePairLinkIntent(intent) ?: return
+        pairLinkRequest = ((pairLinkRequest?.first ?: 0) + 1) to link
+        // The link is a single-use credential: drop it from the activity intent so nothing can replay it.
+        setIntent(Intent(Intent.ACTION_MAIN))
+    }
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         handleUsageIntent(intent)
+        handlePairLinkIntent(intent)
     }
     private val model: TrefoilViewModel by viewModels()
     private val fileActions by lazy { DownloadFileActions(this) }
@@ -64,7 +72,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Only a fresh launch consumes the widget intent; recreation (rotation) must not reopen Usage.
-        if (savedInstanceState == null) handleUsageIntent(intent)
+        if (savedInstanceState == null) { handleUsageIntent(intent); handlePairLinkIntent(intent) }
         enableEdgeToEdge()
         setContent {
             val state by model.state.collectAsStateWithLifecycle()
@@ -81,6 +89,7 @@ class MainActivity : ComponentActivity() {
             val usage by model.usage.collectAsStateWithLifecycle()
             TrefoilApp(
                 usageOpenRequest = usageRequest,
+                pairLinkRequest = pairLinkRequest,
                 usage = usage,
                 onOpenUsage = model.usageController::open,
                 onUsageRange = model.usageController::selectRange,
@@ -130,6 +139,19 @@ class MainActivity : ComponentActivity() {
             )
         }
     }
+}
+
+private const val MAX_PAIR_LINK_LENGTH = 4096
+
+/**
+ * The `t3code://pair…` link of a browser/app VIEW intent, or null. Untrusted: only the data string is read, and it is
+ * returned unparsed so the dialog applies the same validation as a pasted link. A link re-delivered from recents is ignored.
+ */
+internal fun parsePairLinkIntent(intent: Intent?): String? {
+    if (intent?.action != Intent.ACTION_VIEW || intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return null
+    val data = intent.data ?: return null
+    if (!data.scheme.equals("t3code", ignoreCase = true) || data.host != "pair") return null
+    return data.toString().takeIf { it.length <= MAX_PAIR_LINK_LENGTH }
 }
 
 internal fun parseUsageWidgetIntent(intent: Intent?): UsageWidgetTab? {
