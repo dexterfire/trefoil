@@ -112,10 +112,36 @@ class UsageWidgetPipelineTest {
         }
     }
 
-    @Test fun statusLeadsWithSavedRefreshHint() {
+    @Test fun footerShowsMachineAndAgeOrSavedRefreshHint() {
         val now = 10 * 60 * 60_000L
         val snapshot = UsageWidgetSamples.snapshot(now).copy(lastError = "Open Trefoil to refresh this machine.")
-        assertEquals("Open Trefoil to refresh this machine · Updated 3h 0m ago", widgetStatus(snapshot, now - 3 * 60 * 60_000L, now))
-        assertEquals("Updated 3h 0m ago", widgetStatus(snapshot.copy(lastError = null), now - 3 * 60 * 60_000L, now))
+        assertEquals("Open Trefoil to refresh this machine · 3h 0m ago", widgetFooterText(snapshot, now - 3 * 60 * 60_000L, now))
+        assertEquals("Studio · 3h 0m ago", widgetFooterText(snapshot.copy(lastError = null), now - 3 * 60 * 60_000L, now))
+        assertEquals("Studio · just now", widgetFooterText(snapshot.copy(lastError = null), now - 30_000L, now))
+        assertTrue(widgetAlert(snapshot, now, now))
+        assertTrue(widgetAlert(snapshot.copy(lastError = null), now - 3 * 60 * 60_000L, now))
+        assertFalse(widgetAlert(snapshot.copy(lastError = null), now - 60_000L, now))
+    }
+
+    @Test fun chromeDropsFooterFirstAndKeepsAlertFooterOverHeader() {
+        val footer = widgetFooterDp(1f)
+        val content = 40f
+        val full = WIDGET_HEADER_DP + WIDGET_PAD_V + content + footer
+        assertEquals(WidgetChromeParts(header = true, footer = true), widgetChromeParts(full, 1f, content, alert = false))
+        assertEquals(WidgetChromeParts(header = true, footer = false), widgetChromeParts(full - 1, 1f, content, alert = false))
+        assertEquals(WidgetChromeParts(header = false, footer = true), widgetChromeParts(full - 1, 1f, content, alert = true))
+        assertEquals(WidgetChromeParts(header = false, footer = false), widgetChromeParts(2 * WIDGET_PAD_V + content, 1f, content, alert = true))
+        assertTrue(widgetFooterDp(2f) > footer)
+    }
+
+    @Test fun pillGroupsShareARowOnlyWhenTheyFit() {
+        val range = widgetPillGroupWidth(listOf("Today", "7d", "30d"), 1f)
+        val metric = widgetPillGroupWidth(listOf("Cost", "Tokens"), 1f)
+        val grouping = widgetPillGroupWidth(listOf("Models", "Providers"), 1f)
+        val widths = listOf(range, metric, grouping)
+        assertEquals(listOf(listOf(0, 1, 2)), packPillGroups(widths, 1000f))
+        assertEquals(listOf(listOf(0, 1), listOf(2)), packPillGroups(widths, range + metric + WIDGET_PILL_GAP_DP))
+        assertEquals(listOf(listOf(0), listOf(1), listOf(2)), packPillGroups(widths, range))
+        assertTrue(widgetPillGroupWidth(listOf("Cost"), 2f) > widgetPillGroupWidth(listOf("Cost"), 1f))
     }
 }

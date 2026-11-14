@@ -65,12 +65,10 @@ class UsageWidgetLogicTest {
         assertFalse(large.controls)
         assertFalse(large.expanded)
         assertEquals(7, large.chartDays)
-        assertTrue(normal.rows(60f) > large.rows(60f))
-        assertEquals(1, UsageFit(100f, 20f, 2f).rows(100f))
+        assertTrue(normal.rows(120f) > large.rows(120f))
+        assertEquals(1, UsageFit(100f, 20f, 2f).rows(10f))
         assertTrue(UsageFit(210f, 140f, 1f).summaryColumns)
         assertFalse(UsageFit(209f, 140f, 1f).summaryColumns)
-        assertTrue(normal.chartHeight(true, true) > large.chartHeight(true, true))
-        assertEquals(1f, UsageFit(100f, 20f, 2f).chartHeight(true, true))
     }
 
     @Test

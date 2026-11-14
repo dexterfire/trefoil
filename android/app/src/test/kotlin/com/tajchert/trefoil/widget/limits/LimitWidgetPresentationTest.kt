@@ -14,8 +14,10 @@ class LimitWidgetPresentationTest {
             listOf("weekly-opus", "session", "weekly", "weekly"),
             orderedGauges(sample.providers, now).map { it.window.id },
         )
-        assertEquals("claude", compactProviders(sample.providers, 1, now).single().instanceId)
-        assertEquals(3, compactProviders(sample.providers, 9, now).size)
+        // Compact limits pick the tightest windows overall, not one per provider.
+        assertEquals(listOf("weekly-opus", "session"), compactGauges(sample.providers, 2, now).map { it.window.id })
+        assertEquals(4, compactGauges(sample.providers, 9, now).size)
+        assertEquals(1, compactGauges(sample.providers, 0, now).size)
     }
 
     @Test
@@ -49,8 +51,10 @@ class LimitWidgetPresentationTest {
 
     @Test
     fun `font scaling reduces rows and grid capacity without empty layouts`() {
-        assertEquals(1, compactBarCapacity(48f, 2f))
-        assertTrue(compactBarCapacity(140f, 1f) > compactBarCapacity(140f, 2f))
+        assertEquals(2, compactLimitCapacity(64f - 24f, 1f))
+        assertEquals(1, compactLimitCapacity(48f - 24f, 2f))
+        assertEquals(3, compactLimitCapacity(400f, 1f))
+        assertTrue(compactLimitCapacity(66f, 1f) > compactLimitCapacity(66f, 2f))
         assertEquals(1, gaugeGrid(64f, 64f, 1f).capacity)
         assertEquals(4, gaugeGrid(172f, 224f, 1f).capacity)
         assertTrue(gaugeGrid(450f, 350f, 1f).capacity > gaugeGrid(450f, 350f, 2f).capacity)
