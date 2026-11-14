@@ -32,4 +32,14 @@ class ScreenProjectionTest {
         assertFalse(access.toString().contains("ticket-secret"))
         assertFalse(access.toString().contains("192.168"))
     }
+    @Test fun mediaValidationAcceptsOnlyTheEnvironmentsOwnRoutes() {
+        val environment = SavedEnvironment("env", "Test", "http://192.168.1.20:3773", "secret", allowInsecureHttp = true,
+            routes = listOf(EnvironmentRoute(RouteKind.Tunnel, "https://prod-fixture.t3coderelay.com/", RouteSource.Learned)))
+        val target = ScreenTarget.Browser("t", "tab", "Browser", "", true)
+        val access = ScreenAccess("env", 1, target, "https://prod-fixture.t3coderelay.com/api/preview-stream", "wss://prod-fixture.t3coderelay.com/api/preview-stream", mapOf("wsTicket" to "ticket-secret"))
+        assertTrue(validateScreenAccess(access, environment))
+        assertFalse(validateScreenAccess(access, environment.copy(routes = emptyList())))
+        assertFalse(validateScreenAccess(access.copy(wsBase = "wss://elsewhere.test/api/preview-stream"), environment))
+        assertFalse(validateScreenAccess(access.copy(httpBase = "https://elsewhere.test/api/preview-stream", wsBase = "wss://elsewhere.test/api/preview-stream"), environment))
+    }
 }

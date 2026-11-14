@@ -18,6 +18,35 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 private const val FRESH_THREAD_WAIT_MS = 3_000L
+private const val LINK_STATE_TIMEOUT_MS = 5_000L
+
+/** Local and Tailnet addresses answer fast or not at all; public HTTPS, the tunnel and SSH forwards get longer. */
+internal fun routePreflightTimeoutMillis(kind: RouteKind): Long = when (kind) {
+    RouteKind.Lan, RouteKind.Tailnet -> 3_000L
+    RouteKind.Public, RouteKind.Ssh, RouteKind.Tunnel -> 15_000L
+}
+
+/** `ServerConfig.directEndpoints`: null when absent (the server did not say); entries without a kind or URL are skipped. */
+internal fun directEndpointHints(config: JsonObject): List<DirectEndpointHint>? {
+    val entries = config["directEndpoints"] as? JsonArray ?: return null
+    return entries.mapNotNull { entry ->
+        val value = entry as? JsonObject ?: return@mapNotNull null
+        val kind = (value["kind"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim().orEmpty()
+        val url = (value["httpBaseUrl"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim().orEmpty()
+        if (kind.isEmpty() || url.isEmpty()) null else DirectEndpointHint(kind, url)
+    }
+}
+
+/** `/api/connect/link-state` reply; every field is optional (`tunnelHostname` is newer than the protocol pin). */
+internal fun tunnelHint(state: JsonObject): TunnelHint {
+    fun flag(key: String) = (state[key] as? JsonPrimitive)?.takeUnless { it.isString }?.booleanOrNull
+    val hostname = (state["tunnelHostname"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim().orEmpty()
+    return when {
+        flag("linked") == false || flag("linkRevoked") == true -> TunnelHint.NotLinked
+        flag("linked") == true && flag("managedTunnelActive") != false && hostname.isNotEmpty() -> TunnelHint.Active(hostname)
+        else -> TunnelHint.Unknown
+    }
+}
 
 /** Native direct-environment client. Mutations are never retried or replayed. */
 class T3Client(
@@ -25,6 +54,8 @@ class T3Client(
     private val connectionTimeoutMillis: Long = 20_000,
     private val requestTimeoutMillis: Long = 30_000,
     private val usageClockMillis: () -> Long = System::currentTimeMillis,
+    /** Descriptor preflight timeout per route kind during [connect]. */
+    private val routeTimeoutMillis: (RouteKind) -> Long = ::routePreflightTimeoutMillis,
 ) : TrefoilClient {
     private val mutable = MutableStateFlow(ClientState())
     override val state: StateFlow<ClientState> = mutable.asStateFlow()
@@ -58,6 +89,20 @@ class T3Client(
     private val usageCache = mutableMapOf<UsageKey, CachedUsage>()
     private val limitsFinished = mutableMapOf<String, Long>()
     private var limitsInFlight: Pair<Long, Deferred<Boolean>>? = null
+    /** Validated base of the live connection's route; HTTP side calls (media tickets, downloads, link-state) use it. */
+    private var activeBase: HttpUrl? = null
+    /** Routes of the last multi-route connect, so [reconnect] walks the same plan. */
+    private var lastRoutes: Pair<String, List<EnvironmentRoute>>? = null
+    private val hints = MutableSharedFlow<RouteHints>(extraBufferCapacity = 8, onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
+    override val routeHints: Flow<RouteHints> = hints.asSharedFlow()
+    /** Last `directEndpoints` reported for the live connection (null: not reported); snapshots emit only on change. */
+    private var directEndpoints: List<DirectEndpointHint>? = null
+    private var configSubscription: String? = null
+    private var linkStateJob: Job? = null
+    /** Whether the first (getConfig + link-state) hint went out; earlier snapshots only update [directEndpoints]. */
+    private var initialHintSent = false
+    /** Mutations between their first local check and their outcome; see [isIdleForRouteSwitch]. */
+    private val mutationsInFlight = java.util.concurrent.atomic.AtomicInteger()
     fun millisSinceLastPong(): Long? = synchronized(lifecycleLock) {
         if (socket == null) null else (System.currentTimeMillis() - pongAt).coerceAtLeast(0)
     }
@@ -86,10 +131,14 @@ class T3Client(
     private suspend fun fetch(request: Request, timeoutMillis: Long? = null): JsonObject = withContext(Dispatchers.IO) {
         val call = http.newCall(request)
         timeoutMillis?.let { call.timeout().timeout(it, java.util.concurrent.TimeUnit.MILLISECONDS) }
-        call.execute().use { response ->
-            if (!response.isSuccessful) throw HttpFailure(response.code)
-            EffectRpc.json.parseToJsonElement(response.body?.string() ?: error("Empty server response")).jsonObject
-        }
+        // A cancelled caller (superseded connect, abandoned preflight) cancels the blocking call instead of waiting it out.
+        val cancellation = launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) { try { awaitCancellation() } finally { call.cancel() } }
+        try {
+            call.execute().use { response ->
+                if (!response.isSuccessful) throw HttpFailure(response.code)
+                EffectRpc.json.parseToJsonElement(response.body?.string() ?: error("Empty server response")).jsonObject
+            }
+        } finally { cancellation.cancel() }
     }
     private class HttpFailure(val status: Int) : IllegalStateException(if (status == 401 || status == 403) "Authorization expired or denied; pair again" else "Server HTTP error $status")
     /** The server answered with a failure Exit: a definite answer, not a lost reply. */
@@ -98,7 +147,8 @@ class T3Client(
     private class RequestInterrupted : IllegalStateException("Server interrupted the request; the outcome is uncertain")
     /** No reply in time. Deliberately not a CancellationException, so callers cannot swallow it as cancellation. */
     private class RequestTimedOut : IllegalStateException("Server did not answer in time; the outcome is uncertain")
-    private suspend fun descriptor(base: HttpUrl): JsonObject = fetch(Request.Builder().url(base.resolve("/.well-known/t3/environment")!!).build()).also {
+    /** Credential-free: the public descriptor never receives a token. */
+    private suspend fun descriptor(base: HttpUrl, timeoutMillis: Long? = null): JsonObject = fetch(Request.Builder().url(base.resolve("/.well-known/t3/environment")!!).build(), timeoutMillis).also {
         if (it["orchestrationProtocolVersion"]?.jsonPrimitive?.intOrNull != 2) throw PairingException("This environment does not support orchestration protocol 2")
     }
     override suspend fun pair(pairingUrl: String, name: String, allowInsecureHttp: Boolean): SavedEnvironment = try {
@@ -121,7 +171,51 @@ class T3Client(
     catch (error: HttpFailure) { throw PairingException(if (error.status == 401 || error.status == 403) "Pairing token expired or was denied. Generate a new pairing link." else "Pairing server returned HTTP ${error.status}. Check the server and try again.") }
     catch (_: Exception) { throw PairingException("Pairing failed. Check the link, network, and server compatibility, then try again.") }
 
+    /** Connects to `environment.baseUrl` as a single route (an SSH environment's ephemeral loopback is an `Ssh` route). */
     override suspend fun connect(environment: SavedEnvironment) {
+        val kind = if (environment.ssh != null) RouteKind.Ssh else classifyRoute(environment.baseUrl, environment.tunnelHost())
+        synchronized(lifecycleLock) { lastRoutes = null }
+        connectThrough(environment, listOf(EnvironmentRoute(kind, environment.baseUrl, RouteSource.Paired)))
+    }
+
+    override suspend fun connect(environment: SavedEnvironment, routes: List<EnvironmentRoute>) {
+        if (routes.isEmpty()) throw PairingException("No address to reach this machine. Pair it again.")
+        synchronized(lifecycleLock) { lastRoutes = environment.id to routes.toList() }
+        connectThrough(environment, routes)
+    }
+
+    private data class SelectedRoute(val route: EnvironmentRoute, val base: HttpUrl, val session: JsonObject)
+
+    /**
+     * Walks [routes] in order. Each route passes the URL policy and answers the credential-free descriptor as
+     * `environment.id` within its kind's timeout before the bearer goes to it. A route that is blocked, silent,
+     * failing or another machine is skipped; a session that rejects the token (401/403 or not authenticated)
+     * stops the walk, since the token belongs to the host and is dead on every route.
+     */
+    private suspend fun selectRoute(environment: SavedEnvironment, routes: List<EnvironmentRoute>, epoch: Long): SelectedRoute {
+        var failure: Exception? = null
+        for (route in routes) {
+            currentCoroutineContext().ensureActive()
+            check(epoch == generation) { "Connection was cancelled" }
+            val base = try {
+                val base = url(route.baseUrl, environment.allowInsecureHttp)
+                if (descriptor(base, routeTimeoutMillis(route.kind)).string("environmentId") != environment.id) throw PairingException("Environment identity changed; pair again")
+                base
+            } catch (error: CancellationException) { throw error } catch (error: Exception) { failure = error; continue }
+            currentCoroutineContext().ensureActive()
+            check(epoch == generation) { "Connection was cancelled" }
+            // Identity verified: the bearer goes to this route only.
+            val session = try { fetch(Request.Builder().url(base.resolve("/api/auth/session")!!).header("Authorization", "Bearer ${environment.accessToken}").build()) }
+            catch (error: CancellationException) { throw error }
+            catch (error: HttpFailure) { if (error.status == 401 || error.status == 403) throw error; failure = error; continue }
+            catch (error: Exception) { failure = error; continue }
+            require(session["authenticated"]?.jsonPrimitive?.booleanOrNull == true) { "Authorization expired; pair again" }
+            return SelectedRoute(route, base, session)
+        }
+        throw failure ?: PairingException("No address to reach this machine. Pair it again.")
+    }
+
+    private suspend fun connectThrough(environment: SavedEnvironment, routes: List<EnvironmentRoute>) {
         disconnect()
         val epoch = generation
         synchronized(lifecycleLock) {
@@ -131,11 +225,8 @@ class T3Client(
             update { retained.copy(environment = environment, connection = ConnectionStatus.Connecting, canWrite = false, canRead = false, canReadUsage = false, busy = false, error = null, settlementUndo = null, threadActionsConfigured = false, activeRoute = null) }
         }
         try {
-            val base = url(environment.baseUrl, environment.allowInsecureHttp)
-            require(descriptor(base).string("environmentId") == environment.id) { "Environment identity changed; pair again" }
+            val (route, base, session) = selectRoute(environment, routes, epoch)
             fun ticketRequest(path: String) = Request.Builder().url(base.resolve(path)!!).header("Authorization", "Bearer ${environment.accessToken}").post(ByteArray(0).toRequestBody()).build()
-            val session = fetch(Request.Builder().url(base.resolve("/api/auth/session")!!).header("Authorization", "Bearer ${environment.accessToken}").build())
-            require(session["authenticated"]?.jsonPrimitive?.booleanOrNull == true) { "Authorization expired; pair again" }
             val permissions = (session["permissions"] ?: session["scopes"]) as? JsonArray
             val mayOperate = permissions?.any { it.jsonPrimitive.content == "orchestration:operate" } == true
             val mayReadUsage = permissions?.any { (it as? JsonPrimitive)?.contentOrNull == "diagnostics:read" } == true
@@ -144,7 +235,7 @@ class T3Client(
                 fetch(ticketRequest("/api/auth/websocket-ticket"))
             }
             require(ticket.string("ticket").isNotBlank()) { "Missing WebSocket ticket" }
-            check(epoch == generation) { "Connection was cancelled" }
+            synchronized(lifecycleLock) { check(epoch == generation) { "Connection was cancelled" }; activeBase = base }
             val endpoint = base.newBuilder().encodedPath("/ws").query(null).addQueryParameter("wsTicket", ticket.string("ticket")).addQueryParameter("orchestrationProtocol", "2").build()
             val opened = CompletableDeferred<Unit>()
             socket = http.newWebSocket(Request.Builder().url(endpoint).build(), object : WebSocketListener() {
@@ -180,7 +271,7 @@ class T3Client(
                 provider.objects("models").map { ModelOption(provider.string("instanceId"), it.string("slug"), it.string("name"), modes) }
             }
             val defaultMode = RuntimeMode.fromWire(config.obj("settings").string("defaultRuntimeMode"))
-            val route = EnvironmentRoute(if (environment.ssh != null) RouteKind.Ssh else classifyRoute(environment.baseUrl, environment.tunnelHost()), environment.baseUrl, RouteSource.Paired)
+            synchronized(lifecycleLock) { check(epoch == generation) { "Connection was cancelled" }; directEndpoints = directEndpointHints(config) }
             update { it.copy(connection = ConnectionStatus.Connected, activeRoute = route, canReadUsage = mayReadUsage, models = models, providers = providerInstances(config), defaultRuntimeMode = defaultMode, threadStopSupported = threadStop,
                 selectedModel = it.selectedModel?.let { selected -> models.firstOrNull { m -> m.instanceId == selected.instanceId && m.model == selected.model } ?: selected }) }
             subscribe("orchestration.subscribeShell", buildJsonObject {
@@ -188,6 +279,7 @@ class T3Client(
                 // Native grouping needs complete lineage and all settled rows for exact counts.
                 put("omitIdleSubagents", false); put("omitOlderSettled", false)
             }, ::shellItem)
+            startRouteHints(epoch, environment, base)
             state.value.selectedThreadId?.let { selectThread(it) }
         } catch (error: CancellationException) {
             if (error is TimeoutCancellationException && currentCoroutineContext().isActive) {
@@ -203,12 +295,64 @@ class T3Client(
             val message = when (error) {
                 is PairingException -> error.message ?: "Connection failed"
                 is HttpFailure -> error.message ?: "Connection failed"
-                is RequestTimedOut -> "T3 connection timed out. Check the server and network, then try again."
+                is RequestTimedOut, is java.io.InterruptedIOException -> "T3 connection timed out. Check the server and network, then try again."
                 else -> "Connection failed. Check the network and server, or pair again."
             }
             fail(epoch, message)
             throw PairingException(message)
         }
+    }
+
+    /**
+     * Route hints of the live connection: one [RouteHints] with `server.getConfig` `directEndpoints` and the
+     * link-state tunnel, then one per `subscribeServerConfig` snapshot whose `directEndpoints` change. The config
+     * stream is optional (its end never fails the session) and dies with the connection, like the link-state read.
+     */
+    private fun startRouteHints(epoch: Long, environment: SavedEnvironment, base: HttpUrl) = synchronized(lifecycleLock) {
+        if (epoch != generation) return@synchronized
+        configSubscription = runCatching { subscribe("subscribeServerConfig", buildJsonObject {}) { event -> serverConfigEvent(epoch, environment.id, event) } }.getOrNull()
+        linkStateJob = scope.launch {
+            val tunnel = linkState(base, environment.accessToken)
+            synchronized(lifecycleLock) {
+                if (epoch == generation) { initialHintSent = true; hints.tryEmit(RouteHints(environment.id, directEndpoints, tunnel)) }
+            }
+        }
+    }
+
+    /** Ignores every event except a `snapshot`; one without `directEndpoints` says nothing and keeps the last hint. */
+    private fun serverConfigEvent(epoch: Long, environmentId: String, event: JsonObject) {
+        if (epoch != generation || event.string("type") != "snapshot") return
+        val endpoints = directEndpointHints(event.obj("config")) ?: return
+        if (endpoints == directEndpoints) return
+        directEndpoints = endpoints
+        if (initialHintSent) hints.tryEmit(RouteHints(environmentId, endpoints, TunnelHint.Unknown))
+    }
+
+    /** `GET /api/connect/link-state` on the verified route; any failure is [TunnelHint.Unknown] and never fails the connection. */
+    private suspend fun linkState(base: HttpUrl, token: String): TunnelHint = try {
+        val state = withTimeoutOrNull(LINK_STATE_TIMEOUT_MS) {
+            fetch(Request.Builder().url(base.resolve("/api/connect/link-state")!!).header("Authorization", "Bearer $token").build(), LINK_STATE_TIMEOUT_MS)
+        }
+        if (state == null) TunnelHint.Unknown else tunnelHint(state)
+    } catch (error: CancellationException) { throw error } catch (_: Exception) { TunnelHint.Unknown }
+
+    override suspend fun preflight(environmentId: String, route: EnvironmentRoute, allowInsecureHttp: Boolean, timeoutMillis: Long): Boolean {
+        if (route.kind == RouteKind.Ssh || timeoutMillis <= 0) return false
+        val base = try { url(route.baseUrl, allowInsecureHttp) } catch (_: PairingException) { return false }
+        return try { withTimeoutOrNull(timeoutMillis) { descriptor(base, timeoutMillis).string("environmentId") == environmentId } == true }
+        catch (error: CancellationException) { throw error } catch (_: Exception) { false }
+    }
+
+    /**
+     * Counts every mutation from its first local check until its outcome: message send, interrupt, request response,
+     * runtime mode and model changes, thread launch, subagent stop, thread actions and settlement undo. Reads
+     * (configuration, projections, usage, screens, downloads) do not count; a switch only re-reads them.
+     */
+    override fun isIdleForRouteSwitch(): Boolean = mutationsInFlight.get() == 0
+
+    private suspend fun <T> mutating(block: suspend () -> T): T {
+        mutationsInFlight.incrementAndGet()
+        try { return block() } finally { mutationsInFlight.decrementAndGet() }
     }
     private fun send(frame: JsonObject) { check(socket?.send(frame.toString()) == true) { "Connection is unavailable" } }
     private suspend fun rpc(tag: String, payload: JsonObject, epoch: Long = generation, guard: () -> Boolean = { true }, timeoutMillis: Long = requestTimeoutMillis): JsonElement {
@@ -240,7 +384,9 @@ class T3Client(
                 if (exit.string("_tag") == "Success") result?.complete(exit["value"] ?: JsonNull)
                 else result?.completeExceptionally(if (exitInterruptedOnly(exit)) RequestInterrupted() else ServerRejected())
                 if (streams.remove(id) != null) {
-                    if (optionalScreenStreams.remove(id)) {
+                    // Route hints are optional: an older server rejecting the config stream, or its end, leaves the session alone.
+                    if (id == configSubscription) configSubscription = null
+                    else if (optionalScreenStreams.remove(id)) {
                         if (id == previewScreenSubscription) { previewScreenSubscription = null; browserScreensFresh = false }
                         if (id == deviceScreenSubscription) { deviceScreenSubscription = null; deviceScreensFresh = false }
                         update { it.copy(screens = it.screens.copy(error = "Remote screen updates ended. Refresh screens to try again.")) }
@@ -256,12 +402,14 @@ class T3Client(
         generation++
         refreshSignals?.close(); refreshJob?.cancel()
         shellReady = false; threadReady = false; authorized = false; previewAuthorized = false
+        resetRoute()
         resetScreens()
         undoPlan = null
         update { it.copy(connection = ConnectionStatus.Error, canWrite = false, canRead = false, canReadUsage = false, busy = false, error = message, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
         pending.values.forEach { it.completeExceptionally(IllegalStateException(message)) }; pending.clear()
         streams.clear(); heartbeat?.cancel(); socket?.cancel(); socket = null
     }
+    private fun resetRoute() { activeBase = null; directEndpoints = null; initialHintSent = false; configSubscription = null; linkStateJob?.cancel(); linkStateJob = null }
     override suspend fun disconnect() = disconnectNow()
     /** [reason] replaces any stale error when the disconnect was not requested by the user. */
     private fun disconnectNow(reason: String? = null) = synchronized(lifecycleLock) {
@@ -271,6 +419,7 @@ class T3Client(
         socket?.close(1000, null); socket = null
         pending.values.forEach { it.completeExceptionally(IllegalStateException("Disconnected; pending command outcome may be uncertain")) }
         pending.clear(); streams.clear(); threadSubscription = null; shellReady = false; threadReady = false; authorized = false; previewAuthorized = false
+        resetRoute()
         resetScreens()
         undoPlan = null
         update { it.copy(connection = ConnectionStatus.Disconnected, canWrite = false, canRead = false, canReadUsage = false, busy = false, error = reason ?: it.error, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
@@ -574,20 +723,21 @@ class T3Client(
         val environment = state.value.environment ?: return@synchronized false
         access.connectionGeneration == generation && access.selectionGeneration == threadGeneration && access.environmentId == environment.id &&
             state.value.connection == ConnectionStatus.Connected && access.target.threadId == state.value.selectedThreadId &&
-            currentScreenTarget(access.target) != null && validateScreenAccess(access, environment) &&
+            currentScreenTarget(access.target) != null && activeBase?.let { validateScreenAccess(access, environment.copy(baseUrl = it.toString(), routes = emptyList())) } == true &&
             (if (access.target is ScreenTarget.Browser) browserScreensFresh else deviceScreensFresh)
     }
-    private data class ScreenViewerRead(val epoch: Long, val selection: Long, val environment: SavedEnvironment, val target: ScreenTarget)
+    private data class ScreenViewerRead(val epoch: Long, val selection: Long, val environment: SavedEnvironment, val target: ScreenTarget, val base: HttpUrl)
     override suspend fun screenAccess(target: ScreenTarget): ScreenAccess {
         val captured = synchronized(lifecycleLock) {
             check(state.value.connection == ConnectionStatus.Connected && shellReady) { "Connect before opening a remote screen" }
             check(target.threadId == state.value.selectedThreadId) { "Select this screen's thread" }
             check(if (target is ScreenTarget.Browser) browserScreensFresh else deviceScreensFresh) { "Refresh remote screens before opening" }
             val current = currentScreenTarget(target) ?: error("This remote screen is no longer available")
-            ScreenViewerRead(generation, threadGeneration, state.value.environment ?: error("Connect an environment"), current)
+            ScreenViewerRead(generation, threadGeneration, state.value.environment ?: error("Connect an environment"), current, activeBase ?: error("Connect an environment"))
         }
         val (epoch, selection, environment, currentTarget) = captured
-        val base = url(environment.baseUrl, environment.allowInsecureHttp)
+        // The live route's base: it passed the URL policy and the identity check before the bearer reached it.
+        val base = url(captured.base.toString(), environment.allowInsecureHttp)
         val ticket = try { fetch(Request.Builder().url(base.resolve("/api/auth/websocket-ticket/media")!!)
             .header("Authorization", "Bearer ${environment.accessToken}").post(ByteArray(0).toRequestBody()).build(), timeoutMillis = 8_000).string("ticket") }
         catch (error: CancellationException) { throw error }
@@ -611,7 +761,9 @@ class T3Client(
             check(state.value.environment?.id == environmentId && state.value.selectedThreadId == threadId) { "Download context changed" }
             // Reading a file needs a synced session, not a fresh thread projection (that blinks on every event).
             check(shellReady && state.value.connection == ConnectionStatus.Connected) { "Connect and refresh before downloading a file" }
-            FileRead(generation, threadGeneration, state.value.environment ?: error("Connect an environment"), state.value.selectedThreadId ?: error("Select a thread"))
+            // Downloads go to the live route, which passed the URL policy and the identity check.
+            val base = activeBase ?: error("Connect an environment")
+            FileRead(generation, threadGeneration, (state.value.environment ?: error("Connect an environment")).let { it.copy(baseUrl = base.toString()) }, state.value.selectedThreadId ?: error("Select a thread"))
         }
         fun current() = synchronized(lifecycleLock) {
             generation == captured.epoch && threadGeneration == captured.selection && state.value.environment?.id == captured.environment.id &&
@@ -676,7 +828,7 @@ class T3Client(
      * Sends one mutation once. [extra] runs under the lifecycle lock after the write check, so
      * local validation fails before anything is sent. See [mutation] for failure handling.
      */
-    private suspend fun dispatch(type: String, subject: String, extra: () -> JsonObject) {
+    private suspend fun dispatch(type: String, subject: String, extra: () -> JsonObject): Unit = mutating {
         awaitFreshThread()
         val (epoch, payload) = synchronized(lifecycleLock) { requireWrite(); generation to command(type, extra()) }
         mutation(epoch, subject) { rpc("orchestration.dispatchCommand", payload, epoch) }
@@ -711,7 +863,7 @@ class T3Client(
      * outcome is deduplicated by the server (`resumed`) instead of creating a second thread. The
      * initial `messageId` is derived from the command so a resend carries the same one.
      */
-    override suspend fun launchThread(draft: ThreadDraft, firstMessage: String): String {
+    override suspend fun launchThread(draft: ThreadDraft, firstMessage: String): String = mutating {
         require(firstMessage.isNotBlank()) { "Message is empty" }
         require(draft.threadId.isNotBlank() && draft.commandId.isNotBlank()) { "Invalid draft identity" }
         val (epoch, payload) = synchronized(lifecycleLock) {
@@ -749,7 +901,7 @@ class T3Client(
                 while (threadProjections.size > 12) threadProjections.remove(threadProjections.keys.first())
             }
         }
-        return threadId
+        threadId
     }
     override suspend fun setRuntimeMode(mode: RuntimeMode) {
         dispatch("thread.runtime-mode.set", "mode change") { buildJsonObject { put("runtimeMode", mode.wire) } }
@@ -777,7 +929,7 @@ class T3Client(
     private var undoPlan: Triple<SettlementUndo, Long, List<Pair<ThreadAction, String?>>>? = null
     private val threadActionMutex = Mutex()
 
-    suspend fun threadAction(target: ThreadTarget, action: ThreadAction, value: String? = null) {
+    suspend fun threadAction(target: ThreadTarget, action: ThreadAction, value: String? = null): Unit = mutating {
         val requestedEpoch = synchronized(lifecycleLock) { requireThreadWrite(); generation }
         threadActionMutex.withLock {
             performThreadAction(target, action, value, requestedEpoch)
@@ -810,7 +962,7 @@ class T3Client(
         }
     }
 
-    suspend fun undoSettlement(undo: SettlementUndo) = threadActionMutex.withLock {
+    suspend fun undoSettlement(undo: SettlementUndo): Unit = mutating { threadActionMutex.withLock {
         val plan = synchronized(lifecycleLock) {
             requireThreadWrite()
             val plan = undoPlan ?: error("Undo expired")
@@ -823,7 +975,7 @@ class T3Client(
             if (action == ThreadAction.Snooze && !Instant.parse(value).isAfter(Instant.now())) continue
             performThreadAction(undo.target, action, value, plan.second, restoring = true)
         }
-    }
+    } }
     /**
      * T3 client-runtime `interruptThreadTurn({threadId, subagentId})`. Provider-native: `subagent.stop`
      * on the parent. App-owned: `subagent.stop` (older servers reject it, so a definite rejection is not
@@ -831,7 +983,7 @@ class T3Client(
      * the server lacks the `threadStop` capability. Each command is sent once; uncertain outcomes fail
      * the session as for any mutation, and nothing further is sent after the session or selection changes.
      */
-    override suspend fun stopSubagent(subagentId: String) {
+    override suspend fun stopSubagent(subagentId: String): Unit = mutating {
         awaitFreshThread()
         val (session, parentId, subagent) = synchronized(lifecycleLock) {
             requireWrite()
@@ -849,19 +1001,19 @@ class T3Client(
         // The guard re-checks under the send lock, so a selection change after requireSameSession still sends nothing.
         suspend fun send(payload: JsonObject) { requireSameSession(); mutation(epoch, "agent stop") { rpc("orchestration.dispatchCommand", payload, epoch, ::sameSession) } }
         val parentStop = subagent.runId?.let { runId -> threadCommand("subagent.stop", parentId, buildJsonObject { put("runId", runId); put("subagentId", subagent.id) }) }
-        if (!subagent.isAppOwned) { send(parentStop ?: error("This agent cannot be stopped from here")); return }
+        if (!subagent.isAppOwned) { send(parentStop ?: error("This agent cannot be stopped from here")); return@mutating }
         val childId = subagent.childThreadId ?: error("This agent cannot be stopped from here")
         // The parent ends the task even when its child lost track of it; the child stop below still runs.
         if (parentStop != null) try { send(parentStop) } catch (error: IllegalStateException) { if (error.cause !is ServerRejected) throw error }
         requireSameSession()
-        if (state.value.threadStopSupported) { send(threadCommand("thread.stop", childId)); return }
+        if (state.value.threadStopSupported) { send(threadCommand("thread.stop", childId)); return@mutating }
         val child = rpc("orchestration.getThreadProjection", buildJsonObject { put("threadId", childId) }, epoch).jsonObject
         currentCoroutineContext().ensureActive()
-        val runId = child.objects("runs").lastOrNull { it.string("status") in setOf("preparing", "starting", "running", "waiting") }?.string("id")?.takeIf { it.isNotBlank() } ?: return
+        val runId = child.objects("runs").lastOrNull { it.string("status") in setOf("preparing", "starting", "running", "waiting") }?.string("id")?.takeIf { it.isNotBlank() } ?: return@mutating
         send(threadCommand("run.interrupt", childId, buildJsonObject { put("runId", runId); put("holdQueue", true) }))
     }
     override suspend fun interruptRun() { dispatch("run.interrupt", "interrupt") { buildJsonObject { put("runId", state.value.activeRunId ?: error("No active run")) } } }
-    override suspend fun respond(requestId: String, decision: String, answers: Map<String, List<String>>) {
+    override suspend fun respond(requestId: String, decision: String, answers: Map<String, List<String>>): Unit = mutating {
         awaitFreshThread()
         requireWrite()
         val request = state.value.requests.firstOrNull { it.id == requestId } ?: error("Request is no longer pending")
@@ -882,7 +1034,8 @@ class T3Client(
     }
     override suspend fun reconnect() {
         val environment = state.value.environment ?: error("Pair an environment first")
-        connect(environment)
+        val routes = synchronized(lifecycleLock) { lastRoutes?.takeIf { it.first == environment.id }?.second }
+        if (routes != null) connect(environment, routes) else connect(environment)
     }
     /** Remove in-memory credentials as well as the local connection; no remote revoke. */
     fun forgetEnvironment(environmentId: String? = state.value.environment?.id) = synchronized(lifecycleLock) {

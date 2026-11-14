@@ -226,7 +226,7 @@ class T3ClientTest {
    } finally { client.disconnect(); scope.cancel(); server.shutdown() }
  }
  @Test fun streamsFullProjectionAcknowledgesAndDoesNotReplayMutation() = runBlocking {
-   val server = MockWebServer(); server.start()
+   val server = MockWebServer(); server.dispatcher = LinkStateTolerantQueue(); server.start()
    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default); val client = T3Client(scope)
    val mutations = mutableListOf<JsonObject>(); val acks = mutableListOf<String>()
    var ws: WebSocket? = null

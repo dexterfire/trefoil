@@ -1,7 +1,9 @@
 package com.tajchert.trefoil.core.session
 
+import com.tajchert.trefoil.core.model.EnvironmentRoute
 import com.tajchert.trefoil.core.model.MachineProbe
 import com.tajchert.trefoil.core.model.PairingException
+import com.tajchert.trefoil.core.model.RouteKind
 import com.tajchert.trefoil.core.model.SavedEnvironment
 import com.tajchert.trefoil.core.protocol.EffectRpc
 import kotlinx.coroutines.CancellationException
@@ -27,8 +29,40 @@ class EnvironmentProbe(
     private val http = http.newBuilder().followRedirects(false).followSslRedirects(false)
         .callTimeout(timeoutMillis, TimeUnit.MILLISECONDS).build()
 
+    /** Result of [probe] over several routes; [route] is the route that decided it (null when none did). */
+    data class RouteProbe(val result: MachineProbe, val route: EnvironmentRoute?)
+
     /** [baseUrl] overrides the saved address, e.g. with an SSH tunnel's ephemeral loopback port. */
-    suspend fun probe(environment: SavedEnvironment, baseUrl: String = environment.baseUrl): MachineProbe {
+    suspend fun probe(environment: SavedEnvironment, baseUrl: String = environment.baseUrl): MachineProbe = probeAt(environment, baseUrl, timeoutMillis)
+
+    /**
+     * Probes [routes] in order (`Ssh` placeholders are skipped; the caller opens SSH itself). The first `Online`
+     * wins and `AuthFailed` stops, since the token belongs to the host. An identity mismatch or blocked address
+     * moves on but is reported as `NeedsAttention` when no route is online. Local and Tailnet routes get at most
+     * 3 s each; an empty plan is `Unknown`.
+     */
+    suspend fun probe(environment: SavedEnvironment, routes: List<EnvironmentRoute>): RouteProbe {
+        var attention: EnvironmentRoute? = null
+        var tried = false
+        for (route in routes) {
+            if (route.kind == RouteKind.Ssh) continue
+            tried = true
+            val limit = if (route.kind == RouteKind.Lan || route.kind == RouteKind.Tailnet) minOf(timeoutMillis, LOCAL_TIMEOUT_MS) else timeoutMillis
+            when (probeAt(environment, route.baseUrl, limit)) {
+                MachineProbe.Online -> return RouteProbe(MachineProbe.Online, route)
+                MachineProbe.AuthFailed -> return RouteProbe(MachineProbe.AuthFailed, route)
+                MachineProbe.NeedsAttention -> if (attention == null) attention = route
+                else -> Unit
+            }
+        }
+        return when {
+            attention != null -> RouteProbe(MachineProbe.NeedsAttention, attention)
+            tried -> RouteProbe(MachineProbe.Unreachable, null)
+            else -> RouteProbe(MachineProbe.Unknown, null)
+        }
+    }
+
+    private suspend fun probeAt(environment: SavedEnvironment, baseUrl: String, timeoutMillis: Long): MachineProbe {
         val base = try { validatedEnvironmentUrl(baseUrl, environment.allowInsecureHttp) } catch (_: PairingException) { return MachineProbe.NeedsAttention }
         return withTimeoutOrNull(timeoutMillis) {
             try {
@@ -69,5 +103,5 @@ class EnvironmentProbe(
         })
     }
 
-    private companion object { const val MAX_BODY = 65_536L }
+    private companion object { const val MAX_BODY = 65_536L; const val LOCAL_TIMEOUT_MS = 3_000L }
 }
