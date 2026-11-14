@@ -80,6 +80,8 @@ class T3Client(
     private var deviceScreenSubscription: String? = null
     private val optionalScreenStreams = mutableSetOf<String>()
     @Volatile private var pongAt = 0L
+    /** Counts pongs of the live connection, so [verifyLink] can wait for one newer than its ping. */
+    private val pongs = MutableStateFlow(0L)
     private val serial = AtomicLong()
     private val pending = ConcurrentHashMap<String, CompletableDeferred<JsonElement>>()
     private val streams = ConcurrentHashMap<String, (JsonObject) -> Unit>()
@@ -350,6 +352,23 @@ class T3Client(
      */
     override fun isIdleForRouteSwitch(): Boolean = mutationsInFlight.get() == 0
 
+    /** Any pong after this ping proves the socket; silence, a failed send or a drop meanwhile fails this connection only. */
+    override suspend fun verifyLink(timeoutMillis: Long): Boolean {
+        val lost = "Connection stopped answering; any pending command outcome is uncertain. Reconnect to refresh."
+        val (epoch, before) = synchronized(lifecycleLock) {
+            if (socket == null || state.value.connection != ConnectionStatus.Connected) return false
+            val epoch = generation; val before = pongs.value
+            if (socket?.send(EffectRpc.signal("Ping").toString()) != true) { fail(epoch, lost); return false }
+            epoch to before
+        }
+        val answered = withTimeoutOrNull(timeoutMillis) {
+            merge(pongs.filter { it > before }.map { true }, state.filter { it.connection != ConnectionStatus.Connected }.map { false }).first()
+        }
+        if (answered == true && epoch == generation) return true
+        fail(epoch, lost)
+        return false
+    }
+
     private suspend fun <T> mutating(block: suspend () -> T): T {
         mutationsInFlight.incrementAndGet()
         try { return block() } finally { mutationsInFlight.decrementAndGet() }
@@ -376,7 +395,7 @@ class T3Client(
     private fun receive(frame: JsonObject) {
         val id = frame.string("requestId")
         when (frame.string("_tag")) {
-            "Pong" -> pongAt = System.currentTimeMillis()
+            "Pong" -> { pongAt = System.currentTimeMillis(); pongs.update { it + 1 } }
             "Chunk" -> { frame.objects("values").forEach { streams[id]?.invoke(it) }; send(EffectRpc.signal("Ack", id)) }
             "Exit" -> {
                 val exit = frame.obj("exit")

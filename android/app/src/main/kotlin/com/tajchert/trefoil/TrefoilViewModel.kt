@@ -23,6 +23,8 @@ internal const val BACKGROUND_CONNECTION_GRACE_MS = 60_000L
 internal const val RETAINED_CONNECTION_FRESHNESS_MS = 20_000L
 /** Waits before each automatic reconnect attempt after an unexpected drop; one episode per drop. */
 internal val AUTO_RECONNECT_BACKOFF_MS = listOf(2_000L, 5_000L, 15_000L)
+/** After a default-network change, the live connection must answer a ping within this or it is dropped and reconnected. */
+internal const val LINK_CHECK_TIMEOUT_MS = 4_000L
 
 class TrefoilViewModel(application: Application) : AndroidViewModel(application) {
     private val client = T3Client(viewModelScope)
@@ -101,6 +103,9 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     private var defaultNetwork: Long? = null
     private var networkKnown = false
     private var networkAvailable = true
+    private var linkCheckJob: Job? = null
+    /** The [connectionEpoch] of a network change: a drop in that epoch reconnects without the first backoff. */
+    private var networkChangeEpoch: Long? = null
     /** Route hints for a machine that is not saved yet (SSH pairing saves after connecting); applied when it is saved. */
     private val unsavedHints = mutableMapOf<String, List<RouteHints>>()
     private val routeMonitor = RouteMonitor(viewModelScope,
@@ -554,21 +559,24 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     private fun connectionDropped(environmentId: String?) {
         val live = liveEnvironment ?: return
         liveEnvironment = null
+        val afterNetworkChange = networkChangeEpoch == connectionEpoch
+        networkChangeEpoch = null
         if (live.id != environmentId || !foreground || _working.value || _sshLogin.value != null) return
-        scheduleAutoReconnect(live)
+        scheduleAutoReconnect(live, immediate = afterNetworkChange)
     }
 
     /**
-     * One reconnect episode through the plan, attempts after [AUTO_RECONNECT_BACKOFF_MS]. It only re-reads (connect never
-     * replays a mutation) and stops at success, a user action or pause (epoch change), a forgotten machine, or offline.
+     * One reconnect episode through the plan, attempts after [AUTO_RECONNECT_BACKOFF_MS] ([immediate]: the first without
+     * waiting, as after a network change). It only re-reads (connect never replays a mutation) and stops at success, a
+     * user action or pause (epoch change), a forgotten machine, or offline.
      */
-    private fun scheduleAutoReconnect(environment: SavedEnvironment) {
+    private fun scheduleAutoReconnect(environment: SavedEnvironment, immediate: Boolean = false) {
         autoReconnectJob?.cancel(); autoReconnectJob = null
         if (!networkAvailable) { reconnectWhenOnline = environment; return }
         reconnectWhenOnline = null
         var epoch = connectionEpoch
         autoReconnectJob = viewModelScope.launch {
-            for (wait in AUTO_RECONNECT_BACKOFF_MS) {
+            for (wait in if (immediate) listOf(0L) + AUTO_RECONNECT_BACKOFF_MS.drop(1) else AUTO_RECONNECT_BACKOFF_MS) {
                 delay(wait)
                 if (!foreground || epoch != connectionEpoch || _sshLogin.value != null || _environments.value.none { it.id == environment.id }) return@launch
                 if (!networkAvailable) { reconnectWhenOnline = environment; return@launch }
@@ -583,13 +591,31 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    /** The default network is [handle] (`Network.getNetworkHandle`). A change checks for a better route; regaining one resumes a pending reconnect. */
+    /**
+     * The default network is [handle] (`Network.getNetworkHandle`). Regaining one resumes a pending reconnect at once. A
+     * change pings the live connection, whose socket may still be bound to the old network: silence drops it and the
+     * plan reconnects without the first backoff. It also checks for a better route.
+     */
     fun onDefaultNetwork(handle: Long) {
         val changed = networkKnown && defaultNetwork != handle
         networkKnown = true; defaultNetwork = handle; networkAvailable = true
         if (!foreground) return
-        reconnectWhenOnline?.let { scheduleAutoReconnect(it); return }
-        if (changed && state.value.connection == ConnectionStatus.Connected) routeMonitor.requestCheck(networkChanged = true)
+        reconnectWhenOnline?.let { scheduleAutoReconnect(it, immediate = true); return }
+        if (changed && state.value.connection == ConnectionStatus.Connected) {
+            verifyLink()
+            routeMonitor.requestCheck(networkChanged = true)
+        }
+    }
+
+    /** A failed check fails the connection inside the client; [connectionDropped] then reconnects through the plan. */
+    private fun verifyLink() {
+        val epoch = connectionEpoch
+        networkChangeEpoch = epoch
+        linkCheckJob?.cancel()
+        linkCheckJob = viewModelScope.launch {
+            // A pong keeps this connection and its route; a later drop waits the normal backoff.
+            if (client.verifyLink(LINK_CHECK_TIMEOUT_MS) && networkChangeEpoch == epoch) networkChangeEpoch = null
+        }
     }
 
     /** Network [handle] stopped being the default; only the current default going away means offline. */

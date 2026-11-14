@@ -294,4 +294,47 @@ class T3ClientTest {
      assertTrue(client.state.value.providers.isEmpty())
    } finally { client.disconnect(); scope.cancel(); runCatching { server.shutdown() } }
  }
+ /** Connects to a fixture server that answers `Ping` with `Pong` only when [answerPings]. */
+ private suspend fun linkCheck(answerPings: Boolean, check: suspend (T3Client) -> Unit) {
+   val server = MockWebServer(); server.start()
+   val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default); val client = T3Client(scope)
+   val listener = object : WebSocketListener() {
+     override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, null) }
+     override fun onMessage(webSocket: WebSocket, text: String) {
+       val frame = EffectRpc.decode(text).single()
+       if (frame.string("_tag") == "Ping") { if (answerPings) webSocket.send("""{"_tag":"Pong"}"""); return }
+       if (frame.string("_tag") != "Request") return
+       val id = frame.string("id")
+       when (frame.string("tag")) {
+         "server.getConfig" -> webSocket.send("""{"_tag":"Exit","requestId":"$id","exit":{"_tag":"Success","value":{"providers":[]}}}""")
+         "orchestration.subscribeShell" -> webSocket.send("""{"_tag":"Chunk","requestId":"$id","values":[{"kind":"snapshot","snapshot":{"projects":[],"threads":[]}},{"kind":"synchronized"}]}""")
+       }
+     }
+   }
+   try {
+     server.enqueue(json(descriptor)); server.enqueue(json("""{"authenticated":true,"permissions":["orchestration:operate"]}""")); server.enqueue(json("""{"ticket":"ticket"}""")); server.enqueue(MockResponse().withWebSocketUpgrade(listener))
+     client.connect(SavedEnvironment("env-1", "Test", server.url("/").toString(), "secret"))
+     withTimeout(5000) { client.state.first { it.canWrite } }
+     check(client)
+   } finally { client.disconnect(); scope.cancel(); runCatching { server.shutdown() } }
+ }
+
+ @Test fun linkCheckPassesWhenThePongArrives() = runBlocking {
+   linkCheck(answerPings = true) { client ->
+     assertTrue(client.verifyLink(5_000))
+     assertEquals(ConnectionStatus.Connected, client.state.value.connection)
+     assertTrue(client.state.value.canWrite)
+   }
+ }
+
+ @Test fun silentLinkFailsTheConnectionWithWritesDisabled() = runBlocking {
+   linkCheck(answerPings = false) { client ->
+     assertFalse(client.verifyLink(300))
+     assertEquals(ConnectionStatus.Error, client.state.value.connection)
+     assertFalse(client.state.value.canWrite)
+     assertNull(client.state.value.activeRoute)
+     assertTrue(client.state.value.error.orEmpty().contains("uncertain"))
+     assertFalse("nothing left to verify", client.verifyLink(300))
+   }
+ }
 }
