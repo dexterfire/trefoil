@@ -130,8 +130,6 @@ class RoutesTest {
         val paired = SavedEnvironment("env", "Mac", "http://192.168.1.20:3773/", "token", allowInsecureHttp = true)
         val next = paired.withRouteHints(hints(listOf(lan("http://192.168.1.20:3773"), lan("HTTP://192.168.1.21:3773/"), lan("http://192.168.1.21:3773"), tailnet("http://192.168.1.21:3773/"))))
         assertEquals(listOf(learned(Lan, "http://192.168.1.21:3773/")), next.routes)
-        val viaTunnel = SavedEnvironment("env", "Mac", "https://prod-abc.t3coderelay.com/", "token")
-        assertSame(viaTunnel, viaTunnel.withRouteHints(hints(tunnel = TunnelHint.Active("prod-abc.t3coderelay.com"))))
     }
 
     @Test fun `learned routes are capped at eight and keep the tunnel`() {
@@ -160,6 +158,14 @@ class RoutesTest {
     @Test fun `stale persisted entries are sanitized`() {
         val start = direct.copy(routes = listOf(EnvironmentRoute(Ssh, "", Paired), learned(Tunnel, "HTTPS://Prod-ABC.t3coderelay.com:443"), learned(Public, "http://8.8.8.8/")))
         assertEquals(listOf(learned(Tunnel, "https://prod-abc.t3coderelay.com/")), start.withRouteHints(hints()).routes)
+    }
+
+    @Test fun `pairing through the tunnel keeps the tunnel marker so the paired route is classified Tunnel`() {
+        val viaTunnel = SavedEnvironment("env", "Mac", "https://prod-abc.t3coderelay.com/", "token")
+        val next = viaTunnel.withRouteHints(hints(emptyList(), TunnelHint.Active("prod-abc.t3coderelay.com")))
+        assertEquals("prod-abc.t3coderelay.com", next.tunnelHost())
+        assertEquals(listOf(EnvironmentRoute(Tunnel, "https://prod-abc.t3coderelay.com/", Paired)), next.candidateRoutes())
+        assertSame(next, next.withRouteHints(hints(emptyList(), TunnelHint.Active("prod-abc.t3coderelay.com"))))
     }
 
     @Test fun `candidateRoutes orders by kind with paired first within a kind`() {

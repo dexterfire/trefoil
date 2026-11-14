@@ -118,10 +118,12 @@ fun SavedEnvironment.withRouteHints(hints: RouteHints): SavedEnvironment {
         TunnelHint.NotLinked -> learned = learned.filterNot { it.kind == RouteKind.Tunnel }
         TunnelHint.Unknown -> Unit
     }
-    val seen = listOfNotNull(normalizedRouteBase(baseUrl)).toMutableSet()
+    val paired = normalizedRouteBase(baseUrl)
+    val seen = mutableSetOf<String>()
     val cleaned = learned.filter { it.kind != RouteKind.Ssh }.sortedBy { it.kind.ordinal }.mapNotNull { route ->
         val base = normalizedRouteBase(route.baseUrl)?.takeIf(::routeUsable) ?: return@mapNotNull null
-        if (seen.add(base)) route.copy(baseUrl = base, source = RouteSource.Learned) else null
+        // A tunnel equal to the paired address is kept: it marks the paired route as the tunnel (candidateRoutes dedupes it).
+        if ((base != paired || route.kind == RouteKind.Tunnel) && seen.add(base)) route.copy(baseUrl = base, source = RouteSource.Learned) else null
     }
     val tunnels = cleaned.filter { it.kind == RouteKind.Tunnel }.take(1)
     val capped = cleaned.filter { it.kind != RouteKind.Tunnel }.take(MAX_LEARNED_ROUTES - tunnels.size) + tunnels
