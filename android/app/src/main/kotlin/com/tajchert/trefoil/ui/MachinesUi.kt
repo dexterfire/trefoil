@@ -212,9 +212,10 @@ private fun AddTile(label: String, description: String, icon: ImageVector, prima
 }
 
 @Composable
-internal fun PairDialog(busy: Boolean, dismiss: () -> Unit, attempt: ConnectionAttempt = ConnectionAttempt(), pair: (String, String, Boolean) -> Unit) {
+internal fun PairDialog(busy: Boolean, dismiss: () -> Unit, attempt: ConnectionAttempt = ConnectionAttempt(), initialLink: String = "", pair: (String, String, Boolean) -> Unit) {
     val c = Tf.colors
-    var url by remember { mutableStateOf("") }
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    var url by remember { mutableStateOf(initialLink) }
     var name by remember { mutableStateOf("") }
     var insecure by remember(url) { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -231,6 +232,8 @@ internal fun PairDialog(busy: Boolean, dismiss: () -> Unit, attempt: ConnectionA
             OutlinedTextField(name, { name = it; error = null }, enabled = !busy, label = { Text("Display name") }, singleLine = true, shape = TfFieldShape, colors = tfFieldColors(), modifier = Modifier.fillMaxWidth())
             OutlinedTextField(url, { url = it; error = null }, enabled = !busy, label = { Text("Pairing link") }, visualTransformation = PasswordVisualTransformation(),
                 textStyle = TrefoilType.mono.copy(fontSize = 14.sp, color = c.text), shape = TfFieldShape, colors = tfFieldColors(), modifier = Modifier.fillMaxWidth(), maxLines = 3)
+            // The clipboard holds a credential: read it only on this tap, never on open.
+            TextButton(onClick = { clipboard.getText()?.text?.trim()?.takeIf { it.isNotEmpty() }?.let { url = it; error = null } }, enabled = !busy, modifier = Modifier.align(Alignment.End)) { Text("Paste link") }
             Text("Pairing links contain credentials. Keep them private.", style = MaterialTheme.typography.bodySmall, color = c.muted)
             if (privateHttp) {
                 Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(insecure, { insecure = it; error = null }, enabled = !busy); Text("Allow unencrypted HTTP on this private network", Modifier.weight(1f)) }
