@@ -26,13 +26,17 @@ internal fun screenBasePath(target: ScreenTarget): String = when (target) {
     is ScreenTarget.Device -> "/api/device-hub"
 }
 
-/** Rechecks the saved URL policy and exact media roots before a WebView receives credentials. */
+/**
+ * Rechecks the saved URL policy and exact media roots before a WebView receives credentials. The root may be the
+ * saved `baseUrl` or one of the environment's own learned routes (a connection may run over any of them).
+ */
 fun validateScreenAccess(access: ScreenAccess, environment: SavedEnvironment): Boolean = runCatching {
     val target = access.target
-    val base = validatedEnvironmentUrl(environment.baseUrl, environment.allowInsecureHttp)
-    val expected = base.resolve(screenBasePath(access.target))!!.toString().removeSuffix("/")
-    access.environmentId == environment.id && !access.credentials && access.httpBase == expected &&
-        access.wsBase == expected.replaceFirst("http", "ws") &&
+    val roots = (listOf(environment.baseUrl) + environment.routes.filter { it.kind != RouteKind.Ssh }.map { it.baseUrl }).mapNotNull { base ->
+        runCatching { validatedEnvironmentUrl(base, environment.allowInsecureHttp).resolve(screenBasePath(access.target))!!.toString().removeSuffix("/") }.getOrNull()
+    }
+    access.environmentId == environment.id && !access.credentials && access.httpBase in roots &&
+        access.wsBase == access.httpBase.replaceFirst("http", "ws") &&
         !access.query["wsTicket"].isNullOrBlank() &&
         access.query.keys == (if (target is ScreenTarget.Device) setOf("wsTicket", "hostId") else setOf("wsTicket")) &&
         (target !is ScreenTarget.Device || access.query["hostId"] == target.hostId)

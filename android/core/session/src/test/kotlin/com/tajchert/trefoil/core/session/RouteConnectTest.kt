@@ -1,0 +1,291 @@
+package com.tajchert.trefoil.core.session
+
+import com.tajchert.trefoil.core.model.*
+import com.tajchert.trefoil.core.protocol.*
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.first
+import kotlinx.serialization.json.*
+import okhttp3.*
+import okhttp3.mockwebserver.*
+import org.junit.After
+import org.junit.Assert.*
+import org.junit.Test
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeUnit
+
+/** Multi-route connect, route hints and preflight against isolated fixture hosts (no real threads). */
+class RouteConnectTest {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val servers = mutableListOf<MockWebServer>()
+    private val clients = mutableListOf<T3Client>()
+
+    @After fun stop() {
+        clients.forEach { it.close() }
+        scope.cancel()
+        servers.forEach { runCatching { it.shutdown() } }
+    }
+
+    /** A fixture T3 host answering by path; records every request so tests can check where the bearer went. */
+    private inner class Host(
+        val environmentId: String = "env-1",
+        val session: MockResponse = json("""{"authenticated":true,"permissions":["orchestration:operate"]}"""),
+        val linkState: () -> MockResponse = { json("", 404) },
+        val config: String = """{"providers":[]}""",
+        val descriptor: () -> MockResponse = { json("""{"environmentId":"$environmentId","orchestrationProtocolVersion":2}""") },
+    ) {
+        val server = MockWebServer().also { servers += it }
+        val requests = CopyOnWriteArrayList<RecordedRequest>()
+        val socket = CompletableDeferred<WebSocket>()
+        val configStream = CompletableDeferred<String>()
+        val dispatched = Channel<String>(Channel.UNLIMITED)
+        var answerDispatch = true
+        init {
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    requests += request
+                    val path = request.path.orEmpty()
+                    return when {
+                        path == "/.well-known/t3/environment" -> descriptor()
+                        path == "/api/auth/session" -> session
+                        path.startsWith("/api/auth/websocket-ticket") -> json("""{"ticket":"fixture-ticket"}""")
+                        path == "/api/connect/link-state" -> linkState()
+                        path.startsWith("/ws?") -> MockResponse().withWebSocketUpgrade(listener)
+                        else -> json("", 404)
+                    }
+                }
+            }
+            server.start()
+        }
+        val url: String get() = server.url("/").toString()
+        fun route(kind: RouteKind, source: RouteSource = RouteSource.Learned) = EnvironmentRoute(kind, url, source)
+        fun tokenSent() = requests.any { it.getHeader("Authorization") != null }
+        val listener = object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) { socket.complete(webSocket) }
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, null) }
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                val frame = EffectRpc.decode(text).single()
+                if (frame.string("_tag") != "Request") return
+                val id = frame.string("id")
+                when (frame.string("tag")) {
+                    "server.getConfig" -> webSocket.send("""{"_tag":"Exit","requestId":"$id","exit":{"_tag":"Success","value":$config}}""")
+                    "orchestration.subscribeShell" -> webSocket.send("""{"_tag":"Chunk","requestId":"$id","values":[{"kind":"snapshot","snapshot":{"projects":[],"threads":[]}},{"kind":"synchronized"}]}""")
+                    "subscribeServerConfig" -> configStream.complete(id)
+                    "orchestration.subscribeThread" -> webSocket.send("""{"_tag":"Chunk","requestId":"$id","values":[{"kind":"snapshot","projection":{"thread":{"id":"t"},"messages":[],"runs":[],"turnItems":[],"runtimeRequests":[]}},{"kind":"synchronized"}]}""")
+                    "orchestration.dispatchCommand" -> {
+                        dispatched.trySend(id)
+                        if (answerDispatch) webSocket.send("""{"_tag":"Exit","requestId":"$id","exit":{"_tag":"Success","value":{"sequence":1}}}""")
+                    }
+                }
+            }
+        }
+    }
+
+    private fun json(body: String, code: Int = 200) = MockResponse().setResponseCode(code).setHeader("Content-Type", "application/json").setBody(body)
+    private fun client(timeout: Long = 2_000) = T3Client(scope, routeTimeoutMillis = { timeout }).also { clients += it }
+    private fun environment(baseUrl: String) = SavedEnvironment("env-1", "Test", baseUrl, "fixture-token")
+    private fun refusedUrl(): String { val dead = MockWebServer(); dead.start(); val url = dead.url("/").toString(); dead.shutdown(); return url }
+
+    @Test fun routesAreTriedInOrderAndTheFirstVerifiedOneWins() = runBlocking {
+        val lan = Host(); val tunnel = Host()
+        val client = client()
+        val routes = listOf(EnvironmentRoute(RouteKind.Lan, refusedUrl(), RouteSource.Paired), lan.route(RouteKind.Tailnet), tunnel.route(RouteKind.Tunnel))
+        client.connect(environment(routes.first().baseUrl), routes)
+        assertEquals(ConnectionStatus.Connected, client.state.value.connection)
+        assertEquals(routes[1], client.state.value.activeRoute)
+        assertEquals("The saved environment keeps its paired address", routes.first().baseUrl, client.state.value.environment?.baseUrl)
+        assertTrue(lan.requests.any { it.path == "/api/auth/session" && it.getHeader("Authorization") == "Bearer fixture-token" })
+        assertTrue("A later route is never contacted once one answers", tunnel.requests.isEmpty())
+    }
+
+    @Test fun identityMismatchSkipsTheRouteWithoutSendingTheToken() = runBlocking {
+        val stranger = Host(environmentId = "someone-else"); val tunnel = Host()
+        val client = client()
+        client.connect(environment(stranger.url), listOf(stranger.route(RouteKind.Lan, RouteSource.Paired), tunnel.route(RouteKind.Tunnel)))
+        assertEquals(RouteKind.Tunnel, client.state.value.activeRoute?.kind)
+        assertEquals(listOf("/.well-known/t3/environment"), stranger.requests.map { it.path })
+        assertFalse("The bearer never reaches a route that answered as another machine", stranger.tokenSent())
+    }
+
+    @Test fun rejectedTokenStopsBeforeLaterRoutes() = runBlocking {
+        val lan = Host(session = json("""{"error":"unauthorized"}""", 401)); val tunnel = Host()
+        val client = client()
+        try { client.connect(environment(lan.url), listOf(lan.route(RouteKind.Lan, RouteSource.Paired), tunnel.route(RouteKind.Tunnel))); fail("A rejected token must stop") }
+        catch (error: PairingException) { assertEquals("Authorization expired or denied; pair again", error.message) }
+        assertTrue("The token is dead on every route of the host", tunnel.requests.isEmpty())
+        assertEquals(ConnectionStatus.Error, client.state.value.connection)
+        assertNull(client.state.value.activeRoute)
+        val forbidden = Host(session = json("{}", 403)); val other = Host()
+        try { client.connect(environment(forbidden.url), listOf(forbidden.route(RouteKind.Lan), other.route(RouteKind.Tunnel))); fail("403 must stop") } catch (_: PairingException) { }
+        assertTrue(other.requests.isEmpty())
+    }
+
+    @Test fun allRoutesFailingNamesTheLastFailure() = runBlocking {
+        val stranger = Host(environmentId = "someone-else")
+        val silent = Host(descriptor = { MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE) })
+        val client = client(timeout = 300)
+        try { client.connect(environment(stranger.url), listOf(stranger.route(RouteKind.Lan), silent.route(RouteKind.Tunnel))); fail("No route answered") }
+        catch (error: PairingException) { assertEquals("T3 connection timed out. Check the server and network, then try again.", error.message) }
+        try { client.connect(environment(silent.url), listOf(silent.route(RouteKind.Lan), stranger.route(RouteKind.Tunnel))); fail("No route answered") }
+        catch (error: PairingException) { assertEquals("Environment identity changed; pair again", error.message) }
+        assertFalse(stranger.tokenSent() || silent.tokenSent())
+        assertEquals(ConnectionStatus.Error, client.state.value.connection)
+    }
+
+    @Test fun urlPolicyStillGuardsEveryRoute() = runBlocking {
+        val tunnel = Host()
+        val client = client()
+        val blocked = listOf(EnvironmentRoute(RouteKind.Lan, "http://192.168.1.20:3773/", RouteSource.Learned), EnvironmentRoute(RouteKind.Public, "http://8.8.8.8/", RouteSource.Learned))
+        client.connect(environment(tunnel.url), blocked + tunnel.route(RouteKind.Tunnel))
+        assertEquals(RouteKind.Tunnel, client.state.value.activeRoute?.kind)
+        try { client.connect(environment(tunnel.url), blocked); fail("Blocked routes are never contacted") }
+        catch (error: PairingException) { assertTrue(error.message.orEmpty().startsWith("Use HTTPS or SSH")) }
+    }
+
+    @Test fun singleRouteConnectKeepsClassifiedPairedRoute() = runBlocking {
+        val host = Host()
+        val client = client()
+        client.connect(environment(host.url))
+        assertEquals(EnvironmentRoute(RouteKind.Lan, host.url, RouteSource.Paired), client.state.value.activeRoute)
+        val stranger = Host(environmentId = "someone-else")
+        try { client.connect(environment(stranger.url)); fail("Identity mismatch") } catch (_: PairingException) { }
+        assertFalse(stranger.tokenSent())
+    }
+
+    @Test fun linkStateMapsToTunnelHints() {
+        fun hint(body: String) = tunnelHint(Json.parseToJsonElement(body).jsonObject)
+        assertEquals(TunnelHint.Active("prod-fixture.t3coderelay.com"), hint("""{"linked":true,"managedTunnelActive":true,"tunnelHostname":"prod-fixture.t3coderelay.com","relayUrl":null,"future":1}"""))
+        assertEquals("managedTunnelActive may be absent", TunnelHint.Active("prod-fixture.t3coderelay.com"), hint("""{"linked":true,"tunnelHostname":"prod-fixture.t3coderelay.com"}"""))
+        assertEquals("Older servers omit tunnelHostname", TunnelHint.Unknown, hint("""{"linked":true,"managedTunnelActive":true}"""))
+        assertEquals(TunnelHint.Unknown, hint("""{"linked":true,"managedTunnelActive":false,"tunnelHostname":"prod-fixture.t3coderelay.com"}"""))
+        assertEquals(TunnelHint.Unknown, hint("""{"linked":true,"tunnelHostname":"  "}"""))
+        assertEquals(TunnelHint.NotLinked, hint("""{"linked":false,"tunnelHostname":"prod-fixture.t3coderelay.com"}"""))
+        assertEquals(TunnelHint.NotLinked, hint("""{"linked":true,"linkRevoked":true,"tunnelHostname":"prod-fixture.t3coderelay.com"}"""))
+        assertEquals(TunnelHint.Unknown, hint("""{}"""))
+        assertEquals(TunnelHint.Unknown, hint("""{"linked":"true","tunnelHostname":"prod-fixture.t3coderelay.com"}"""))
+    }
+
+    @Test fun directEndpointsAreParsedTolerantly() {
+        fun parse(body: String) = directEndpointHints(Json.parseToJsonElement(body).jsonObject)
+        assertNull(parse("""{"providers":[]}"""))
+        assertEquals(emptyList<DirectEndpointHint>(), parse("""{"directEndpoints":[]}"""))
+        assertEquals(listOf(DirectEndpointHint("lan", "http://192.168.1.20:3773"), DirectEndpointHint("vpn", "https://box.example.test")),
+            parse("""{"directEndpoints":[{"kind":"lan","httpBaseUrl":"http://192.168.1.20:3773","extra":true},{"kind":"lan"},{"httpBaseUrl":"https://x.test"},7,{"kind":"vpn","httpBaseUrl":"https://box.example.test"}]}"""))
+    }
+
+    @Test fun connectEmitsOneHintWithDirectEndpointsAndLinkState() = runBlocking {
+        val host = Host(config = """{"providers":[],"directEndpoints":[{"kind":"lan","httpBaseUrl":"http://192.168.1.20:3773"}]}""",
+            linkState = { json("""{"linked":true,"managedTunnelActive":true,"tunnelHostname":"prod-fixture.t3coderelay.com","publishAgentActivity":false}""") })
+        val client = client()
+        val hints = scope.async { withTimeout(5_000) { client.routeHints.first() } }
+        yield(); delay(50)
+        client.connect(environment(host.url))
+        assertEquals(RouteHints("env-1", listOf(DirectEndpointHint("lan", "http://192.168.1.20:3773")), TunnelHint.Active("prod-fixture.t3coderelay.com")), hints.await())
+        val linkState = host.requests.single { it.path == "/api/connect/link-state" }
+        assertEquals("Bearer fixture-token", linkState.getHeader("Authorization"))
+    }
+
+    @Test fun missingLinkStateAndEndpointsGiveUnknownHintsWithoutFailing() = runBlocking {
+        val host = Host(linkState = { json("""{"error":"not found"}""", 404) })
+        val client = client()
+        val hints = scope.async { withTimeout(5_000) { client.routeHints.first() } }
+        yield(); delay(50)
+        client.connect(environment(host.url))
+        assertEquals(RouteHints("env-1", null, TunnelHint.Unknown), hints.await())
+        assertEquals(ConnectionStatus.Connected, client.state.value.connection)
+        val silent = Host(linkState = { MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE) })
+        val late = scope.async { withTimeout(8_000) { client.routeHints.first() } }
+        yield(); delay(50)
+        client.connect(environment(silent.url))
+        assertEquals("A silent link-state times out as Unknown", RouteHints("env-1", null, TunnelHint.Unknown), late.await())
+        assertEquals(ConnectionStatus.Connected, client.state.value.connection)
+    }
+
+    @Test fun configSnapshotsEmitOnlyChangedDirectEndpointsAndNeverDisturbTheSession() = runBlocking {
+        val first = """[{"kind":"lan","httpBaseUrl":"http://192.168.1.20:3773"}]"""
+        val host = Host(config = """{"providers":[],"directEndpoints":$first}""")
+        val client = client()
+        val received = Channel<RouteHints>(Channel.UNLIMITED)
+        val collector = scope.launch { client.routeHints.collect { received.send(it) } }
+        yield(); delay(50)
+        client.connect(environment(host.url))
+        assertEquals(TunnelHint.Unknown, withTimeout(5_000) { received.receive() }.tunnel)
+        withTimeout(5_000) { client.state.first { it.canWrite } }
+        val socket = host.socket.await(); val stream = host.configStream.await()
+        fun chunk(vararg values: String) = socket.send("""{"_tag":"Chunk","requestId":"$stream","values":[${values.joinToString(",")}]}""")
+        chunk("""{"version":1,"type":"snapshot","config":{"providers":[],"directEndpoints":$first}}""")
+        chunk("""{"version":1,"type":"providerStatuses","payload":{"providers":[]}}""", """{"version":2,"type":"future.event","payload":{}}""")
+        chunk("""{"version":1,"type":"snapshot","config":{"providers":[]}}""")
+        chunk("""{"version":1,"type":"snapshot","config":{"providers":[],"directEndpoints":[{"kind":"tailnet","httpBaseUrl":"https://box.tail.ts.net"}]}}""")
+        val changed = withTimeout(5_000) { received.receive() }
+        assertEquals(RouteHints("env-1", listOf(DirectEndpointHint("tailnet", "https://box.tail.ts.net")), TunnelHint.Unknown), changed)
+        delay(100)
+        assertTrue("Unchanged, absent and unknown events emit nothing", received.tryReceive().isFailure)
+        // An older server rejecting or ending the optional config stream leaves the session alone.
+        socket.send("""{"_tag":"Exit","requestId":"$stream","exit":{"_tag":"Failure","cause":[{"_tag":"Fail","error":{"_tag":"Unknown"}}]}}""")
+        delay(200)
+        assertEquals(ConnectionStatus.Connected, client.state.value.connection)
+        assertTrue(client.state.value.canWrite)
+        collector.cancel()
+    }
+
+    @Test fun hintsStopWithTheConnection() = runBlocking {
+        val host = Host(linkState = { MockResponse().setBodyDelay(1, TimeUnit.SECONDS).setBody("""{"linked":true,"tunnelHostname":"prod-fixture.t3coderelay.com"}""") })
+        val client = client()
+        val received = Channel<RouteHints>(Channel.UNLIMITED)
+        val collector = scope.launch { client.routeHints.collect { received.send(it) } }
+        yield(); delay(50)
+        client.connect(environment(host.url))
+        client.disconnect()
+        delay(1_500)
+        assertTrue("A link-state reply after disconnect is dropped", received.tryReceive().isFailure)
+        collector.cancel()
+    }
+
+    @Test fun preflightIsCredentialFreeBoundedAndLeavesTheConnectionAlone() = runBlocking {
+        val host = Host(); val stranger = Host(environmentId = "someone-else")
+        val silent = Host(descriptor = { MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE) })
+        val client = client()
+        client.connect(environment(host.url))
+        val before = withTimeout(5_000) { client.state.first { it.canWrite } }
+        assertTrue(client.preflight("env-1", host.route(RouteKind.Tunnel), false, 2_000))
+        assertFalse(client.preflight("env-1", stranger.route(RouteKind.Lan), false, 2_000))
+        val started = System.nanoTime()
+        assertFalse(client.preflight("env-1", silent.route(RouteKind.Lan), false, 300))
+        assertTrue("A silent route is abandoned at its timeout", TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 2_000)
+        assertFalse(client.preflight("env-1", EnvironmentRoute(RouteKind.Lan, "http://192.168.1.20:3773/", RouteSource.Learned), false, 300))
+        assertFalse(client.preflight("env-1", EnvironmentRoute(RouteKind.Ssh, "", RouteSource.Paired), true, 300))
+        assertFalse(client.preflight("env-1", EnvironmentRoute(RouteKind.Lan, refusedUrl(), RouteSource.Learned), false, 2_000))
+        assertFalse(host.requests.filter { it.path == "/.well-known/t3/environment" }.drop(1).any { it.getHeader("Authorization") != null })
+        assertFalse(stranger.tokenSent() || silent.tokenSent())
+        assertEquals(before, client.state.value)
+    }
+
+    @Test fun idleForRouteSwitchOnlyWithoutMutationInFlight() = runBlocking {
+        val host = Host(); host.answerDispatch = false
+        val client = client()
+        assertTrue(client.isIdleForRouteSwitch())
+        client.connect(environment(host.url))
+        withTimeout(5_000) { client.state.first { it.canWrite } }
+        client.selectThread("t")
+        withTimeout(5_000) { client.state.first { it.canWrite && it.selectedThreadId == "t" } }
+        assertTrue(client.isIdleForRouteSwitch())
+        val socket = host.socket.await()
+        val send = scope.async { runCatching { client.sendMessage("fixture") } }
+        val id = withTimeout(5_000) { host.dispatched.receive() }
+        assertFalse("A pending mutation blocks a route switch", client.isIdleForRouteSwitch())
+        socket.send("""{"_tag":"Exit","requestId":"$id","exit":{"_tag":"Success","value":{"sequence":1}}}""")
+        assertTrue(withTimeout(5_000) { send.await() }.isSuccess)
+        assertTrue(client.isIdleForRouteSwitch())
+    }
+
+    @Test fun reconnectWalksTheLastRoutePlan() = runBlocking {
+        val lan = Host(); val tunnel = Host()
+        val client = client()
+        val routes = listOf(lan.route(RouteKind.Lan, RouteSource.Paired), tunnel.route(RouteKind.Tunnel))
+        client.connect(environment(lan.url), routes)
+        lan.server.shutdown()
+        client.reconnect()
+        assertEquals(RouteKind.Tunnel, client.state.value.activeRoute?.kind)
+    }
+}

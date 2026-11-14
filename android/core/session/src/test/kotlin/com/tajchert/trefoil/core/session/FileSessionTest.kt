@@ -82,7 +82,7 @@ class FileSessionTest {
             f.client.selectThread("other")
             Fixture.complete(pending.first, pending.second, """{"relativeUrl":"/api/assets/signed/app.apk","expiresAt":4102444800000}""")
             assertTrue(download.await().isFailure)
-            assertEquals(4, f.server.requestCount)
+            assertTrue("No HTTP download starts", generateSequence { f.server.takeRequest(100, java.util.concurrent.TimeUnit.MILLISECONDS) }.none { it.path.orEmpty().startsWith("/api/assets") })
         }
     }
     @Test fun inheritedImagesMintSourceResourcesThroughExistingDownloadPolicy() = runBlocking {
@@ -113,7 +113,7 @@ class FileSessionTest {
             f.client.selectThread("other")
             Fixture.complete(pending.first, pending.second, """{"relativeUrl":"/api/assets/signed/image.png","expiresAt":4102444800000}""")
             assertTrue(download.await().isFailure)
-            assertEquals(4, f.server.requestCount)
+            assertTrue("No HTTP download starts", generateSequence { f.server.takeRequest(100, java.util.concurrent.TimeUnit.MILLISECONDS) }.none { it.path.orEmpty().startsWith("/api/assets") })
         }
     }
 

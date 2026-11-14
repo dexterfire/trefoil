@@ -38,7 +38,7 @@ class NewThreadFlowTest {
     custom: (WebSocket, String, String, JsonObject) -> Boolean = { _, _, _, _ -> false },
     block: suspend CoroutineScope.(Fixture) -> Unit,
   ) = runBlocking {
-    val server = MockWebServer(); server.start()
+    val server = MockWebServer(); server.dispatcher = LinkStateTolerantQueue(); server.start()
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val client = T3Client(scope, requestTimeoutMillis = timeoutMillis)
     val requests = Collections.synchronizedList(mutableListOf<JsonObject>())

@@ -1,6 +1,9 @@
 package com.tajchert.trefoil.core.session
 
+import com.tajchert.trefoil.core.model.EnvironmentRoute
 import com.tajchert.trefoil.core.model.MachineProbe
+import com.tajchert.trefoil.core.model.RouteKind
+import com.tajchert.trefoil.core.model.RouteSource
 import com.tajchert.trefoil.core.model.SavedEnvironment
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
@@ -69,5 +72,32 @@ class EnvironmentProbeTest {
         assertEquals(MachineProbe.NeedsAttention, probe.probe(SavedEnvironment("env-1", "Lan", "http://192.168.1.20/", "fixture-token", allowInsecureHttp = false)))
         assertEquals(MachineProbe.NeedsAttention, probe.probe(SavedEnvironment("env-1", "Ssh", "", "fixture-token")))
         assertEquals(0, server.requestCount)
+    }
+
+    @Test fun routesProbeInOrderFirstOnlineWins() = runBlocking {
+        val tunnel = MockWebServer().apply { start() }
+        try {
+            val lan = EnvironmentRoute(RouteKind.Lan, server.url("/").toString(), RouteSource.Paired)
+            val far = EnvironmentRoute(RouteKind.Tunnel, tunnel.url("/").toString(), RouteSource.Learned)
+            // An identity mismatch moves on without the token; the tunnel then answers.
+            server.enqueue(json(descriptor.replace("env-1", "someone-else")))
+            tunnel.enqueue(json(descriptor)); tunnel.enqueue(json("""{"authenticated":true}"""))
+            assertEquals(EnvironmentProbe.RouteProbe(MachineProbe.Online, far), EnvironmentProbe().probe(environment(), listOf(lan, EnvironmentRoute(RouteKind.Ssh, "", RouteSource.Paired), far)))
+            assertNull(server.takeRequest(1, TimeUnit.SECONDS)!!.getHeader("Authorization"))
+            // The first online route wins without contacting later ones.
+            server.enqueue(json(descriptor)); server.enqueue(json("""{"authenticated":true}"""))
+            assertEquals(EnvironmentProbe.RouteProbe(MachineProbe.Online, lan), EnvironmentProbe().probe(environment(), listOf(lan, far)))
+            assertEquals(2, tunnel.requestCount)
+            // AuthFailed is decisive.
+            server.enqueue(json(descriptor)); server.enqueue(json("{}", 401))
+            assertEquals(EnvironmentProbe.RouteProbe(MachineProbe.AuthFailed, lan), EnvironmentProbe().probe(environment(), listOf(lan, far)))
+            assertEquals(2, tunnel.requestCount)
+            // A mismatch is remembered when nothing is online; nothing tried is Unknown.
+            server.enqueue(json(descriptor.replace("env-1", "someone-else"))); tunnel.enqueue(json("oops", 502))
+            assertEquals(EnvironmentProbe.RouteProbe(MachineProbe.NeedsAttention, lan), EnvironmentProbe().probe(environment(), listOf(lan, far)))
+            tunnel.enqueue(json("oops", 502))
+            assertEquals(EnvironmentProbe.RouteProbe(MachineProbe.Unreachable, null), EnvironmentProbe().probe(environment(), listOf(far)))
+            assertEquals(EnvironmentProbe.RouteProbe(MachineProbe.Unknown, null), EnvironmentProbe().probe(environment(), listOf(EnvironmentRoute(RouteKind.Ssh, "", RouteSource.Paired))))
+        } finally { tunnel.shutdown() }
     }
 }
