@@ -2,12 +2,14 @@ package com.tajchert.trefoil.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -119,9 +121,9 @@ private fun RouteRowItem(row: RouteRow) {
 private fun LocalHttpConsent(allowed: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
     val c = Tf.colors
     Column(Modifier.fillMaxWidth().background(c.s2, RoundedCornerShape(14.dp)).padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(Modifier.toggleable(value = allowed, enabled = enabled, role = Role.Switch, onValueChange = onChange), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Use local network (unencrypted HTTP)", Modifier.weight(1f), style = TrefoilType.meta, color = c.text)
-            Switch(allowed, onChange, enabled = enabled)
+            Switch(allowed, null, enabled = enabled)
         }
         Text("Plain HTTP exposes conversations to others on the network. Turn it on only for a network you trust.", style = TrefoilType.preview.copy(fontSize = 13.sp, lineHeight = 18.sp), color = c.amber)
     }

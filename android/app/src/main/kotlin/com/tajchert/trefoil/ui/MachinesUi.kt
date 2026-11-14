@@ -123,7 +123,7 @@ private fun MachineCard(
     val working = if (live) state.threads.count { !it.archived && threadIsWorking(it) } else 0
     val needsYou = if (live) state.threads.count { !it.archived && threadIndicator(it).kind in setOf("attention", "input") } else 0
     val activeRoute = if (live) state.activeRoute else null
-    val routeCount = environment.candidateRoutes().size
+    val routeCount = routeRows(environment, activeRoute).size
     Column(modifier.fillMaxWidth().clip(shape).background(c.s1).border(if (current) 2.dp else 1.dp, if (current) c.accent else c.line, shape)) {
     Row(
         Modifier.fillMaxWidth()
