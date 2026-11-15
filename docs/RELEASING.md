@@ -1,5 +1,10 @@
 # Android releases
 
+Release `0.15.1` (`versionCode = 24`) fails over fast when the phone changes network (for example
+Wi-Fi to cellular): the live connection is pinged on a default-network change and, if it does not
+answer within 4 s, reconnects through the route plan at once, so the route badge no longer shows
+"Local network" on a dead link. Check a Wi-Fi to cellular switch against a real environment on a device.
+
 Release `0.15.0` (`versionCode = 23`) puts the tightest limit in the thread-list header, renames
 the screen to Limits & usage (readable chart, reached-limit state, offline view of last known data)
 and drops limits from Machines, restyles all home screen widgets with one chrome and the fixed
