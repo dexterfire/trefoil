@@ -37,6 +37,8 @@ fun TrefoilApp(
     draft: ThreadDraft?, onStartDraft: (ThreadDraft) -> Unit, onCancelDraft: () -> Unit,
     onSetRuntimeMode: (RuntimeMode) -> Unit, onSetModel: (ModelOption) -> Unit,
     onReconnect: () -> Unit, onDisconnect: () -> Unit, onForget: (SavedEnvironment) -> Unit,
+    keepConnected: Boolean = false,
+    onKeepConnectedChange: (Boolean) -> Unit = {},
     onSshConnect: (SshConnectionInput) -> Unit = {},
     sshHostKey: SshHostKey? = null,
     onTrustSsh: () -> Unit = {},
@@ -140,6 +142,8 @@ fun TrefoilApp(
             // Offline the screen shows cached limits; only a connection that can read usage fetches (the effect above covers a later connect).
             onUsage = if (connected) ({ usageTab = 0; showUsage = true; if (state.canReadUsage) onOpenUsage() }) else null,
             onDisconnect = if (connected) ({ onDisconnect(); choosingEnvironment = true; showThread = false }) else null,
+            keepConnected = keepConnected,
+            onKeepConnectedChange = onKeepConnectedChange,
         )
         val needsYouThreads = remember(state.threads) { needsYouThreads(state.threads) }
         val needsYou = needsYouThreads.size

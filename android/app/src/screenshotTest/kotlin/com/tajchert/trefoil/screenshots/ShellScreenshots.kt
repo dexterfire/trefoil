@@ -4,7 +4,13 @@ import android.content.res.Configuration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Surface
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.width
@@ -26,6 +32,7 @@ import com.tajchert.trefoil.ui.NewThreadSheetContent
 import com.tajchert.trefoil.ui.PairDialog
 import com.tajchert.trefoil.ui.SshConnectionDialog
 import com.tajchert.trefoil.ui.SshHostKeyDialog
+import com.tajchert.trefoil.ui.ShellMenuItems
 import com.tajchert.trefoil.ui.Tf
 import com.tajchert.trefoil.ui.ThreadList
 import com.tajchert.trefoil.ui.ThreadListEmpty
@@ -124,3 +131,20 @@ private fun Machines(saved: List<SavedEnvironment>, state: ClientState, dark: Bo
         Box(Modifier.width(420.dp)) { ThreadList(state, select = {}, create = {}, shell = ShellFixtures.noActions, railLayout = true) }
     }
 }
+
+@Composable
+private fun KeepConnectedMenu(dark: Boolean, checked: Boolean) = Phone(dark) {
+    val actions = ShellFixtures.noActions.copy(keepConnected = checked, onKeepConnectedChange = {})
+    Box(Modifier.fillMaxSize()) { Surface(Modifier.align(Alignment.TopEnd).padding(top = 56.dp, end = 8.dp), color = Tf.colors.sheet,
+        shape = RoundedCornerShape(16.dp), shadowElevation = 3.dp, tonalElevation = 3.dp) {
+        androidx.compose.foundation.layout.Column(Modifier.width(IntrinsicSize.Max).widthIn(min = 112.dp, max = 280.dp).padding(vertical = 8.dp)) {
+            ShellMenuItems(ShellFixtures.connected(), actions, close = {})
+        }
+    } }
+}
+
+@PreviewTest @Preview(showBackground = true, widthDp = 400, heightDp = 400)
+@Composable fun Shell_KeepConnectedMenu_On_Light() = KeepConnectedMenu(dark = false, checked = true)
+
+@PreviewTest @Preview(showBackground = true, widthDp = 400, heightDp = 400, uiMode = NIGHT)
+@Composable fun Shell_KeepConnectedMenu_Off_Dark() = KeepConnectedMenu(dark = true, checked = false)
