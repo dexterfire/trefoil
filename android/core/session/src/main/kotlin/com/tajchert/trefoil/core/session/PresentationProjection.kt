@@ -318,9 +318,11 @@ internal fun toolActivities(projection: JsonObject): List<ToolActivity> {
     .filter { it.string("type") !in setOf("message", "user_message", "assistant_message", "user_input_request", "approval_request") }
     .map { item ->
         val kind = item.string("type")
-        val primary = listOf("input", "text", "markdown", "fileName", "pattern", "patterns", "message", "reason")
+        // A rendered page is shown by its own card; its input (the HTML) and output envelope never become text.
+        val htmlRender = htmlRenderFromToolItem(kind, item.string("status"), item.optionalText("toolName"), item["output"])
+        val primary = if (htmlRender != null) "" else listOf("input", "text", "markdown", "fileName", "pattern", "patterns", "message", "reason")
             .firstNotNullOfOrNull { item.detailText(it) }.orEmpty()
-        val output = item.detailText("output")
+        val output = if (htmlRender != null) null else item.detailText("output")
         val sourceThreadId = item.optionalText("sourceThreadId") ?: projection.obj("thread").optionalText("id")
         val sourceItemId = item.optionalText("sourceItemId") ?: item.optionalText("id")
         val imageMimes = if (kind == "dynamic_tool") toolImageMimes(item["output"]) else emptyList()
@@ -344,7 +346,7 @@ internal fun toolActivities(projection: JsonObject): List<ToolActivity> {
             completedAt = item.optionalText("completedAt"), runId = item.optionalText("runId"), ordinal = item.ordinal(),
             runAttemptId = resolveAttempt(item), nodeId = item.optionalText("nodeId"), providerTurnId = item.optionalText("providerTurnId"),
             parentItemId = item.optionalText("parentItemId"),
-            input = item.detailText("input") ?: item.detailText("pattern") ?: item.detailText("patterns"),
+            input = if (htmlRender != null) null else item.detailText("input") ?: item.detailText("pattern") ?: item.detailText("patterns"),
             output = output, exitCode = (item["exitCode"] as? JsonPrimitive)?.intOrNull,
             outputIndicatesFailure = (item["outputIndicatesFailure"] as? JsonPrimitive)?.booleanOrNull,
             outputOmitted = (item["outputOmitted"] as? JsonPrimitive)?.booleanOrNull == true,
@@ -353,7 +355,7 @@ internal fun toolActivities(projection: JsonObject): List<ToolActivity> {
             oldStr = item.detailText("oldStr"), newStr = item.detailText("newStr"),
             searchResults = item.detailText("results"), failure = failure,
             sourceThreadId = item.optionalText("sourceThreadId"), sourceItemId = item.optionalText("sourceItemId"),
-            images = images,
+            images = images, htmlRender = htmlRender,
         )
     }
 }
