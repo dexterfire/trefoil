@@ -22,6 +22,8 @@ class FileDownloadCoordinator(private val scope: CoroutineScope, private val cli
     val state = mutable.asStateFlow()
     /** In-memory inline image previews; separate from explicit saves to Downloads. */
     val images = InlineImageLoader(client)
+    /** In-memory `html_render` pages for inline thread previews; never written to disk. */
+    val htmlRenders = HtmlRenderLoader(client)
     private val jobs = mutableMapOf<DownloadKey, Job>()
     private var nextAttempt = 0L
 

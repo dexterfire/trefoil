@@ -1,0 +1,84 @@
+package com.tajchert.trefoil.ui.htmlrender
+
+import org.junit.Assert.*
+import org.junit.Test
+
+class HtmlRenderPolicyTest {
+    private val documentUrl = htmlRenderDocumentUrl("fixture-attachment")
+    private val policy = HtmlRenderPolicy(documentUrl, setOf("fixture.example", "[fd00::5]"))
+
+    @Test fun documentUrlIsSyntheticAndHashed() {
+        assertTrue(documentUrl.matches(Regex("https://html-render\\.trefoil\\.invalid/[0-9a-f]{16}/index\\.html")))
+        assertFalse(documentUrl.contains("fixture"))
+        assertEquals(documentUrl, htmlRenderDocumentUrl("fixture-attachment"))
+        assertNotEquals(documentUrl, htmlRenderDocumentUrl("fixture-other"))
+    }
+
+    @Test fun mainFrameOnlyExactGetDocument() {
+        assertTrue(policy.allowsMainFrame(documentUrl, "GET", false))
+        assertFalse(policy.allowsMainFrame(documentUrl, "POST", false))
+        assertFalse(policy.allowsMainFrame(documentUrl, "GET", true))
+        assertFalse(policy.allowsMainFrame("$documentUrl?x=1", "GET", false))
+        assertFalse(policy.allowsMainFrame("https://html-render.trefoil.invalid/other/index.html", "GET", false))
+        assertFalse(policy.allowsMainFrame("https://cdn.example/index.html", "GET", false))
+    }
+
+    @Test fun allowsPublicHttpsGetAndInlineSchemes() {
+        listOf(
+            "https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js",
+            "https://fonts.gstatic.com/s/inter.woff2",
+            "https://93.184.216.34/image.png",
+            "https://[2606:4700::1111]/x.js",
+            "data:image/png;base64,iVBORw0KGgo=",
+            "blob:https://html-render.trefoil.invalid/6c1c",
+        ).forEach { assertTrue(it, policy.allowsSubresource(it, "GET")) }
+    }
+
+    @Test fun blocksEverythingElse() {
+        listOf(
+            "http://cdn.example/x.js",
+            "https://localhost/x", "https://foo.localhost/x", "https://printer.local/x", "https://intranet/x",
+            "https://127.0.0.1/x", "https://127.1.2.3/x", "https://0.0.0.0/x", "https://[::1]/x", "https://[::]/x",
+            "https://10.0.0.5/x", "https://172.16.4.1/x", "https://172.31.255.255/x", "https://192.168.1.10/x",
+            "https://169.254.169.254/latest/meta-data", "https://100.100.100.100/x", "https://[fe80::1]/x",
+            "https://[fd12:3456::1]/x", "https://[::ffff:192.168.1.1]/x", "https://[::ffff:7f00:1]/x",
+            "https://2130706433/x", "https://0x7f.0.0.1/x", "https://127.1/x", "https://010.0.0.1/x",
+            "https://fixture.example/api", "https://FIXTURE.example./api", "https://[fd00::5]/x",
+            "https://html-render.trefoil.invalid/other.css",
+            "https://user:pass@cdn.example/x",
+            "file:///sdcard/x", "content://media/x", "javascript:alert(1)", "about:blank", "wss://cdn.example/x",
+            "intent://x#Intent;end", "ftp://cdn.example/x", "not a url",
+        ).forEach { assertFalse(it, policy.allowsSubresource(it, "GET")) }
+        listOf("POST", "PUT", "DELETE", "HEAD", "OPTIONS", null).forEach {
+            assertFalse("$it", policy.allowsSubresource("https://cdn.example/x", it))
+        }
+    }
+
+    @Test fun externalLinksNeedGestureAndHttp() {
+        assertEquals("https://example.com/docs", policy.externalLink("https://example.com/docs", true))
+        assertEquals("http://example.com/", policy.externalLink("http://example.com/", true))
+        assertNull(policy.externalLink("https://example.com/docs", false))
+        assertNull(policy.externalLink("intent://scan#Intent;scheme=zxing;end", true))
+        assertNull(policy.externalLink("javascript:alert(1)", true))
+        assertNull(policy.externalLink("file:///sdcard/x", true))
+        assertNull(policy.externalLink("$documentUrl#section", true))
+        assertNull(policy.externalLink("https://user@example.com/", true))
+    }
+
+    @Test fun reportedHeightIsParsedAndClamped() {
+        assertEquals(412f, htmlRenderReportedHeight("412")!!, 0f)
+        assertEquals(80f, htmlRenderReportedHeight("12")!!, 0f)
+        assertEquals(20_000f, htmlRenderReportedHeight("99999999")!!, 0f)
+        listOf(null, "", "abc", "NaN", "Infinity", "-5", "0", "1".repeat(40)).forEach { assertNull(it, htmlRenderReportedHeight(it)) }
+    }
+
+    @Test fun servedDocumentAppendsOnlyTheHeightScript() {
+        val html = "<!doctype html><p>Fixture</p>"
+        val served = htmlRenderDocument(html).toString(Charsets.UTF_8)
+        assertTrue(served.startsWith(html))
+        assertEquals(HTML_RENDER_HEIGHT_SCRIPT, served.removePrefix(html))
+        assertTrue(HTML_RENDER_HEIGHT_SCRIPT.contains("window.$HTML_RENDER_BRIDGE"))
+        assertTrue(HTML_RENDER_CSP.contains("connect-src https: data: blob:"))
+        assertTrue(HTML_RENDER_CSP.contains("form-action 'none'"))
+    }
+}

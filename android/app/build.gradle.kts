@@ -62,6 +62,7 @@ dependencies {
     implementation(libs.glance.preview)
     implementation(libs.glance.appwidget.preview)
     implementation(libs.work.runtime)
+    implementation(libs.webkit)
     testImplementation(libs.junit)
     testImplementation("org.robolectric:robolectric:4.17")
     testImplementation(libs.glance.appwidget.testing)

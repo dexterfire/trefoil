@@ -152,7 +152,7 @@ class MainActivity : ComponentActivity() {
                     { environmentId, threadId, reference -> model.fileDownloads.download(reference, environmentId, threadId) },
                     { environmentId, threadId, reference -> model.fileDownloads.cancel(reference, environmentId, threadId) },
                     { openDownloaded(it) }, { openDownloaded(it, share = true) }, { openDownloaded(it, install = true) },
-                    imageLoader = model.fileDownloads.images),
+                    imageLoader = model.fileDownloads.images, htmlLoader = model.fileDownloads.htmlRenders),
                 onRespond = model::respond,
                 draft = draft,
                 sendFailed = model.sendFailed,

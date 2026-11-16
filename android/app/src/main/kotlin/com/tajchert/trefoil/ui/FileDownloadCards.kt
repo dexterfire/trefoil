@@ -29,6 +29,7 @@ data class FileDownloadUi(
     val onShare: (CompletedDownload) -> Unit = {},
     val onInstall: (CompletedDownload) -> Unit = {},
     val imageLoader: InlineImageLoader? = null,
+    val htmlLoader: HtmlRenderLoader? = null,
 )
 internal val LocalFileDownloadUi = staticCompositionLocalOf { FileDownloadUi() }
 
