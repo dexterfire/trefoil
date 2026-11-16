@@ -66,6 +66,8 @@ data class ToolActivity(
     val searchResults: String? = null, val failure: String? = null,
     val sourceThreadId: String? = null, val sourceItemId: String? = null,
     val images: List<RemoteFileReference> = emptyList(),
+    /** Set only for a completed, non-error `html_render` dynamic_tool item. */
+    val htmlRender: HtmlRenderReference? = null,
 )
 data class ConversationRun(
     val id: String, val status: String,
