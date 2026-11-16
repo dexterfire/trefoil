@@ -16,6 +16,13 @@ Screenshot tests: `./gradlew :app:testDebugScreenshotTestDefaultTestSuite` valid
 
 Focused thread image coverage belongs in `:core:model:test`, `:core:session:test`, and `:app:testDebugUnitTest`; use fixtures or an isolated T3 instance, never real user threads. This repository has no configured formatter or code generator. Follow neighboring Kotlin formatting and run `git diff --check`. Debug builds do not normally run R8.
 
+## Agent workflow
+
+- Run Gradle from `android/` and use paths relative to it (`app/build/...`, never `android/app/...`).
+- `ANDROID_HOME=/opt/homebrew/share/android-commandlinetools` (also `sdk.dir` in `android/local.properties`); fresh worktrees need `android/local.properties` and `android/keystore.properties` (listed in `.worktreeinclude`) or Gradle fails with "SDK location not found".
+- Release means `scripts/release.sh [--check] --notes FILE <version>`: bump, gate, apksigner check, commit, tag, push, `gh release`. Use `--check` for a dry run. Write the `docs/RELEASING.md` paragraph first (clean tree required).
+- Emulators: export `ADB_MDNS=0 ADB_MDNS_OPENSCREEN=0` if the adb server keeps restarting; dismiss the crash-report consent dialog (it hangs the UI); stop any emulator you booted; never `adb kill-server`.
+
 ## Product and safety constraints
 
 - T3 projects, threads, and conversations are the product model; terminals are separate. Tolerate additive fields.
