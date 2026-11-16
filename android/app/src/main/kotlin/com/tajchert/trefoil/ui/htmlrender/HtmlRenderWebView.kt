@@ -71,8 +71,9 @@ internal fun htmlRenderReportedHeight(data: String?): Float? =
  * this policy re-checked on every redirect hop and DNS answers limited to public addresses.
  */
 internal class HtmlRenderPolicy(val documentUrl: String, private val network: HtmlRenderNetworkAccess) {
+    /** The WebView passes the loaded URL with its `#t3-theme=` fragment, so the fragment is ignored here. */
     fun allowsMainFrame(url: String, method: String?, redirect: Boolean): Boolean =
-        url == documentUrl && method.equals("GET", ignoreCase = true) && !redirect
+        url.substringBefore('#') == documentUrl && method.equals("GET", ignoreCase = true) && !redirect
 
     /** A remote hop (first request or redirect target) the fetcher may make right now. */
     fun allowsFetch(url: String): Boolean =

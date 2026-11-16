@@ -19,7 +19,7 @@ val hasReleaseSigning = listOf(releaseStoreFile, releaseStorePassword, releaseKe
 android {
     namespace = "com.tajchert.trefoil"
     compileSdk = 37
-    defaultConfig { applicationId = "com.tajchert.trefoil"; minSdk = 29; targetSdk = 37; versionCode = 25; versionName = "0.16.0" }
+    defaultConfig { applicationId = "com.tajchert.trefoil"; minSdk = 29; targetSdk = 37; versionCode = 25; versionName = "0.16.0"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     buildFeatures { compose = true }
     testOptions {
         unitTests.isIncludeAndroidResources = true
@@ -65,6 +65,8 @@ dependencies {
     implementation(libs.webkit)
     implementation(libs.okhttp)
     testImplementation(libs.junit)
+    androidTestImplementation("androidx.test:runner:1.7.0")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
     testImplementation("org.robolectric:robolectric:4.17")
     testImplementation(libs.glance.appwidget.testing)
     testImplementation(libs.work.testing)

@@ -19,7 +19,7 @@ Agent `html_render` pages (T3 Code's MCP tool) show inline in a thread as their 
 
 ## WebView security policy (`ui/htmlrender/HtmlRenderWebView.kt`)
 
-- The main document is served by `shouldInterceptRequest` at the synthetic origin `https://html-render.trefoil.invalid/<sha256(attachmentId)[0..16]>/index.html`. Any other main-frame request, any redirect, and any non-GET request is answered with an empty 403.
+- The main document is served by `shouldInterceptRequest` at the synthetic origin `https://html-render.trefoil.invalid/<sha256(attachmentId)[0..16]>/index.html`. WebView reports that request with the `#t3-theme=` fragment, so the match ignores the fragment (query strings and other paths are still refused). Any other main-frame request, any redirect, and any non-GET request is answered with an empty 403.
 - Settings: JavaScript on; DOM storage, database, file and content access, file-URL access and geolocation off; no multiple windows, no JS-opened windows; mixed content never; no cache; cookies never accepted (the jar is cleared once per process); algorithmic darkening off; no `addJavascriptInterface`.
 - Permission requests are denied, file choosers return nothing, downloads are ignored, SSL errors, HTTP auth and client-cert requests are cancelled.
 - The served document carries a CSP header (`connect-src https: data: blob:; form-action 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'`), so there are no WebSockets, frames, workers or form posts, `no-store`, `nosniff` and `no-referrer`.
@@ -48,4 +48,4 @@ Loading, Offline (not cached: "Reconnect to load “title”"), Failed ("Unable 
 
 ## Tests
 
-`core/model` `HtmlRenderParsingTest`; `core/session` `HtmlRenderProjectionTest`; app `HtmlRenderLoaderTest`, `HtmlRenderPolicyTest`, `HtmlRenderSubresourcesTest`, `HtmlRenderThemeTest`, `HtmlRenderCardTest`; timeline coverage in `ConversationTimelineTest`. Screenshots are in `HtmlRenderScreenshots.kt` (see [Screenshot testing](SCREENSHOT_TESTING.md)); WebViews do not render there, so Ready is the placeholder and the conversation shot shows the row offline. Use fixtures only, never real user threads.
+`core/model` `HtmlRenderParsingTest`; `core/session` `HtmlRenderProjectionTest`; app `HtmlRenderLoaderTest`, `HtmlRenderPolicyTest`, `HtmlRenderSubresourcesTest`, `HtmlRenderThemeTest`, `HtmlRenderCardTest`; timeline coverage in `ConversationTimelineTest`. `HtmlRenderPageTest` (instrumented, `app/src/androidTest`) loads a fixture page in the real WebView and checks that it reports a height without failing; run it with `./gradlew :app:connectedDebugAndroidTest` on an emulator. Screenshots are in `HtmlRenderScreenshots.kt` (see [Screenshot testing](SCREENSHOT_TESTING.md)); WebViews do not render there, so Ready is the placeholder and the conversation shot shows the row offline. Use fixtures only, never real user threads.

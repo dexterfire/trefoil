@@ -20,7 +20,12 @@ class HtmlRenderPolicyTest {
         assertTrue(policy.allowsMainFrame(documentUrl, "GET", false))
         assertFalse(policy.allowsMainFrame(documentUrl, "POST", false))
         assertFalse(policy.allowsMainFrame(documentUrl, "GET", true))
+        // WebView reports the main-frame request with the theme fragment it was loaded with.
+        val themed = documentUrl + htmlRenderThemeFragment(HtmlRenderTheme(dark = true, variables = mapOf("--background" to "#000")))
+        assertTrue(policy.allowsMainFrame(themed, "GET", false))
         assertFalse(policy.allowsMainFrame("$documentUrl?x=1", "GET", false))
+        assertFalse(policy.allowsMainFrame("$documentUrl?x=1#t3-theme=x", "GET", false))
+        assertFalse(policy.allowsMainFrame("${documentUrl}x#t3-theme=x", "GET", false))
         assertFalse(policy.allowsMainFrame("https://html-render.trefoil.invalid/other/index.html", "GET", false))
         assertFalse(policy.allowsMainFrame("https://cdn.example/index.html", "GET", false))
     }
