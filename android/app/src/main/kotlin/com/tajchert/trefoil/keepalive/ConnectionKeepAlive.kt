@@ -1,6 +1,7 @@
 package com.tajchert.trefoil.keepalive
 
 import android.content.Context
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -18,11 +19,20 @@ object ConnectionKeepAlive {
     /**
      * Starts the service, or updates its notification, for [machineName]. Returns false when the OS refuses (for example a
      * background start restriction); never throws. Call it while the app is in the foreground.
+     *
+     * The service itself calls startForeground asynchronously; if the OS refuses there, the service stops itself and the
+     * connection simply behaves as if keep-alive were off.
      */
-    fun start(context: Context, machineName: String): Boolean = false
+    fun start(context: Context, machineName: String): Boolean = try {
+        ContextCompat.startForegroundService(context, ConnectionKeepAliveService.startIntent(context, machineName))
+        true
+    } catch (e: IllegalStateException) { false } // includes ForegroundServiceStartNotAllowedException (API 31+)
+    catch (e: SecurityException) { false }
 
     /** Stops the service if it runs; safe to call at any time. */
-    fun stop(context: Context) {}
+    fun stop(context: Context) {
+        try { context.stopService(ConnectionKeepAliveService.baseIntent(context)) } catch (_: RuntimeException) {}
+    }
 
     internal fun requestDisconnect() { _disconnectRequests.tryEmit(Unit) }
 }
