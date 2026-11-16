@@ -1,5 +1,10 @@
 # Android releases
 
+Release `0.16.1` (`versionCode = 26`) fixes inline HTML renders, which all showed "Unable to load": the
+WebView reports the page request with its `#t3-theme=` fragment and the document policy compared the URL
+exactly. Covered by the instrumented `HtmlRenderPageTest` (`./gradlew :app:connectedDebugAndroidTest`).
+Check an HTML render against a real environment on a device.
+
 Release `0.16.0` (`versionCode = 25`) shows pages that agents publish with T3's `html_render` tool
 inline in threads (themed, auto-sized, full screen with pinch zoom; subresources fetched app-side, public
 https only, see `docs/THREAD_HTML_RENDERS.md`) and adds an opt-in "Keep connected in background"
