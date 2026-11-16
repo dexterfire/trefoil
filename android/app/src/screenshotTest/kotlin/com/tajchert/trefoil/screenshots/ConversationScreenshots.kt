@@ -13,7 +13,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.android.tools.screenshot.PreviewTest
-import com.tajchert.trefoil.ui.ActivityStack
 import com.tajchert.trefoil.ui.AgentsChip
 import com.tajchert.trefoil.ui.CompletedWork
 import com.tajchert.trefoil.ui.Conversation
@@ -29,9 +28,11 @@ import com.tajchert.trefoil.ui.RequestCard
 import com.tajchert.trefoil.ui.SubagentWorkingRow
 import com.tajchert.trefoil.ui.ThreadAgentsSheetContent
 import com.tajchert.trefoil.ui.TrefoilTheme
+import com.tajchert.trefoil.ui.WorkGroup
 import com.tajchert.trefoil.ui.agentRows
 import com.tajchert.trefoil.ui.subagentPill
 import com.tajchert.trefoil.core.model.ClientState
+import com.tajchert.trefoil.core.model.ConversationMessage
 
 private val fx = ConversationFixtures
 
@@ -112,39 +113,96 @@ fun QuickReplies_Light() {
     Frame { QuickReplies(listOf(fx.choiceRequest), enabled = true) { _, _, _ -> } }
 }
 
-// ---------- Tool activity ----------
+// ---------- Work log ----------
 
-@PreviewTest
-@Preview(showBackground = true, widthDp = 400, heightDp = 100)
+private const val W = 400
+
 @Composable
-fun ActivityStack_Collapsed_Light() {
-    Frame { Column(Modifier.padding(16.dp)) { ActivityStack(fx.mixedActivities) } }
+private fun WorkFrame(dark: Boolean = false, content: @Composable () -> Unit) = Frame(dark) {
+    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { content() }
 }
 
 @PreviewTest
-@Preview(showBackground = true, widthDp = 400, heightDp = 620)
+@Preview(showBackground = true, widthDp = W, heightDp = 100)
 @Composable
-fun ActivityStack_Expanded_Light() {
-    Frame { Column(Modifier.padding(16.dp)) { ActivityStack(fx.mixedActivities, initiallyExpanded = true) } }
+fun WorkGroup_MixedHeader_Light() = WorkFrame { WorkGroup(fx.commandReadActivities) }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = W, heightDp = 100, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun WorkGroup_MixedHeader_Dark() = WorkFrame(dark = true) { WorkGroup(fx.commandReadActivities) }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = W, heightDp = 260)
+@Composable
+fun WorkGroup_Expanded_Light() = WorkFrame { WorkGroup(fx.mixedActivities, initiallyExpanded = true) }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = W, heightDp = 260, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun WorkGroup_Expanded_Dark() = WorkFrame(dark = true) { WorkGroup(fx.mixedActivities, initiallyExpanded = true) }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = W, heightDp = 220)
+@Composable
+fun WorkGroup_FailedCommand_Light() = WorkFrame {
+    WorkGroup(listOf(fx.failedCommand))
+    WorkGroup(listOf(fx.failedCommand.copy(id = "a-fail-open")), initiallyExpanded = true)
 }
 
 @PreviewTest
-@Preview(showBackground = true, widthDp = 400, heightDp = 620, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Preview(showBackground = true, widthDp = W, heightDp = 220, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
-fun ActivityStack_Expanded_Dark() {
-    Frame(dark = true) { Column(Modifier.padding(16.dp)) { ActivityStack(fx.mixedActivities, initiallyExpanded = true) } }
+fun WorkGroup_FailedCommand_Dark() = WorkFrame(dark = true) {
+    WorkGroup(listOf(fx.failedCommand))
+    WorkGroup(listOf(fx.failedCommand.copy(id = "a-fail-open")), initiallyExpanded = true)
 }
 
 @PreviewTest
-@Preview(showBackground = true, widthDp = 400, heightDp = 100)
+@Preview(showBackground = true, widthDp = W, heightDp = 220)
 @Composable
-fun CompletedWork_Collapsed_Light() {
-    Frame { Column(Modifier.padding(16.dp)) { CompletedWork(completedWork(), canLoadActivity = false, onLoadActivity = {}) } }
+fun WorkGroup_Reasoning_Light() = WorkFrame {
+    WorkGroup(listOf(fx.reasoningActivity))
+    WorkGroup(listOf(fx.reasoningActivity.copy(id = "a-think-open")), initiallyExpanded = true)
 }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = W, heightDp = 100)
+@Composable
+fun WorkGroup_LiveRunning_Light() = WorkFrame { WorkGroup(listOf(fx.commandActivity, fx.runningActivity), live = true) }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = W, heightDp = 100, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun WorkGroup_LiveRunning_Dark() = WorkFrame(dark = true) { WorkGroup(listOf(fx.commandActivity, fx.runningActivity), live = true) }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = W, heightDp = 80)
+@Composable
+fun CompletedWork_Collapsed_Light() = WorkFrame { CompletedWork(completedWork(), canLoadActivity = false, onLoadActivity = {}) }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = W, heightDp = 80, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun CompletedWork_Collapsed_Dark() = WorkFrame(dark = true) { CompletedWork(completedWork(), canLoadActivity = false, onLoadActivity = {}) }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = W, heightDp = 260)
+@Composable
+fun CompletedWork_Expanded_Light() = WorkFrame { CompletedWork(completedWork(), canLoadActivity = false, onLoadActivity = {}, initiallyExpanded = true) }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = W, heightDp = 260, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun CompletedWork_Expanded_Dark() = WorkFrame(dark = true) { CompletedWork(completedWork(), canLoadActivity = false, onLoadActivity = {}, initiallyExpanded = true) }
 
 private fun completedWork() = ConversationEntry.Work(
     runId = "run-1", label = "Worked for 2m",
-    entries = listOf(ConversationEntry.Activities(fx.mixedActivities)),
+    entries = listOf(
+        ConversationEntry.Message(ConversationMessage(id = "m-mid", role = "assistant", text = "Let me check the preview setup first.", ordinal = 1)),
+        ConversationEntry.Activities(fx.commandReadActivities),
+        ConversationEntry.Activities(listOf(fx.reasoningActivity)),
+    ),
 )
 
 // ---------- Subagents ----------

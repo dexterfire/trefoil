@@ -9,6 +9,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.test.*
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -25,21 +27,36 @@ import org.robolectric.annotation.Config
 class ConversationUiTest {
     @get:Rule val compose = createComposeRule()
 
-    @Test fun runningCommandExpandsDetailsWhenItFails() {
+    private fun clickLabeled(label: String) = SemanticsMatcher("onClickLabel == $label") { it.config.getOrNull(SemanticsActions.OnClick)?.label == label }
+
+    @Test fun failedCommandStaysCollapsedUntilTheEntryIsOpened() {
         val activity = mutableStateOf(ToolActivity("command", "Run", kind = "command_execution", status = "running", input = "check"))
-        compose.setContent { MaterialTheme { ActivityStack(listOf(activity.value)) } }
+        compose.setContent { MaterialTheme { WorkGroup(listOf(activity.value), live = true) } }
         compose.runOnIdle { activity.value = activity.value.copy(status = "completed", output = "failure output", exitCode = 2) }
+        compose.onNodeWithText("failure output").assertDoesNotExist()
+        compose.onNode(clickLabeled("Expand details")).performClick()
         compose.onNodeWithText("failure output").assertIsDisplayed()
-        compose.onNodeWithText("Exit code 2").assertIsDisplayed()
+        compose.onNodeWithText("exit 2").assertIsDisplayed()
     }
 
-    @Test fun collapsedRunningCommandGroupReopensWhenItFails() {
-        val activity = mutableStateOf(ToolActivity("command", "Run", kind = "command_execution", status = "running", input = "check"))
-        compose.setContent { MaterialTheme { ActivityStack(listOf(activity.value)) } }
-        compose.onNodeWithContentDescription("Collapse commands").performClick()
-        compose.onNodeWithText("check").assertDoesNotExist()
-        compose.runOnIdle { activity.value = activity.value.copy(status = "completed", output = "failure output", exitCode = 2) }
-        compose.onNodeWithText("failure output").assertIsDisplayed()
+    @Test fun liveRunningEntryShowsTheLiveLabelAndHidesOnceTheRunIsNotLive() {
+        val running = ToolActivity("command", "Run", kind = "command_execution", status = "running", input = "check")
+        val live = mutableStateOf(true)
+        compose.setContent { MaterialTheme { WorkGroup(listOf(running), live = live.value) } }
+        compose.onNodeWithText(liveWorkLabel(running)).assertExists()
+        compose.runOnIdle { live.value = false }
+        compose.onNodeWithText(liveWorkLabel(running)).assertDoesNotExist()
+    }
+
+    @Test fun failedGroupHeaderHasNoAutoExpansionAndDescribesTheFailure() {
+        val first = ToolActivity("one", "Run", kind = "command_execution", status = "completed", input = "first", output = "first output", exitCode = 1)
+        val second = ToolActivity("two", "Run", kind = "command_execution", status = "completed", input = "second", output = "second output", exitCode = 1)
+        compose.setContent { MaterialTheme { WorkGroup(listOf(first, second)) } }
+        compose.onNode(hasContentDescription("tool call failed", substring = true)).assertExists()
+        compose.onNodeWithText("first output").assertDoesNotExist()
+        compose.onNode(clickLabeled("Expand work details")).performClick()
+        compose.onNodeWithText("first output").assertDoesNotExist()
+        compose.onAllNodes(clickLabeled("Expand details")).assertCountEquals(2)
     }
 
     @Test fun subagentFooterTracksLiveAgentsAndOpensSheet() {
@@ -104,18 +121,20 @@ class ConversationUiTest {
         compose.onNodeWithText("Checking the fixture").assertDoesNotExist()
         compose.onNodeWithContentDescription("Expand completed work").performClick()
         compose.onNodeWithText("Checking the fixture").assertExists()
-        compose.onNodeWithText("fixture.txt").assertExists()
+        compose.onNodeWithText(singleWorkLabel(ToolActivity("t", "Read file", "fixture.txt", status = "completed", runId = "r", ordinal = 1))).assertExists()
         compose.onNodeWithContentDescription("Collapse completed work").performClick()
         compose.onNodeWithText("Checking the fixture").assertDoesNotExist()
         compose.onNodeWithText("The result is ready").assertExists()
     }
 
-    @Test fun failedCommandShowsItsInputOutputAndExitCodeWithoutDisclosure() {
+    @Test fun failedCommandShowsItsInputOutputAndExitCodeOnceOpened() {
         compose.setContent { MaterialTheme { Conversation(ClientState(selectedThreadId = "fixture", activities = listOf(
             ToolActivity("command", "Run checks", kind = "command_execution", status = "completed", input = "./fixture-check", output = "Fixture failed", exitCode = 2))), {}, {}, { _, _, _ -> }) } }
+        compose.onNodeWithText("$ ./fixture-check").assertDoesNotExist()
+        compose.onNode(clickLabeled("Expand details")).performClick()
         compose.onNodeWithText("$ ./fixture-check").assertExists()
         compose.onNodeWithText("Fixture failed").assertExists()
-        compose.onNodeWithText("Exit code 2").assertExists()
+        compose.onNodeWithText("exit 2").assertExists()
         compose.onNodeWithContentDescription("Copy activity").assertExists()
     }
 
@@ -124,8 +143,7 @@ class ConversationUiTest {
             activities = listOf(ToolActivity("command", "Run checks", kind = "command_execution", status = "completed", input = "./fixture-check", outputOmitted = true))))
         val loads = mutableListOf<String>()
         compose.setContent { MaterialTheme { Conversation(state.value, {}, {}, { _, _, _ -> }, onLoadActivity = { loads += it }) } }
-        compose.onNodeWithContentDescription("Expand commands").performClick()
-        compose.onNodeWithText("./fixture-check").performClick()
+        compose.onNode(clickLabeled("Expand details")).performClick()
         compose.runOnIdle { assertTrue(loads.isEmpty()) }
         compose.onNodeWithText("Load output").performClick()
         compose.runOnIdle {
@@ -142,11 +160,10 @@ class ConversationUiTest {
     @Test fun structuredCommandDetailsDoNotRepeatTheLegacyAggregate() {
         compose.setContent { MaterialTheme { Conversation(ClientState(selectedThreadId = "fixture", activities = listOf(
             ToolActivity("command", "Run checks", detail = "./fixture-check\n\nfixture-output", kind = "command_execution", status = "completed", input = "./fixture-check", output = "fixture-output", exitCode = 0))), {}, {}, { _, _, _ -> }) } }
-        compose.onNodeWithContentDescription("Expand commands").performClick()
-        compose.onNodeWithText("./fixture-check").performClick()
+        compose.onNode(clickLabeled("Expand details")).performClick()
         compose.onAllNodesWithText("fixture-output", substring = true).assertCountEquals(1)
         compose.onNodeWithText("$ ./fixture-check").assertExists()
-        compose.onNodeWithText("Exit code 0").assertExists()
+        compose.onNodeWithText("exit 0").assertDoesNotExist()
     }
 
     @Test fun requestsRemainVisibleBesideCompletedWork() {
@@ -168,42 +185,45 @@ class ConversationUiTest {
             MaterialTheme {
                 holder.SaveableStateProvider(selected.value) {
                     Conversation(ClientState(selectedThreadId = selected.value,
-                        activities = listOf(ToolActivity("tool", "Read file", "fixture.txt", status = "completed"))), {}, {}, { _, _, _ -> })
+                        activities = listOf(ToolActivity("tool", "Read file", status = "completed", output = "fixture output"))), {}, {}, { _, _, _ -> })
                 }
             }
         }
         compose.onNodeWithText("Reply…").performTextInput("Keep my draft")
-        compose.onNodeWithContentDescription("Expand activity").performClick()
+        compose.onNode(clickLabeled("Expand details")).performClick()
         compose.runOnIdle { selected.value = "b" }
         compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
-        compose.onNodeWithText("fixture.txt").assertDoesNotExist()
+        compose.onNodeWithText("fixture output").assertDoesNotExist()
         compose.runOnIdle { selected.value = "a" }
         compose.onNode(hasSetTextAction()).assertTextEquals("Keep my draft")
-        compose.onNodeWithText("fixture.txt").assertExists()
+        compose.onNodeWithText("fixture output").assertExists()
     }
 
     @Test fun activityDetailsAreCollapsedUntilExpanded() {
-        compose.setContent { MaterialTheme { Conversation(ClientState(selectedThreadId = "fixture", activities = listOf(ToolActivity("read", "Read file", "fixture.txt", status = "completed"))), {}, {}, { _, _, _ -> }) } }
-        compose.onNodeWithText("fixture.txt").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Expand activity").performClick()
-        compose.onNodeWithText("fixture.txt").assertExists()
+        compose.setContent { MaterialTheme { Conversation(ClientState(selectedThreadId = "fixture", activities = listOf(ToolActivity("read", "Read file", status = "completed", output = "fixture output"))), {}, {}, { _, _, _ -> }) } }
+        compose.onNodeWithText("fixture output").assertDoesNotExist()
+        compose.onNode(clickLabeled("Expand details")).performClick()
+        compose.onNodeWithText("fixture output").assertExists()
     }
 
     @Test fun activityWithoutDetailHasNoExpandControl() {
-        compose.setContent { MaterialTheme { ActivityStack(listOf(ToolActivity("empty", "Read file", status = "completed"))) } }
-        compose.onNodeWithText("Read file").assertExists()
-        compose.onNodeWithContentDescription("Expand activity").assertDoesNotExist()
+        val empty = ToolActivity("empty", "Read file", status = "completed")
+        compose.setContent { MaterialTheme { WorkGroup(listOf(empty)) } }
+        compose.onNodeWithText(singleWorkLabel(empty)).assertExists()
+        compose.onNode(clickLabeled("Expand details")).assertDoesNotExist()
     }
 
     @Test fun completedCommandsStartCollapsedAndExpandOnClick() {
-        compose.setContent { MaterialTheme { ActivityStack(listOf(
-            ToolActivity("one", "Run", kind = "command_execution", status = "completed", input = "first"),
-            ToolActivity("two", "Run", kind = "command_execution", status = "completed", input = "second"))) } }
-        compose.onNodeWithText("Ran 2 commands").assertExists()
-        compose.onNodeWithText("first").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Expand commands").performClick()
-        compose.onNodeWithText("first").assertExists()
-        compose.onNodeWithText("second").assertExists()
+        val first = ToolActivity("one", "Run", kind = "command_execution", status = "completed", input = "first", output = "first output")
+        val second = ToolActivity("two", "Run", kind = "command_execution", status = "completed", input = "second", output = "second output")
+        compose.setContent { MaterialTheme { WorkGroup(listOf(first, second)) } }
+        compose.onNodeWithText(workEntryLabel(first)).assertDoesNotExist()
+        compose.onNode(clickLabeled("Expand work details")).performClick()
+        compose.onNodeWithText(workEntryLabel(first)).assertExists()
+        compose.onNodeWithText(workEntryLabel(second)).assertExists()
+        compose.onNodeWithText("first output").assertDoesNotExist()
+        compose.onAllNodes(clickLabeled("Expand details"))[0].performClick()
+        compose.onNodeWithText("first output").assertExists()
     }
 
     private val longThread = ClientState(selectedThreadId = "fixture", canWrite = true, connection = ConnectionStatus.Connected,

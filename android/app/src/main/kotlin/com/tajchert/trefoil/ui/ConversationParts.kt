@@ -3,7 +3,7 @@
  */
 package com.tajchert.trefoil.ui
 
-import androidx.compose.animation.animateContentSize
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -67,65 +67,61 @@ internal fun MessageRow(message: ConversationMessage, stacked: Boolean, showMeta
 
 private fun messageTime(value: String?): String? = timelineInstant(value)?.let { DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withZone(ZoneId.systemDefault()).format(it) }
 
-/* ---------- Activity rows (the design's ".act") ---------- */
+/* ---------- Work log: flat, muted rows (after T3 Code's TimelineWorkGroupRows) ---------- */
 
-internal data class ActivityCounts(val commands: Int, val edits: Int, val searches: Int) {
-    val total get() = commands + edits + searches
+private val WorkRowText = TrefoilType.meta.copy(fontSize = 14.sp, fontWeight = FontWeight.Normal)
+
+private val WorkIcon.vector: ImageVector get() = when (this) {
+    WorkIcon.Read -> TfIcons.File
+    WorkIcon.Edit -> TfIcons.Edit
+    WorkIcon.Command -> TfIcons.Terminal
+    WorkIcon.CodeSearch -> TfIcons.Search
+    WorkIcon.WebSearch, WorkIcon.Browser -> TfIcons.Globe
+    WorkIcon.Device -> TfIcons.Screens
+    WorkIcon.Agent -> TfIcons.Agents
+    WorkIcon.Html -> TfIcons.Scan
+    WorkIcon.Other -> TfIcons.Wrench
+    WorkIcon.Mixed -> TfIcons.Hammer
+    WorkIcon.Reasoning -> TfIcons.Reasoning
+    WorkIcon.Error -> TfIcons.Alert
 }
 
-internal fun activityCounts(activities: List<ToolActivity>) = ActivityCounts(
-    commands = activities.count { it.kind == "command_execution" },
-    edits = activities.count { it.kind == "file_change" },
-    searches = activities.count { it.kind in setOf("file_search", "web_search", "search") },
-)
-
+/** One 32dp row: icon (or spinner) + single-line label + optional trailing content + small chevron when it toggles something. */
 @Composable
-private fun CountChip(icon: ImageVector, count: Int) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        Icon(icon, null, Modifier.size(14.dp), tint = Tf.colors.muted)
-        Text(count.toString(), style = TrefoilType.meta, color = Tf.colors.muted)
-    }
-}
-
-@Composable
-private fun ActivityCountsRow(counts: ActivityCounts) {
-    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-        if (counts.commands > 0) CountChip(TfIcons.Terminal, counts.commands)
-        if (counts.edits > 0) CountChip(TfIcons.Edit, counts.edits)
-        if (counts.searches > 0) CountChip(TfIcons.Search, counts.searches)
-    }
-}
-
-/** Outlined container shared by activity rows and their expanded details. */
-@Composable
-private fun OutlinedPanel(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
-    Surface(modifier.fillMaxWidth().animateContentSize(), shape = RoundedCornerShape(14.dp), color = Color.Transparent, contentColor = Tf.colors.text, border = BorderStroke(1.dp, Tf.colors.line)) {
-        Column(content = content)
-    }
-}
-
-@Composable
-internal fun CompletedWork(work: ConversationEntry.Work, canLoadActivity: Boolean, onLoadActivity: (String) -> Unit) {
-    var expanded by rememberSaveable(work.key) { mutableStateOf(false) }
+private fun WorkRow(
+    icon: ImageVector, iconTint: Color, label: String, labelColor: Color, expanded: Boolean?, onClick: (() -> Unit)?, onClickLabel: String,
+    spinner: Boolean = false, description: String? = null, trailing: @Composable RowScope.() -> Unit = {},
+) {
     val c = Tf.colors
-    val counts = remember(work) { activityCounts(work.entries.filterIsInstance<ConversationEntry.Activities>().flatMap { it.activities }) }
-    val duration = work.label.removePrefix("Worked for ").takeIf { it != work.label } ?: "Done"
+    Row(Modifier.fillMaxWidth().heightIn(min = 32.dp)
+        .then(if (onClick != null) Modifier.clickable(role = Role.Button, onClickLabel = onClickLabel, onClick = onClick) else Modifier)
+        .then(if (description != null) Modifier.semantics(mergeDescendants = true) { contentDescription = description } else Modifier)
+        .padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (spinner) WorkingSpinner(size = 16.dp) else Icon(icon, null, Modifier.size(16.dp), tint = iconTint)
+        Text(label, Modifier.weight(1f, fill = false), style = WorkRowText, color = labelColor, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        trailing()
+        if (expanded != null) Icon(if (expanded) TfIcons.ChevronDown else TfIcons.ChevronRight, null, Modifier.size(14.dp), tint = c.muted)
+    }
+}
+
+/** "Worked for 42s": a quiet fold row with a divider beneath; expanded it reveals the run's messages and work groups inline. */
+@Composable
+internal fun CompletedWork(work: ConversationEntry.Work, canLoadActivity: Boolean, onLoadActivity: (String) -> Unit, initiallyExpanded: Boolean = false) {
+    var expanded by rememberSaveable(work.key) { mutableStateOf(initiallyExpanded) }
+    val c = Tf.colors
     Column(Modifier.fillMaxWidth()) {
-        OutlinedPanel {
-            Row(Modifier.fillMaxWidth().height(44.dp).clickable(role = Role.Button, onClickLabel = if (expanded) "Collapse completed work" else "Expand completed work") { expanded = !expanded }.padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Icon(TfIcons.Check, null, Modifier.size(18.dp), tint = c.green)
-                Text(duration, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Medium), color = c.text, modifier = Modifier.weight(1f), maxLines = 1)
-                ActivityCountsRow(counts)
-                Icon(TfIcons.ChevronDown, if (expanded) "Collapse completed work" else "Expand completed work", Modifier.size(18.dp), tint = c.muted)
-            }
+        Row(Modifier.fillMaxWidth().heightIn(min = 32.dp).clickable(role = Role.Button, onClickLabel = if (expanded) "Collapse completed work" else "Expand completed work") { expanded = !expanded }.padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(work.label, Modifier.weight(1f, fill = false), style = WorkRowText, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Icon(if (expanded) TfIcons.ChevronDown else TfIcons.ChevronRight, if (expanded) "Collapse completed work" else "Expand completed work", Modifier.size(14.dp), tint = c.muted)
         }
-        if (expanded) Column(Modifier.padding(top = 14.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        HorizontalDivider(color = c.line)
+        if (expanded) Column(Modifier.padding(top = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             work.entries.forEach { entry ->
                 key(entry.key) {
                     when (entry) {
                         is ConversationEntry.Message -> MessageRow(entry.message, false, false)
-                        is ConversationEntry.Activities -> ActivityStack(entry.activities, initiallyExpanded = true, canLoadActivity = canLoadActivity, onLoadActivity = onLoadActivity)
+                        is ConversationEntry.Activities -> WorkGroup(entry.activities, live = false, canLoadActivity = canLoadActivity, onLoadActivity = onLoadActivity)
                         is ConversationEntry.HtmlRender, is ConversationEntry.Work -> Unit
                     }
                 }
@@ -134,98 +130,97 @@ internal fun CompletedWork(work: ConversationEntry.Work, canLoadActivity: Boolea
     }
 }
 
+/**
+ * A run of consecutive activities. Zero visible entries render nothing, one renders as a single entry row, two or more get a
+ * summary header that toggles the entry rows. [live] means the group belongs to the active run. Failures stay subtle: no
+ * auto-expansion, and headers carry no failure visual (only the accessibility description).
+ */
 @Composable
-internal fun ActivityStack(activities: List<ToolActivity>, initiallyExpanded: Boolean = false, canLoadActivity: Boolean = false, onLoadActivity: (String) -> Unit = {}) {
-    if (activities.all { it.kind == "command_execution" }) {
-        CommandStack(activities, canLoadActivity, onLoadActivity)
-        return
-    }
+internal fun WorkGroup(activities: List<ToolActivity>, live: Boolean = false, canLoadActivity: Boolean = false, onLoadActivity: (String) -> Unit = {}, initiallyExpanded: Boolean = false) {
+    val visible = activities.filter { it.visibleInGroup(live) }
+    if (visible.isEmpty()) return
     val c = Tf.colors
-    val running = activities.any { it.isRunning }
-    val attention = activities.any { it.needsAttention }
-    val expandable = activities.size > 1 || activities.any { it.hasExpandableDetail() }
-    var expanded by rememberSaveable(activities.first().id) { mutableStateOf(initiallyExpanded || running || attention) }
-    LaunchedEffect(running, attention) { if (running || attention) expanded = true }
-    val visible = expanded && expandable
-    val label = when {
-        attention -> "Activity needs attention"
-        running -> "Working"
-        activities.all { it.kind == "reasoning" } -> "Thought"
-        activities.all { it.status in setOf("completed", "succeeded", "success", "done") } -> "Work completed"
-        else -> "Activity"
-    }
-    val single = activities.singleOrNull()
-    val fileChange = single?.takeIf { it.kind == "file_change" && !it.fileName.isNullOrBlank() }
-    val counts = remember(activities) { activityCounts(activities) }
+    val images = remember(activities) { viewedImages(activities) }
     Column(Modifier.fillMaxWidth()) {
-        OutlinedPanel {
-            Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).then(if (expandable) Modifier.clickable(role = Role.Button, onClickLabel = if (expanded) "Collapse activity" else "Expand activity") { expanded = !expanded } else Modifier).padding(horizontal = 12.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                when {
-                    running -> WorkingSpinner(size = 18.dp)
-                    attention -> Icon(TfIcons.Close, null, Modifier.size(18.dp), tint = c.red)
-                    fileChange != null -> Icon(TfIcons.File, null, Modifier.size(18.dp), tint = c.muted)
-                    else -> Icon(TfIcons.Check, null, Modifier.size(18.dp), tint = c.green)
-                }
-                Column(Modifier.weight(1f)) {
-                    if (fileChange != null) Text(fileChange.fileName.orEmpty(), style = TrefoilType.mono.copy(fontSize = 13.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    else Text(if (single != null) activityHeadline(single) else "$label · ${activities.size} activities", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Medium), maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    if (!visible) {
-                        val command = activities.last().takeIf { it.kind == "command_execution" }?.input?.lineSequence()?.firstOrNull()?.trim()
-                        val subtitle = command?.takeIf { it.isNotBlank() } ?: activities.last().title.takeIf { activities.size > 1 }
-                        if (subtitle != null) Text(subtitle, style = if (command != null) TrefoilType.mono else TrefoilType.meta, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                }
-                if (fileChange != null) diffStats(fileChange.diffStr)?.let { (added, removed) ->
-                    Text("+$added", style = TrefoilType.mono, color = c.green)
-                    Text("−$removed", style = TrefoilType.mono, color = c.red)
-                } else if (activities.size > 1) ActivityCountsRow(counts)
-                if (expandable) Icon(TfIcons.ChevronDown, if (expanded) "Collapse activity" else "Expand activity", Modifier.size(18.dp), tint = c.muted)
+        if (visible.size == 1) WorkEntry(visible.single(), single = true, live = live, canLoadActivity = canLoadActivity, onLoadActivity = onLoadActivity, initiallyExpanded = initiallyExpanded)
+        else {
+            val summary = remember(visible) { summarizeWorkGroup(visible) }
+            var expanded by rememberSaveable(activities.first().id) { mutableStateOf(initiallyExpanded) }
+            val running = if (live) visible.lastOrNull { it.isRunning } else null
+            val label = running?.let(::liveWorkLabel) ?: summary.label
+            WorkRow(summary.icon.vector, c.muted.copy(alpha = .7f), label, c.muted, expanded, { expanded = !expanded }, if (expanded) "Collapse work details" else "Expand work details",
+                spinner = running != null, description = if (summary.hasFailure) "$label, tool call failed" else null)
+            if (expanded) Column(Modifier.padding(start = 16.dp)) {
+                visible.forEach { activity -> key(activity.id) { WorkEntry(activity, single = false, live = live, canLoadActivity = canLoadActivity, onLoadActivity = onLoadActivity) } }
             }
-            if (visible) activities.forEach { activity ->
-                key(activity.id) {
-                    HorizontalDivider(color = c.line)
-                    ActivityDetail(activity, canLoadActivity, onLoadActivity)
-                }
-            }
+        }
+        if (images.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 24.dp, top = 4.dp, bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            images.forEach { reference -> key(reference.identity) { Box(Modifier.width(160.dp)) { InlineOrCard(reference) } } }
         }
     }
 }
 
+/** One entry row; expands to its flat detail when it has any. Failed entries tint their icon faintly red, `error` items are prominent. */
+@Composable
+private fun WorkEntry(activity: ToolActivity, single: Boolean, live: Boolean, canLoadActivity: Boolean, onLoadActivity: (String) -> Unit, initiallyExpanded: Boolean = false) {
+    val c = Tf.colors
+    val severe = activity.severeFailure
+    val running = live && activity.isRunning
+    val hasDetail = activity.hasExpandableDetail()
+    var expanded by rememberSaveable(activity.id) { mutableStateOf(initiallyExpanded) }
+    val label = if (running && single) liveWorkLabel(activity) else if (single) singleWorkLabel(activity) else workEntryLabel(activity)
+    val stats = if (activity.kind == "file_change") diffStats(activity.diffStr) else null
+    Column(Modifier.fillMaxWidth()) {
+        WorkRow(if (severe) TfIcons.Alert else workEntryIcon(activity).vector,
+            if (severe) c.red else if (activity.displayFailure) c.red.copy(alpha = .4f) else c.muted.copy(alpha = .7f),
+            label, if (severe) c.red else c.muted, if (hasDetail) expanded else null, if (hasDetail) ({ expanded = !expanded }) else null,
+            if (expanded) "Collapse details" else "Expand details", spinner = running) {
+            stats?.let { (added, removed) ->
+                Text("+$added", style = TrefoilType.mono, color = c.green)
+                Text("−$removed", style = TrefoilType.mono, color = c.red)
+            }
+        }
+        if (expanded && hasDetail) WorkEntryDetail(activity, canLoadActivity, onLoadActivity)
+    }
+}
+
+/** Detail worth expanding an entry for. Images are not part of it: they render once under the group. */
 internal fun ToolActivity.hasExpandableDetail(): Boolean =
     listOf(input, output, diffStr, oldStr, newStr, searchResults, failure).any { !it.isNullOrBlank() } ||
         (detail.isNotBlank() && !((kind == "checkpoint" || title.equals("checkpoint", true)) && detail.trim().equals("completed", true))) ||
-        outputOmitted || detailsOmitted || exitCode != null || images.isNotEmpty()
-
-private fun ToolActivity.hasCommandOutput(): Boolean =
-    listOf(output, diffStr, oldStr, newStr, searchResults, failure).any { !it.isNullOrBlank() } ||
-        detail.isNotBlank() || outputOmitted || detailsOmitted || exitCode != null || images.isNotEmpty()
+        outputOmitted || detailsOmitted || (exitCode != null && exitCode != 0)
 
 @Composable
-private fun CommandStack(activities: List<ToolActivity>, canLoadActivity: Boolean, onLoadActivity: (String) -> Unit) {
+private fun WorkEntryDetail(activity: ToolActivity, canLoadActivity: Boolean, onLoadActivity: (String) -> Unit) {
     val c = Tf.colors
-    val running = activities.any { it.isRunning }
-    val attention = activities.any { it.needsAttention }
-    val expandable = activities.any { !it.input.isNullOrBlank() || it.hasCommandOutput() || it.isRunning }
-    var expanded by rememberSaveable(activities.first().id) { mutableStateOf(running || attention) }
-    LaunchedEffect(running, attention) { if (running || attention) expanded = true }
-    Column(Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth().then(if (expandable) Modifier.clickable(role = Role.Button, onClickLabel = if (expanded) "Collapse commands" else "Expand commands") { expanded = !expanded } else Modifier).padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (running) WorkingSpinner(size = 16.dp) else Icon(if (attention) TfIcons.Close else TfIcons.Terminal, null, Modifier.size(16.dp), tint = if (attention) c.red else c.muted)
-            Text(if (running) "Running command…" else "Ran ${activities.size} command${if (activities.size == 1) "" else "s"}", Modifier.weight(1f), style = TrefoilType.meta, color = c.muted, maxLines = 1)
-            if (expandable) Icon(TfIcons.ChevronDown, if (expanded) "Collapse commands" else "Expand commands", Modifier.size(18.dp), tint = c.muted)
-        }
-        if (expanded && expandable) activities.forEach { activity ->
-            key(activity.id) {
-                var detailExpanded by rememberSaveable(activity.id) { mutableStateOf(activity.needsAttention) }
-                LaunchedEffect(activity.needsAttention) { if (activity.needsAttention) detailExpanded = true }
-                val hasOutput = activity.hasCommandOutput()
-                Row(Modifier.fillMaxWidth().then(if (hasOutput) Modifier.clickable(role = Role.Button) { detailExpanded = !detailExpanded } else Modifier).padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (activity.isRunning) WorkingSpinner(size = 14.dp) else Icon(if (activity.needsAttention) TfIcons.Close else TfIcons.Check, null, Modifier.size(14.dp), tint = if (activity.needsAttention) c.red else c.green)
-                    Text(activity.input?.lineSequence()?.firstOrNull().orEmpty().ifBlank { activityHeadline(activity) }, style = TrefoilType.mono, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    val clipboard = LocalClipboardManager.current
+    val structured = listOfNotNull(activity.input, activity.output, activity.diffStr, activity.oldStr, activity.newStr, activity.searchResults, activity.failure).filter { it.isNotBlank() }
+    val fallback = activity.detail.takeIf { it.isNotBlank() && structured.isEmpty() }
+    val copyText = (structured + listOfNotNull(fallback)).distinct().joinToString("\n\n")
+    val code = TrefoilType.code.copy(fontSize = 12.sp, lineHeight = 17.sp)
+    Column(Modifier.fillMaxWidth().padding(start = 24.dp, bottom = 6.dp)) {
+        Row(verticalAlignment = Alignment.Top) {
+            Column(Modifier.weight(1f).heightIn(max = 240.dp).verticalScroll(rememberScrollState()).padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                activity.fileName?.takeIf { it.isNotBlank() }?.let { SelectionContainer { Text(it, style = TrefoilType.mono, color = c.muted) } }
+                if (activity.kind in setOf("reasoning", "proposed_plan")) MarkdownContent(activity.reasoningText)
+                else SelectionContainer {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        activity.input?.takeIf { it.isNotBlank() }?.let { Text(if (activity.kind == "command_execution") "$ $it" else it, style = code) }
+                        val details = listOfNotNull(activity.output, activity.diffStr,
+                            activity.oldStr?.takeIf { activity.diffStr == null }?.let { "Before\n$it" },
+                            activity.newStr?.takeIf { activity.diffStr == null }?.let { "After\n$it" },
+                            activity.searchResults, fallback).distinct()
+                        details.forEach { Text(it, style = code, color = c.muted) }
+                        activity.failure?.takeIf { it.isNotBlank() && it !in details }?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.red) }
+                        activity.exitCode?.takeIf { it != 0 }?.let { Text("exit $it", style = code, color = c.red) }
+                    }
                 }
-                if (detailExpanded && hasOutput) ActivityDetail(activity, canLoadActivity, onLoadActivity)
             }
+            if (copyText.isNotBlank()) IconButton(onClick = { clipboard.setText(AnnotatedString(copyText)) }, modifier = Modifier.size(32.dp)) { Icon(Icons.Default.ContentCopy, "Copy activity", Modifier.size(14.dp), tint = c.muted) }
+        }
+        if (activity.outputOmitted || activity.detailsOmitted) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(if (activity.detailsOmitted) "File details are not included in this snapshot." else "Output is not included in this snapshot.", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = c.muted)
+            TextButton(onClick = { onLoadActivity(activity.id) }, enabled = canLoadActivity) { Text(if (activity.detailsOmitted) "Load details" else "Load output") }
         }
     }
 }
@@ -254,55 +249,6 @@ internal fun activityHeadline(activity: ToolActivity): String {
         else -> activity.title.replaceFirstChar { it.uppercase() }
     }
 }
-
-private fun activityIcon(activity: ToolActivity): ImageVector = when (activity.kind) {
-    "command_execution" -> TfIcons.Terminal
-    "file_change" -> TfIcons.Edit
-    "file_search", "web_search", "search" -> TfIcons.Search
-    "file_read", "file" -> TfIcons.File
-    else -> TfIcons.Settled
-}
-
-@Composable
-private fun ActivityDetail(activity: ToolActivity, canLoadActivity: Boolean, onLoadActivity: (String) -> Unit) {
-    val c = Tf.colors
-    val clipboard = LocalClipboardManager.current
-    val structured = listOfNotNull(activity.input, activity.output, activity.diffStr, activity.oldStr, activity.newStr, activity.searchResults, activity.failure).filter { it.isNotBlank() }
-    val fallback = activity.detail.takeIf { it.isNotBlank() && structured.isEmpty() }
-    val copyText = (structured + listOfNotNull(fallback)).distinct().joinToString("\n\n")
-    Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(activityIcon(activity), null, Modifier.size(14.dp), tint = c.muted)
-            Text(activityHeadline(activity), style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
-            if (activity.status.isNotBlank()) Text(activity.status.replace('_', ' '), style = TrefoilType.meta.copy(fontSize = 12.sp), color = if (activity.needsAttention) c.red else c.muted)
-            if (copyText.isNotBlank()) IconButton(onClick = { clipboard.setText(AnnotatedString(copyText)) }, modifier = Modifier.size(32.dp)) { Icon(Icons.Default.ContentCopy, "Copy activity", Modifier.size(14.dp), tint = c.muted) }
-        }
-        activity.fileName?.takeIf { it.isNotBlank() }?.let { SelectionContainer { Text(it, style = TrefoilType.mono, color = c.muted) } }
-        activity.images.forEach { reference -> key(reference.identity) { InlineOrCard(reference) } }
-        Column(Modifier.heightIn(max = 240.dp).verticalScroll(rememberScrollState()).padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (activity.kind in setOf("reasoning", "proposed_plan")) MarkdownContent(activity.output?.takeIf { it.isNotBlank() } ?: activity.detail)
-            else SelectionContainer {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    activity.input?.takeIf { it.isNotBlank() }?.let {
-                        Text(if (activity.kind == "command_execution") "$ $it" else it, style = TrefoilType.code.copy(fontSize = 12.sp, lineHeight = 17.sp))
-                    }
-                    val details = listOfNotNull(activity.output, activity.diffStr,
-                        activity.oldStr?.takeIf { activity.diffStr == null }?.let { "Before\n$it" },
-                        activity.newStr?.takeIf { activity.diffStr == null }?.let { "After\n$it" },
-                        activity.searchResults, fallback).distinct()
-                    details.forEach { Text(it, style = TrefoilType.code.copy(fontSize = 12.sp, lineHeight = 17.sp), color = c.text.copy(alpha = .86f)) }
-                    activity.failure?.takeIf { it.isNotBlank() && it !in details }?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.red) }
-                    activity.exitCode?.let { Text("Exit code $it", style = TrefoilType.meta.copy(fontSize = 12.sp), color = if (it == 0) c.muted else c.red) }
-                }
-            }
-        }
-        if (activity.outputOmitted || activity.detailsOmitted) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(if (activity.detailsOmitted) "File details are not included in this snapshot." else "Output is not included in this snapshot.", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = c.muted)
-            TextButton(onClick = { onLoadActivity(activity.id) }, enabled = canLoadActivity) { Text(if (activity.detailsOmitted) "Load details" else "Load output") }
-        }
-    }
-}
-
 /* ---------- Pending requests ---------- */
 
 /** A single-question, single-choice request maps onto quick-reply chips above the composer. */

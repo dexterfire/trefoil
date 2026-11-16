@@ -169,7 +169,7 @@ internal fun Conversation(
                                     (entries.getOrNull(entries.indexOf(entry) + 1) as? ConversationEntry.Message)?.message?.role != "user"
                                 } else !entry.message.streaming && (state.activeRunId == null || (entry.message.runId != null && entry.message.runId != state.activeRunId)) &&
                                     entry.message.id == state.messages.lastOrNull { it.role == "assistant" && it.runId == entry.message.runId }?.id)
-                            is ConversationEntry.Activities -> ActivityStack(entry.activities, canLoadActivity = canLoadActivity, onLoadActivity = onLoadActivity)
+                            is ConversationEntry.Activities -> WorkGroup(entry.activities, live = state.activeRunId != null && entry.activities.first().runId == state.activeRunId, canLoadActivity = canLoadActivity, onLoadActivity = onLoadActivity)
                             is ConversationEntry.HtmlRender -> HtmlRenderRow(entry.activity)
                             is ConversationEntry.Work -> CompletedWork(entry, canLoadActivity, onLoadActivity)
                         }
