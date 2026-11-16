@@ -84,14 +84,20 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     val keepConnected: StateFlow<Boolean> = _keepConnected.asStateFlow()
     /** Drives the keep-alive service; replaced only by tests. */
     internal var keepAliveControl: KeepAliveControl = ServiceKeepAliveControl
+        set(value) { field = value; watchKeepAliveService() }
+    private var keepAliveWatch: Job? = null
     private val _keepAliveActive = MutableStateFlow(false)
     /** The keep-alive service runs (its start was accepted); the background then keeps the connection like the foreground. */
     val keepAliveActive: StateFlow<Boolean> = _keepAliveActive.asStateFlow()
     private val keepAlive get() = _keepAliveActive.value
+    /** What the notification shows; it is only updated when one of them changes. */
     private var keepAliveMachine: String? = null
-    /** A refused start counts as the setting being off until the connection ends or the setting changes. */
+    private var keepAliveReconnecting = false
+    /** A refused start (or a service that ended on its own) counts as the setting being off until the connection ends or the setting changes. */
     private var keepAliveRefused = false
     private var keepAliveCheckPosted = false
+    /** Set by an explicit disconnect or forgetting the live machine; until the next connection action nothing starts the service. */
+    private var keepAliveLatched = false
     private val environmentProbe = EnvironmentProbe()
     private val prober = MachineProber(
         // Adapter over the single-route probe; EnvironmentProbe's multi-route probe has the same contract.
@@ -113,6 +119,8 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
      */
     private var liveEnvironment: SavedEnvironment? = null
     private var autoReconnectJob: Job? = null
+        // invokeOnCompletion runs on the completing thread; this job lives on viewModelScope (Main), so the posted check
+        // and its non-atomic flag stay main-thread confined.
         set(value) { field = value; value?.invokeOnCompletion { postKeepAliveCheck() }; postKeepAliveCheck() }
     /** A drop while offline reconnects when a default network appears. */
     private var reconnectWhenOnline: SavedEnvironment? = null
@@ -153,10 +161,22 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
             }
         }
         viewModelScope.launch {
-            combine(client.state.map { it.connection to it.environment?.name }.distinctUntilChanged(), _keepConnected) { _, _ -> }
+            combine(client.state.map { it.connection to it.environment?.name }.distinctUntilChanged(), _keepConnected, _working) { _, _, _ -> }
                 .collect { postKeepAliveCheck() }
         }
         viewModelScope.launch { ConnectionKeepAlive.disconnectRequests.collect { disconnect() } }
+        watchKeepAliveService()
+    }
+
+    /** The service ending on its own (startForeground refused, timeout) counts as a refused start for this connection. */
+    private fun watchKeepAliveService() {
+        keepAliveWatch?.cancel()
+        val control = keepAliveControl
+        keepAliveWatch = viewModelScope.launch {
+            combine(control.running, control.starting) { _, _ -> }.collect {
+                if (keepAlive && !control.running.value && !control.starting.value) { keepAliveRefused = true; stopKeepAlive(releaseBackground = true) }
+            }
+        }
     }
 
     private fun action(failure: String, block: suspend () -> Unit) {
@@ -177,6 +197,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     private fun connectionAction(failure: String, kind: ConnectionKind = ConnectionKind.Saved, block: suspend () -> Unit): Job {
         backgroundDisconnectJob?.cancel(); backgroundDisconnectJob = null
         reconnectWhenOnline = null
+        keepAliveLatched = false
         val epoch = ++connectionEpoch
         autoConnectPending = false
         connectionJob?.cancel()
@@ -209,6 +230,10 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
                             if (e.changed) {
                                 pendingInput = null
                                 connectionFailed(epoch, kind, "SSH host key changed for ${e.presented.host}:${e.presented.port}. Connection blocked. Verify the server key independently before changing your saved trust.")
+                            } else if (!foreground) {
+                                // A background (keep-alive) attempt never raises the trust prompt; it fails like any other attempt.
+                                pendingInput = null
+                                connectionFailed(epoch, kind, "Confirm the SSH host fingerprint in Trefoil to reconnect.")
                             } else {
                                 _sshHostKey.value = e.presented
                                 _connectionAttempt.value = ConnectionAttempt(epoch, kind, ConnectionPhase.AwaitingTrust, "Confirm the SSH host fingerprint to continue.")
@@ -409,6 +434,8 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         clearDraft()
         screenSessions.close()
         resumeEnvironment = null; cancelSsh()
+        // The disconnect below waits for connectionMutex; a check posted before then must not restart the service.
+        keepAliveLatched = true
         stopKeepAlive(releaseBackground = false)
         action("Could not disconnect.") { connectionMutex.withLock { disconnectCurrent() } }
     }
@@ -432,7 +459,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     }
     fun forget(environment: SavedEnvironment) = action("Could not remove saved credentials.") {
         if (drafts.environmentId == environment.id || state.value.environment?.id == environment.id) clearDraft()
-        if (selectedEnvironment?.id == environment.id || state.value.environment?.id == environment.id) cancelSsh()
+        if (selectedEnvironment?.id == environment.id || state.value.environment?.id == environment.id) { cancelSsh(); keepAliveLatched = true }
         if (resumeEnvironment?.id == environment.id) resumeEnvironment = null
         _machineProbes.update { it - environment.id }
         if (prefs.getString(LAST_ENVIRONMENT, null) == environment.id) prefs.edit().remove(LAST_ENVIRONMENT).apply()
@@ -491,7 +518,9 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         refreshRouteMonitor()
         val environment = resumeEnvironment
         resumeEnvironment = null
-        if (environment != null && _sshLogin.value == null &&
+        // A background (keep-alive) reconnect episode or attempt still in flight goes on; connecting would cancel it.
+        val reconnectInFlight = autoReconnectJob?.isActive == true || _working.value
+        if (environment != null && _sshLogin.value == null && !reconnectInFlight &&
             (state.value.connection != ConnectionStatus.Connected || state.value.environment?.id != environment.id ||
                 (client.millisSinceLastPong()?.let { it > RETAINED_CONNECTION_FRESHNESS_MS } != false))) connect(environment)
         probeMachines(skipId = environment?.id)
@@ -681,15 +710,25 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         val current = state.value
         val reconnectPending = autoReconnectJob?.isActive == true || reconnectWhenOnline != null ||
             // A drop that [connectionDropped] has not handled yet may still start a reconnect.
-            liveEnvironment != null
-        val wanted = keepAliveWanted(_keepConnected.value, current.connection, reconnectPending)
+            liveEnvironment != null ||
+            // An attempt that replaces a kept connection (reconnect, route or machine switch); a first connect does not start it.
+            (keepAlive && _working.value)
+        val wanted = !keepAliveLatched && keepAliveWanted(_keepConnected.value, current.connection, reconnectPending)
         if (!wanted) keepAliveRefused = false
-        val machine = current.environment?.name ?: liveEnvironment?.name ?: reconnectWhenOnline?.name ?: selectedEnvironment?.name ?: "your machine"
-        when (keepAliveStep(wanted, keepAlive, foreground, keepAliveRefused, machine != keepAliveMachine)) {
+        // Keeps the shown name while the client has no environment, so fallbacks never flap the notification.
+        val machine = current.environment?.name ?: keepAliveMachine ?: liveEnvironment?.name ?: reconnectWhenOnline?.name ?: selectedEnvironment?.name ?: "your machine"
+        val reconnecting = current.connection != ConnectionStatus.Connected
+        val changed = machine != keepAliveMachine || reconnecting != keepAliveReconnecting
+        when (keepAliveStep(wanted, keepAlive, foreground, keepAliveRefused, changed)) {
             KeepAliveStep.Start -> {
-                val started = try { keepAliveControl.start(getApplication(), machine) } catch (_: Exception) { false }
-                if (started) { keepAliveMachine = machine; _keepAliveActive.value = true }
+                val started = try { keepAliveControl.start(getApplication(), machine, reconnecting) } catch (_: Exception) { false }
+                if (started) { keepAliveMachine = machine; keepAliveReconnecting = reconnecting; _keepAliveActive.value = true }
                 else { keepAliveRefused = true; stopKeepAlive(releaseBackground = true) }
+            }
+            KeepAliveStep.Update -> {
+                // A running service only replaces its notification; a failure there leaves it running as it was.
+                val updated = try { keepAliveControl.start(getApplication(), machine, reconnecting) } catch (_: Exception) { false }
+                if (updated) { keepAliveMachine = machine; keepAliveReconnecting = reconnecting }
             }
             KeepAliveStep.Stop -> stopKeepAlive(releaseBackground = true)
             KeepAliveStep.None -> {}
@@ -699,7 +738,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     /** Stops the service; in the background [releaseBackground] then applies the rules of a pause without keep-alive. */
     private fun stopKeepAlive(releaseBackground: Boolean) {
         val wasActive = keepAlive
-        _keepAliveActive.value = false; keepAliveMachine = null
+        _keepAliveActive.value = false; keepAliveMachine = null; keepAliveReconnecting = false
         if (wasActive) try { keepAliveControl.stop(getApplication()) } catch (_: Exception) {}
         if (wasActive && releaseBackground && !foreground) releaseInBackground()
     }
@@ -724,30 +763,40 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
 
 /** Starts and stops the keep-alive service; [ServiceKeepAliveControl] in production. */
 internal interface KeepAliveControl {
-    /** False when the OS refuses the start. */
-    fun start(context: Context, machineName: String): Boolean
+    /** The service is in the foreground. */
+    val running: StateFlow<Boolean>
+    /** An accepted start has not reached the service yet. */
+    val starting: StateFlow<Boolean>
+    /** Starts the service or updates its notification; false when the OS refuses the start. */
+    fun start(context: Context, machineName: String, reconnecting: Boolean): Boolean
     fun stop(context: Context)
 }
 
 internal object ServiceKeepAliveControl : KeepAliveControl {
-    override fun start(context: Context, machineName: String) = ConnectionKeepAlive.start(context, machineName)
+    override val running get() = ConnectionKeepAlive.running
+    override val starting get() = ConnectionKeepAlive.starting
+    override fun start(context: Context, machineName: String, reconnecting: Boolean) = ConnectionKeepAlive.start(context, machineName, reconnecting)
     override fun stop(context: Context) = ConnectionKeepAlive.stop(context)
 }
 
-/** The keep-alive service should run: opted in, and a connection is live or being re-established. */
+/**
+ * The keep-alive service should run: opted in, and a connection is live or being re-established. A plain first
+ * Connecting is not enough; [reconnectPending] covers attempts that continue a kept connection.
+ */
 internal fun keepAliveWanted(enabled: Boolean, connection: ConnectionStatus, reconnectPending: Boolean): Boolean =
-    enabled && (reconnectPending || connection == ConnectionStatus.Connected || connection == ConnectionStatus.Connecting ||
-        connection == ConnectionStatus.Reconnecting)
+    enabled && (reconnectPending || connection == ConnectionStatus.Connected || connection == ConnectionStatus.Reconnecting)
 
-internal enum class KeepAliveStep { Start, Stop, None }
+internal enum class KeepAliveStep { Start, Update, Stop, None }
 
 /**
- * What to do with the service. It (re)starts only in the foreground (Android forbids background starts), also to show a
- * changed [machineChanged] name, never again after a refused start; it stops as soon as it is no longer [wanted].
+ * What to do with the service. It starts only in the foreground (Android forbids background starts), never again after
+ * a refused start; a running service updates its notification when [changed] (also in the background, no new start);
+ * it stops as soon as it is no longer [wanted].
  */
-internal fun keepAliveStep(wanted: Boolean, active: Boolean, foreground: Boolean, refused: Boolean, machineChanged: Boolean): KeepAliveStep = when {
+internal fun keepAliveStep(wanted: Boolean, active: Boolean, foreground: Boolean, refused: Boolean, changed: Boolean): KeepAliveStep = when {
     !wanted -> if (active) KeepAliveStep.Stop else KeepAliveStep.None
-    foreground && !refused && (!active || machineChanged) -> KeepAliveStep.Start
+    active -> if (changed) KeepAliveStep.Update else KeepAliveStep.None
+    foreground && !refused -> KeepAliveStep.Start
     else -> KeepAliveStep.None
 }
 

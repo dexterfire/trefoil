@@ -96,6 +96,7 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
     override fun onDestroy() {
+        // Accepted edge case: a destroyed activity (keep-alive still running) drops network changes until the next onStart.
         unregisterNetworkCallback()
         super.onDestroy()
     }

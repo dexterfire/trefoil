@@ -24,20 +24,34 @@ class ConnectionKeepAliveService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_DISCONNECT -> ConnectionKeepAlive.requestDisconnect()
-            ACTION_START -> if (!enterForeground(intent.getStringExtra(EXTRA_MACHINE_NAME).orEmpty())) stopSelf()
+            ACTION_DISCONNECT -> {
+                ConnectionKeepAlive.requestDisconnect()
+                // Not in the foreground and no start pending: this intent alone created the service.
+                if (!ConnectionKeepAlive.running.value && !ConnectionKeepAlive.starting.value) stopSelf()
+            }
+            ACTION_START -> {
+                // startForeground always comes first: a stop that raced this start may only stop the service afterwards.
+                val inForeground = enterForeground(intent.getStringExtra(EXTRA_MACHINE_NAME).orEmpty(), intent.getBooleanExtra(EXTRA_RECONNECTING, false))
+                // A refused startForeground stops too, unless a newer start is pending (it needs its own startForeground).
+                if (ConnectionKeepAlive.startHandled(inForeground) || (!inForeground && !ConnectionKeepAlive.starting.value)) stopSelf()
+            }
             else -> stopSelf()
         }
         return START_NOT_STICKY
     }
 
-    /** Only called if the system ever times a specialUse service out (API 35+); the view model restarts it when needed. */
+    override fun onDestroy() {
+        ConnectionKeepAlive.serviceDestroyed()
+        super.onDestroy()
+    }
+
+    /** Only called if the system ever times a specialUse service out (API 35+); the view model then treats it as refused. */
     override fun onTimeout(startId: Int, fgsType: Int) { stopSelf() }
 
-    private fun enterForeground(machineName: String): Boolean = try {
+    private fun enterForeground(machineName: String, reconnecting: Boolean): Boolean = try {
         ensureChannel(this)
         val type = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
-        ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(this, machineName), type)
+        ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(this, machineName, reconnecting), type)
         true
     } catch (e: IllegalStateException) { false } // includes ForegroundServiceStartNotAllowedException (API 31+)
     catch (e: SecurityException) { false }
@@ -48,10 +62,17 @@ class ConnectionKeepAliveService : Service() {
         internal const val ACTION_START = "com.tajchert.trefoil.keepalive.START"
         internal const val ACTION_DISCONNECT = "com.tajchert.trefoil.keepalive.DISCONNECT"
         internal const val EXTRA_MACHINE_NAME = "machineName"
+        internal const val EXTRA_RECONNECTING = "reconnecting"
 
         internal fun baseIntent(context: Context) = Intent(context, ConnectionKeepAliveService::class.java)
-        internal fun startIntent(context: Context, machineName: String) =
-            baseIntent(context).setAction(ACTION_START).putExtra(EXTRA_MACHINE_NAME, machineName)
+        internal fun startIntent(context: Context, machineName: String, reconnecting: Boolean) = baseIntent(context)
+            .setAction(ACTION_START).putExtra(EXTRA_MACHINE_NAME, machineName).putExtra(EXTRA_RECONNECTING, reconnecting)
+
+        /** Replaces the running service's notification in place: no new foreground start, so it also works in the background. */
+        internal fun updateNotification(context: Context, machineName: String, reconnecting: Boolean) {
+            try { context.getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, buildNotification(context, machineName, reconnecting)) }
+            catch (_: RuntimeException) {}
+        }
 
         internal fun ensureChannel(context: Context) {
             val manager = context.getSystemService(NotificationManager::class.java) ?: return
@@ -62,7 +83,7 @@ class ConnectionKeepAliveService : Service() {
             manager.createNotificationChannel(channel)
         }
 
-        internal fun buildNotification(context: Context, machineName: String): Notification {
+        internal fun buildNotification(context: Context, machineName: String, reconnecting: Boolean = false): Notification {
             val open = PendingIntent.getActivity(
                 context, 0,
                 Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
@@ -74,7 +95,7 @@ class ConnectionKeepAliveService : Service() {
             )
             return NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_keepalive)
-                .setContentTitle("Connected to $machineName")
+                .setContentTitle(if (reconnecting) "Reconnecting to $machineName" else "Connected to $machineName")
                 .setContentText("Trefoil keeps this connection open while you use other apps.")
                 .setContentIntent(open)
                 .addAction(0, "Disconnect", disconnect)

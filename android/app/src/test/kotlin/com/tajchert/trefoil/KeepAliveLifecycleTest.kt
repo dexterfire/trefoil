@@ -27,9 +27,16 @@ import java.time.Duration
 class KeepAliveLifecycleTest {
     private class FakeControl(var accept: Boolean = true) : KeepAliveControl {
         val starts = mutableListOf<String>()
+        val reconnecting = mutableListOf<Boolean>()
         var stops = 0
-        override fun start(context: Context, machineName: String): Boolean { starts += machineName; return accept }
-        override fun stop(context: Context) { stops++ }
+        override val running = MutableStateFlow(false)
+        override val starting = MutableStateFlow(false)
+        override fun start(context: Context, machineName: String, reconnecting: Boolean): Boolean {
+            starts += machineName; this.reconnecting += reconnecting
+            if (accept) running.value = true
+            return accept
+        }
+        override fun stop(context: Context) { stops++; running.value = false }
     }
 
     private lateinit var model: TrefoilViewModel
@@ -187,24 +194,131 @@ class KeepAliveLifecycleTest {
     }
 
     @Test fun wantedOnlyWhenEnabledAndLiveOrReconnecting() {
-        for (status in listOf(ConnectionStatus.Connected, ConnectionStatus.Connecting, ConnectionStatus.Reconnecting)) {
+        for (status in listOf(ConnectionStatus.Connected, ConnectionStatus.Reconnecting)) {
             assertTrue(keepAliveWanted(true, status, reconnectPending = false))
             assertFalse(keepAliveWanted(false, status, reconnectPending = true))
         }
-        for (status in listOf(ConnectionStatus.Disconnected, ConnectionStatus.Error)) {
+        // A plain first connect does not start it; an attempt continuing a kept connection counts as a pending reconnect.
+        for (status in listOf(ConnectionStatus.Connecting, ConnectionStatus.Disconnected, ConnectionStatus.Error)) {
             assertFalse(keepAliveWanted(true, status, reconnectPending = false))
             assertTrue(keepAliveWanted(true, status, reconnectPending = true))
         }
     }
 
-    @Test fun stepStartsOnlyInTheForegroundAndStopsWhenUnwanted() {
-        assertEquals(KeepAliveStep.Start, keepAliveStep(wanted = true, active = false, foreground = true, refused = false, machineChanged = true))
-        assertEquals(KeepAliveStep.None, keepAliveStep(wanted = true, active = false, foreground = false, refused = false, machineChanged = true))
-        assertEquals(KeepAliveStep.None, keepAliveStep(wanted = true, active = false, foreground = true, refused = true, machineChanged = true))
-        assertEquals(KeepAliveStep.None, keepAliveStep(wanted = true, active = true, foreground = true, refused = false, machineChanged = false))
-        assertEquals(KeepAliveStep.Start, keepAliveStep(wanted = true, active = true, foreground = true, refused = false, machineChanged = true))
-        assertEquals(KeepAliveStep.None, keepAliveStep(wanted = true, active = true, foreground = false, refused = false, machineChanged = true))
-        assertEquals(KeepAliveStep.Stop, keepAliveStep(wanted = false, active = true, foreground = false, refused = false, machineChanged = false))
-        assertEquals(KeepAliveStep.None, keepAliveStep(wanted = false, active = false, foreground = true, refused = false, machineChanged = false))
+    @Test fun stepStartsOnlyInTheForegroundUpdatesWhenChangedAndStopsWhenUnwanted() {
+        assertEquals(KeepAliveStep.Start, keepAliveStep(wanted = true, active = false, foreground = true, refused = false, changed = true))
+        assertEquals(KeepAliveStep.None, keepAliveStep(wanted = true, active = false, foreground = false, refused = false, changed = true))
+        assertEquals(KeepAliveStep.None, keepAliveStep(wanted = true, active = false, foreground = true, refused = true, changed = true))
+        assertEquals(KeepAliveStep.None, keepAliveStep(wanted = true, active = true, foreground = true, refused = false, changed = false))
+        assertEquals(KeepAliveStep.Update, keepAliveStep(wanted = true, active = true, foreground = true, refused = false, changed = true))
+        assertEquals(KeepAliveStep.Update, keepAliveStep(wanted = true, active = true, foreground = false, refused = false, changed = true))
+        assertEquals(KeepAliveStep.Stop, keepAliveStep(wanted = false, active = true, foreground = false, refused = false, changed = false))
+        assertEquals(KeepAliveStep.None, keepAliveStep(wanted = false, active = false, foreground = true, refused = false, changed = false))
+    }
+
+    @Test fun firstConnectDoesNotStartTheService() {
+        mutable.value = mutable.value.copy(connection = ConnectionStatus.Connecting, canWrite = false)
+        enableKeepAlive()
+        assertTrue(control.starts.isEmpty())
+        mutable.value = mutable.value.copy(connection = ConnectionStatus.Connected, canWrite = true); advance(0)
+        assertEquals(listOf("Fixture"), control.starts)
+    }
+
+    @Test fun serviceEndingOnItsOwnInTheBackgroundRestoresTheGraceDisconnect() {
+        enableKeepAlive()
+        model.pause(); advance(30_000)
+        control.running.value = false; advance(0)
+        assertFalse(model.keepAliveActive.value)
+        advance(BACKGROUND_CONNECTION_GRACE_MS - 1)
+        assertEquals(ConnectionStatus.Connected, model.state.value.connection)
+        advance(1)
+        assertEquals(ConnectionStatus.Disconnected, model.state.value.connection)
+    }
+
+    @Test fun serviceEndingOnItsOwnIsNotRestartedForThisConnection() {
+        enableKeepAlive()
+        control.running.value = false; advance(0)
+        assertFalse(model.keepAliveActive.value)
+        model.pause(); advance(1_000); model.resume(); advance(0)
+        assertEquals(1, control.starts.size)
+        // A pending start is not a dead service.
+        model.setKeepConnected(false); advance(0); model.setKeepConnected(true); advance(0)
+        assertTrue(model.keepAliveActive.value)
+        control.starting.value = true; control.running.value = false; advance(0)
+        assertTrue(model.keepAliveActive.value)
+    }
+
+    @Test fun disconnectWhileTheConnectionLockIsHeldNeverRestartsTheService() {
+        armLiveConnection()
+        enableKeepAlive()
+        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
+        assertTrue(mutex.tryLock())
+        model.disconnect(); advance(100)
+        // The state is still live while the disconnect waits for the lock; the posted check must not start it again.
+        assertEquals(ConnectionStatus.Connected, model.state.value.connection)
+        assertFalse(model.keepAliveActive.value)
+        mutex.unlock(); advance(100)
+        assertEquals(ConnectionStatus.Disconnected, model.state.value.connection)
+        assertEquals(1, control.starts.size)
+    }
+
+    @Test fun resumeDuringABackgroundReconnectLetsItContinue() {
+        armLiveConnection()
+        enableKeepAlive()
+        model.pause()
+        dropConnection(); advance(1_000)
+        model.resume(); advance(0)
+        // Connecting here would cancel the episode; its first attempt still comes at the backoff.
+        assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
+        advance(1_000)
+        // Testing, or already Failed: the fixture host never resolves.
+        assertTrue(model.connectionAttempt.value.id > 0)
+        assertNotEquals(ConnectionPhase.Idle, model.connectionAttempt.value.phase)
+    }
+
+    @Test fun notificationShowsReconnectingInTheBackgroundWithoutFlapping() {
+        armLiveConnection()
+        enableKeepAlive()
+        model.pause()
+        dropConnection(); advance(0)
+        assertEquals(listOf("Fixture", "Fixture"), control.starts)
+        assertEquals(listOf(false, true), control.reconnecting)
+        mutable.value = mutable.value.copy(error = "Still lost"); advance(0)
+        assertEquals(2, control.starts.size)
+    }
+
+    private fun hostKeyFailure(changed: Boolean) {
+        val method = TrefoilViewModel::class.java.getDeclaredMethod("connectionAction", String::class.java, ConnectionKind::class.java,
+            kotlin.jvm.functions.Function1::class.java).apply { isAccessible = true }
+        val key = SshHostKey("fixture.invalid", 22, "ssh-ed25519", "SHA256:fixture")
+        val block: suspend () -> Unit = { throw com.tajchert.trefoil.core.ssh.SshHostKeyException(key, changed) }
+        method.invoke(model, "failed", ConnectionKind.Ssh, block)
+        advance(0)
+    }
+
+    @Test fun unknownHostKeyInABackgroundAttemptFailsWithoutAPrompt() {
+        armLiveConnection()
+        enableKeepAlive()
+        model.pause()
+        hostKeyFailure(changed = false)
+        assertNull(model.sshHostKey.value)
+        assertEquals(ConnectionPhase.Failed, model.connectionAttempt.value.phase)
+    }
+
+    @Test fun unknownHostKeyInTheForegroundStillAsksForTrust() {
+        armLiveConnection()
+        hostKeyFailure(changed = false)
+        assertNotNull(model.sshHostKey.value)
+        assertEquals(ConnectionPhase.AwaitingTrust, model.connectionAttempt.value.phase)
+    }
+
+    @Test fun changedHostKeyInABackgroundAttemptStillFailsClosed() {
+        armLiveConnection()
+        enableKeepAlive()
+        model.pause()
+        hostKeyFailure(changed = true)
+        assertNull(model.sshHostKey.value)
+        assertEquals(ConnectionPhase.Failed, model.connectionAttempt.value.phase)
+        assertTrue(model.connectionAttempt.value.message.contains("changed"))
     }
 }
