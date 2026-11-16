@@ -25,8 +25,8 @@ const val HTML_RENDER_MIN_HEIGHT = 80
 const val HTML_RENDER_MAX_HEIGHT = 2000
 const val HTML_RENDER_MAX_FIT_HEIGHT = 20_000
 
-/** Mirrors T3's htmlRenderFileName: strip reserved/control chars, cap at 120, append `.html`. */
+/** Mirrors T3's htmlRenderFileName: reserved/control chars become spaces, cap at 120, append `.html`. */
 fun htmlRenderFileName(title: String): String {
-    val base = title.replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]"), "").trim().take(120).ifBlank { "HTML" }
+    val base = title.replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]+"), " ").replace(Regex("\\s+"), " ").trim().take(120).trim().ifBlank { "Page" }
     return "$base.html"
 }
