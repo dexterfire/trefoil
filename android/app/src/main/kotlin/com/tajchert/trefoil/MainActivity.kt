@@ -1,6 +1,9 @@
 package com.tajchert.trefoil
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
+import android.os.Build
 import android.net.Network
 import android.os.Bundle
 import android.os.Handler
@@ -11,6 +14,10 @@ import androidx.compose.runtime.setValue
 import com.tajchert.trefoil.widget.*
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.runtime.getValue
@@ -49,31 +56,59 @@ class MainActivity : ComponentActivity() {
             } else startActivity(when { share -> fileActions.shareIntent(file); install -> fileActions.installIntent(file); else -> fileActions.openIntent(file) })
         } catch (_: Exception) { Toast.makeText(this, "Could not open this download. Check that the file is still available.", Toast.LENGTH_LONG).show() }
     }
-    /** Default-network changes while in the foreground: a better-route check, or a pending reconnect once online. */
+    /** Default-network changes in the foreground (and in the background while keep-alive runs): a better-route or link check, or a pending reconnect once online. */
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) { model.onDefaultNetwork(network.networkHandle) }
         override fun onLost(network: Network) { model.onDefaultNetworkLost(network.networkHandle) }
     }
     private var networkCallbackRegistered = false
-    override fun onStart() {
-        super.onStart(); model.resume()
+    private fun registerNetworkCallback() {
+        if (networkCallbackRegistered) return
         val connectivity = getSystemService(ConnectivityManager::class.java) ?: return
         // Too many callbacks or a missing permission: route checks still run every minute.
         networkCallbackRegistered = try { connectivity.registerDefaultNetworkCallback(networkCallback, Handler(Looper.getMainLooper())); true }
         catch (_: RuntimeException) { false }
     }
-    override fun onStop() {
-        if (networkCallbackRegistered) {
-            try { getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(networkCallback) } catch (_: RuntimeException) {}
-            networkCallbackRegistered = false
+    private fun unregisterNetworkCallback() {
+        if (!networkCallbackRegistered) return
+        try { getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(networkCallback) } catch (_: RuntimeException) {}
+        networkCallbackRegistered = false
+    }
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        // Denied keeps the setting on: the service still runs, Android only hides its notification.
+    }
+    /** The "Keep connected in background" toggle; turning it on asks for the notification permission on Android 13+. */
+    fun onKeepConnectedChange(enabled: Boolean) {
+        model.setKeepConnected(enabled)
+        if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
-        model.pause(); super.onStop()
+    }
+    override fun onStart() {
+        super.onStart(); model.resume()
+        registerNetworkCallback()
+    }
+    override fun onStop() {
+        model.pause()
+        // While keep-alive runs, link checks and reconnect-when-online need network changes in the background too.
+        if (!model.keepAliveActive.value) unregisterNetworkCallback()
+        super.onStop()
+    }
+    override fun onDestroy() {
+        // Accepted edge case: a destroyed activity (keep-alive still running) drops network changes until the next onStart.
+        unregisterNetworkCallback()
+        super.onDestroy()
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Only a fresh launch consumes the widget intent; recreation (rotation) must not reopen Usage.
         if (savedInstanceState == null) { handleUsageIntent(intent); handlePairLinkIntent(intent) }
         enableEdgeToEdge()
+        lifecycleScope.launch {
+            // Keep-alive ending in the background: stop listening for network changes until the next start.
+            model.keepAliveActive.collect { active -> if (!active && !lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) unregisterNetworkCallback() }
+        }
         setContent {
             val state by model.state.collectAsStateWithLifecycle()
             val screenViewer by model.screenSessions.state.collectAsStateWithLifecycle()
@@ -87,6 +122,7 @@ class MainActivity : ComponentActivity() {
             val connectionAttempt by model.connectionAttempt.collectAsStateWithLifecycle()
             val machineProbes by model.machineProbes.collectAsStateWithLifecycle()
             val usage by model.usage.collectAsStateWithLifecycle()
+            val keepConnected by model.keepConnected.collectAsStateWithLifecycle()
             TrefoilApp(
                 usageOpenRequest = usageRequest,
                 pairLinkRequest = pairLinkRequest,
@@ -136,6 +172,8 @@ class MainActivity : ComponentActivity() {
                 onSshKeyPickerActive = { model.sshFilePickerActive = it },
                 machineProbes = machineProbes,
                 onAllowLocalNetworkHttp = model::allowLocalNetworkHttp,
+                keepConnected = keepConnected,
+                onKeepConnectedChange = ::onKeepConnectedChange,
             )
         }
     }

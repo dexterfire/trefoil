@@ -40,6 +40,9 @@ internal data class ShellActions(
     val onScreens: (() -> Unit)? = null,
     val onUsage: (() -> Unit)? = null,
     val onDisconnect: (() -> Unit)? = null,
+    /** Opt-in foreground service that keeps the connection alive in the background; null hides the entry. */
+    val keepConnected: Boolean = false,
+    val onKeepConnectedChange: ((Boolean) -> Unit)? = null,
 )
 
 /** Live states (Online … Failed) describe the active connection; the rest come from background probes. */
@@ -115,6 +118,12 @@ internal fun ColumnScope.ShellMenuItems(state: ClientState, actions: ShellAction
         onClick = { close(); actions.onMachines() })
     DropdownMenuItem(text = { Text("Connect machine") }, enabled = !state.busy, leadingIcon = { Icon(TfIcons.Plus, null, Modifier.size(20.dp)) },
         onClick = { close(); actions.onConnectMachine() })
+    if (actions.onKeepConnectedChange != null) {
+        HorizontalDivider(Modifier.padding(vertical = 4.dp))
+        DropdownMenuItem(text = { Text("Keep connected in background") },
+            trailingIcon = { Checkbox(checked = actions.keepConnected, onCheckedChange = null) },
+            onClick = { close(); actions.onKeepConnectedChange.invoke(!actions.keepConnected) })
+    }
     if (actions.onDisconnect != null) DropdownMenuItem(text = { Text("Disconnect machine") },
         leadingIcon = { Icon(TfIcons.Disconnect, null, Modifier.size(20.dp)) }, onClick = { close(); actions.onDisconnect.invoke() })
 }
