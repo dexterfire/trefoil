@@ -6,7 +6,13 @@ import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.Proxy
 import java.net.UnknownHostException
+import java.util.Collections
+import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
+import okhttp3.Call
 import okhttp3.CookieJar
 import okhttp3.Dns
 import okhttp3.Headers
@@ -21,11 +27,14 @@ import okio.Buffer
 /**
  * What an agent page may reach, read live on every request: the hosts the environment is currently reached
  * through, whether the card's environment and thread are still the connected selection, and the fetcher.
+ * [currentChanges] emits [isCurrent] as it changes, so a page can cancel its in-flight fetches the moment
+ * it loses its connection or thread.
  */
 internal class HtmlRenderNetworkAccess(
     val environmentHosts: () -> Set<String> = { emptySet() },
     val isCurrent: () -> Boolean = { false },
     val fetcher: HtmlRenderSubresourceFetcher? = null,
+    val currentChanges: Flow<Boolean> = emptyFlow(),
 ) {
     companion object {
         /** No remote subresources at all: previews, tests, and cards without a loader. */
@@ -81,7 +90,25 @@ private object PublicPeerInterceptor : Interceptor {
     }
 }
 
-/** A proxied subresource; `toString` never prints the URL or body. */
+/** The page's hop decision, attached to each request so it can be re-read after DNS and connect. */
+internal class HtmlRenderHopGate(val allows: () -> Boolean)
+
+/** The gate closed (page released, connection or thread lost) while the request was underway. */
+internal class HtmlRenderGateClosed : IOException("Gate closed")
+
+/**
+ * Network interceptor: re-checks the request's [HtmlRenderHopGate] after connect, right before the request
+ * is written. A request without a gate is refused, so nothing reaches the network outside the fetcher.
+ */
+internal object HtmlRenderGateInterceptor : Interceptor {
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val gate = chain.request().tag(HtmlRenderHopGate::class.java)
+        if (gate == null || !gate.allows()) throw HtmlRenderGateClosed()
+        return chain.proceed(chain.request())
+    }
+}
+
+/** A proxied subresource; `toString` never prints the URL or body. [finalUrl] is the last hop actually read. */
 internal class HtmlRenderResource(
     val status: Int,
     val reason: String,
@@ -89,6 +116,7 @@ internal class HtmlRenderResource(
     val encoding: String?,
     val headers: Map<String, String>,
     val body: ByteArray,
+    val finalUrl: String? = null,
 ) {
     override fun toString() = "HtmlRenderResource(status=$status, bytes=${body.size})"
 
@@ -99,19 +127,23 @@ internal class HtmlRenderResource(
     }
 }
 
-private val FORWARDED_REQUEST_HEADERS = setOf("accept", "accept-language", "range", "origin")
+/**
+ * `Range` is never forwarded: the WebView slices a byte-range request itself by seeking into the stream it is
+ * given, so the full resource (still capped) is always fetched and returned as 200.
+ */
+private val FORWARDED_REQUEST_HEADERS = setOf("accept", "accept-language", "origin")
 private val PASSED_RESPONSE_HEADERS = setOf(
-    "content-type", "content-language", "content-range", "accept-ranges", "timing-allow-origin", "cross-origin-resource-policy",
+    "content-type", "content-language", "accept-ranges", "timing-allow-origin", "cross-origin-resource-policy",
 )
 
-/** Only content negotiation, ranges and the (synthetic) Origin leave the device: no cookies, auth, or Referer. */
+/** Only content negotiation and the (synthetic) Origin leave the device: no cookies, auth, Referer, or Range. */
 internal fun htmlRenderForwardedRequestHeaders(headers: Map<String, String>): Headers = Headers.Builder().apply {
     headers.forEach { (name, value) ->
         if (name.lowercase() in FORWARDED_REQUEST_HEADERS && value.length <= 1024) runCatching { add(name, value) }
     }
 }.build()
 
-/** CORS and content headers the page needs; Set-Cookie, caching, and transport headers are dropped. */
+/** CORS and content headers the page needs; Set-Cookie, caching, Content-Range, and transport headers are dropped. */
 internal fun htmlRenderPassedResponseHeaders(headers: Headers): Map<String, String> {
     val passed = linkedMapOf<String, String>()
     headers.names().forEach { name ->
@@ -125,7 +157,9 @@ internal fun htmlRenderPassedResponseHeaders(headers: Headers): Map<String, Stri
 /**
  * Fetches an agent page's subresources for the WebView, so every hop passes [HtmlRenderPolicy]: GET over
  * https only, manual bounded redirects with the policy re-checked per hop, public addresses only (DNS and
- * connected peer), no cookies, cache, auth, or proxy, and a size cap. Blocking: call off the main thread.
+ * connected peer), no cookies, cache, auth, or proxy, and a size cap. The hop decision is re-read after
+ * connect (by [HtmlRenderGateInterceptor]) and again before the body is read. A stylesheet served from a
+ * redirect has its relative references rebased onto the final URL. Blocking: call off the main thread.
  * Never logs URLs.
  */
 internal class HtmlRenderSubresourceFetcher(
@@ -135,18 +169,41 @@ internal class HtmlRenderSubresourceFetcher(
 ) {
     private val client by lazy { http ?: sharedClient }
 
-    /** [allowHop] decides the first URL and every redirect target; a refused hop returns an empty 403. */
-    fun fetch(url: String, requestHeaders: Map<String, String>, allowHop: (String) -> Boolean): HtmlRenderResource {
-        var current: HttpUrl = url.toHttpUrlOrNull() ?: return HtmlRenderResource.blocked()
+    /**
+     * [allowHop] decides the first URL and every redirect target, and is re-read after connect and before the
+     * body; a refused hop returns an empty 403. [onCall] sees each call before it executes, so its owner can
+     * cancel it.
+     */
+    fun fetch(url: String, requestHeaders: Map<String, String>, allowHop: (String) -> Boolean): HtmlRenderResource =
+        fetch(url, requestHeaders, {}, allowHop)
+
+    fun fetch(
+        url: String,
+        requestHeaders: Map<String, String>,
+        onCall: (Call) -> Unit,
+        allowHop: (String) -> Boolean,
+    ): HtmlRenderResource {
+        val requested: HttpUrl = url.toHttpUrlOrNull() ?: return HtmlRenderResource.blocked()
+        var current = requested
         val headers = htmlRenderForwardedRequestHeaders(requestHeaders)
         for (hop in 0..maxRedirects) {
-            if (!current.isHttps || !allowHop(current.toString())) return HtmlRenderResource.blocked()
-            val request = Request.Builder().url(current).headers(headers).get().build()
+            val hopUrl = current.toString()
+            if (!current.isHttps || !allowHop(hopUrl)) return HtmlRenderResource.blocked()
+            val request = Request.Builder().url(current).headers(headers).get()
+                .tag(HtmlRenderHopGate::class.java, HtmlRenderHopGate { allowHop(hopUrl) })
+                .build()
             val next = try {
-                client.newCall(request).execute().use { response ->
-                    if (!response.isRedirect) return read(response)
+                val call = client.newCall(request)
+                onCall(call)
+                call.execute().use { response ->
+                    if (!response.isRedirect) {
+                        if (!allowHop(hopUrl)) return HtmlRenderResource.blocked()
+                        return read(response, requested, current)
+                    }
                     response.header("Location")?.let(current::resolve) ?: return HtmlRenderResource.failed()
                 }
+            } catch (_: HtmlRenderGateClosed) {
+                return HtmlRenderResource.blocked()
             } catch (_: IOException) {
                 return HtmlRenderResource.failed()
             }
@@ -155,9 +212,10 @@ internal class HtmlRenderSubresourceFetcher(
         return HtmlRenderResource.blocked()
     }
 
-    private fun read(response: Response): HtmlRenderResource {
+    private fun read(response: Response, requested: HttpUrl, final: HttpUrl): HtmlRenderResource {
         val code = response.code
-        if (code !in 100..599 || code in 300..399) return HtmlRenderResource.failed()
+        // No Range was sent, so a partial response cannot be passed on as the whole resource.
+        if (code !in 100..599 || code in 300..399 || code == 206) return HtmlRenderResource.failed()
         val body = response.body ?: return HtmlRenderResource.failed()
         if (body.contentLength() > maxBytes) return HtmlRenderResource.failed()
         val buffer = Buffer()
@@ -167,13 +225,20 @@ internal class HtmlRenderSubresourceFetcher(
         }
         val type = body.contentType()
         val reason = response.message.filter { it in ' '..'~' }.take(64).trim().ifEmpty { if (code < 400) "OK" else "Error" }
+        val mimeType = type?.let { "${it.type}/${it.subtype}".lowercase() }
+        var bytes = buffer.readByteArray()
+        if (final != requested && mimeType == "text/css") {
+            bytes = htmlRenderRebaseCssBytes(bytes, type?.charset(), final)
+            if (bytes.size > maxBytes) return HtmlRenderResource.failed()
+        }
         return HtmlRenderResource(
             status = code,
             reason = reason,
-            mimeType = type?.let { "${it.type}/${it.subtype}" },
+            mimeType = mimeType,
             encoding = type?.charset()?.name(),
             headers = htmlRenderPassedResponseHeaders(response.headers),
-            body = buffer.readByteArray(),
+            body = bytes,
+            finalUrl = final.toString(),
         )
     }
 
@@ -193,11 +258,89 @@ internal class HtmlRenderSubresourceFetcher(
                 .cookieJar(CookieJar.NO_COOKIES)
                 .cache(null)
                 .addNetworkInterceptor(PublicPeerInterceptor)
+                .addNetworkInterceptor(HtmlRenderGateInterceptor)
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .readTimeout(15, TimeUnit.SECONDS)
                 .writeTimeout(10, TimeUnit.SECONDS)
                 .callTimeout(30, TimeUnit.SECONDS)
                 .build()
         }
+    }
+}
+
+/**
+ * One page's (one WebView's) fetches: at most [maxConcurrent] at a time, each call tracked so it can be
+ * cancelled. [cancelInFlight] (connection or thread lost) cancels running calls and discards their results;
+ * [close] (WebView released) does the same and refuses everything after. Results are re-checked against the
+ * hop gate before they are handed to the WebView; anything invalidated becomes an empty 403.
+ */
+internal class HtmlRenderFetchSession(
+    private val fetcher: HtmlRenderSubresourceFetcher,
+    maxConcurrent: Int = MAX_CONCURRENT,
+    private val queueTimeoutMillis: Long = QUEUE_TIMEOUT_MILLIS,
+) {
+    private val permits = Semaphore(maxConcurrent)
+    private val calls: MutableSet<Call> = Collections.synchronizedSet(LinkedHashSet())
+    private val generation = AtomicInteger()
+    @Volatile private var closed = false
+
+    fun fetch(url: String, requestHeaders: Map<String, String>, allowHop: (String) -> Boolean): HtmlRenderResource {
+        val started = generation.get()
+        val valid = { !closed && generation.get() == started }
+        if (!valid() || !acquire(valid)) return if (valid()) HtmlRenderResource.failed() else HtmlRenderResource.blocked()
+        val mine = mutableListOf<Call>()
+        try {
+            if (!valid()) return HtmlRenderResource.blocked()
+            val result = fetcher.fetch(url, requestHeaders, onCall = { call ->
+                mine += call
+                calls += call
+                // Registered after the check above: an invalidation in between is caught here.
+                if (!valid()) call.cancel()
+            }) { valid() && allowHop(it) }
+            val final = result.finalUrl
+            return if (valid() && (final == null || allowHop(final))) result else HtmlRenderResource.blocked()
+        } finally {
+            calls.removeAll(mine.toSet())
+            permits.release()
+        }
+    }
+
+    /** Waits for a slot, giving up when invalidated or after the queue timeout. */
+    private fun acquire(valid: () -> Boolean): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(queueTimeoutMillis)
+        try {
+            while (valid()) {
+                if (permits.tryAcquire(POLL_MILLIS, TimeUnit.MILLISECONDS)) {
+                    if (valid()) return true
+                    permits.release()
+                    return false
+                }
+                if (System.nanoTime() >= deadline) return false
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+        return false
+    }
+
+    /** The page lost its connection or thread: cancel running calls and discard what they return. */
+    fun cancelInFlight() {
+        generation.incrementAndGet()
+        val running = synchronized(calls) { calls.toList() }
+        running.forEach(Call::cancel)
+    }
+
+    /** The WebView is being destroyed: cancel everything and refuse any later request. */
+    fun close() {
+        closed = true
+        cancelInFlight()
+    }
+
+    internal val inFlight: Int get() = calls.size
+
+    companion object {
+        const val MAX_CONCURRENT = 6
+        const val QUEUE_TIMEOUT_MILLIS = 60_000L
+        private const val POLL_MILLIS = 100L
     }
 }

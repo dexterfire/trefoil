@@ -1,6 +1,7 @@
 package com.tajchert.trefoil.downloads
 
 import android.util.LruCache
+import com.tajchert.trefoil.core.model.ClientState
 import com.tajchert.trefoil.core.model.ConnectionStatus
 import com.tajchert.trefoil.core.model.HtmlRenderReference
 import com.tajchert.trefoil.core.model.TrefoilClient
@@ -13,6 +14,8 @@ import java.net.URI
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 
 /** Result of fetching an `html_render` page. Never carries a URL, title, or attachment id in `toString`. */
 sealed interface HtmlRenderFetch {
@@ -47,10 +50,11 @@ class HtmlRenderLoader internal constructor(
     }
 
     /** Connected, and [environmentId]/[threadId] are still the selection. Safe to call from any thread. */
-    fun isCurrent(environmentId: String, threadId: String): Boolean = client.state.value.let {
+    fun isCurrent(environmentId: String, threadId: String): Boolean = isCurrent(client.state.value, environmentId, threadId)
+
+    private fun isCurrent(state: ClientState, environmentId: String, threadId: String): Boolean =
         // Same rule as InlineImageLoader: not canRead, which blinks off on every thread event.
-        it.connection == ConnectionStatus.Connected && it.environment?.id == environmentId && it.selectedThreadId == threadId
-    }
+        state.connection == ConnectionStatus.Connected && state.environment?.id == environmentId && state.selectedThreadId == threadId
 
     private fun key(reference: HtmlRenderReference, environmentId: String, threadId: String) =
         Key(environmentId, threadId, reference.file.identity)
@@ -101,6 +105,7 @@ class HtmlRenderLoader internal constructor(
         environmentHosts = { environmentHosts(environmentId) },
         isCurrent = { isCurrent(environmentId, threadId) },
         fetcher = subresources ?: HtmlRenderSubresourceFetcher.shared,
+        currentChanges = client.state.map { isCurrent(it, environmentId, threadId) }.distinctUntilChanged(),
     )
 
     private class LimitedSink(private val limit: Long, private val stillCurrent: () -> Boolean) : OutputStream() {

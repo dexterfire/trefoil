@@ -1,6 +1,7 @@
 package com.tajchert.trefoil.downloads
 
 import com.tajchert.trefoil.core.model.*
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
@@ -86,6 +87,16 @@ class HtmlRenderLoaderTest {
         client.state.value = client.state.value.copy(selectedThreadId = "thread", connection = ConnectionStatus.Disconnected)
         assertFalse(access.isCurrent())
         assertFalse(HtmlRenderLoader(client).networkAccess("other-env", "thread").isCurrent())
+    }
+
+    @Test fun currentChangesFollowsConnectionAndSelection() = runBlocking {
+        val client = ImageClient(ByteArray(0))
+        val changes = HtmlRenderLoader(client).networkAccess("fixture", "thread").currentChanges
+        assertTrue(changes.first())
+        client.state.value = client.state.value.copy(connection = ConnectionStatus.Disconnected)
+        assertFalse(changes.first())
+        client.state.value = client.state.value.copy(connection = ConnectionStatus.Connected, selectedThreadId = "other-thread")
+        assertFalse(changes.first())
     }
 
     @Test fun environmentHostsCoverPairedAndLearnedRoutes() {

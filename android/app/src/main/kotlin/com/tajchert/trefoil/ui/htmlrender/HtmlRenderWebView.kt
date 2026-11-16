@@ -197,6 +197,8 @@ internal class HtmlRenderPage(
     var onFailure: () -> Unit = {}
     @Volatile private var documentBytes = htmlRenderDocument(html)
     @Volatile private var active = true
+    /** This WebView's remote fetches: bounded, tracked, and cancelled on release or loss of context. */
+    private val fetches = network.fetcher?.let(::HtmlRenderFetchSession)
     private val themes = HtmlRenderThemeSync(initialTheme)
     var destroyed = false
         private set
@@ -268,9 +270,10 @@ internal class HtmlRenderPage(
                 if (request.url.scheme?.lowercase() in setOf("data", "blob")) return null
                 // Remote GETs never reach the WebView's own network stack: the fetcher re-checks every hop and
                 // the connection gate, so a cached page shown offline gets no remote subresources.
-                val fetcher = network.fetcher ?: return deniedResource()
+                val fetches = fetches ?: return deniedResource()
                 if (!policy.allowsFetch(url)) return deniedResource()
-                return fetcher.fetch(url, request.requestHeaders.orEmpty()) { hop -> active && policy.allowsFetch(hop) }.toWebResponse()
+                val resource = fetches.fetch(url, request.requestHeaders.orEmpty()) { hop -> active && policy.allowsFetch(hop) }
+                return if (active) resource.toWebResponse() else deniedResource()
             }
             override fun onPageFinished(view: WebView?, url: String?) {
                 if (!active || url?.startsWith(policy.documentUrl) != true) return
@@ -317,11 +320,15 @@ internal class HtmlRenderPage(
         if (themes.update(next)) webView.evaluateJavascript(htmlRenderThemeScript(next), null)
     }
 
+    /** The card's environment or thread is no longer the connected selection: drop in-flight fetches. */
+    fun connectionLost() { fetches?.cancelInFlight() }
+
     fun pause() { if (active) webView.onPause() }
     fun resume() { if (active) webView.onResume() }
 
     fun release() {
         active = false
+        fetches?.close()
         documentBytes = byteArrayOf()
         if (destroyed) return
         destroyed = true
@@ -364,6 +371,10 @@ internal fun HtmlRenderWebView(
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    // Losing the connection or thread cancels running subresource fetches; new ones are refused by the gate.
+    LaunchedEffect(network) {
+        network.currentChanges.collect { current -> if (!current) holder[0]?.connectionLost() }
     }
     key(html, attachmentId, fullScreen, network) {
         AndroidView(
