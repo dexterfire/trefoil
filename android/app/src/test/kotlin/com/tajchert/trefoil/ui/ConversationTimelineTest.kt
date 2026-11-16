@@ -130,4 +130,59 @@ class ConversationTimelineTest {
         assertEquals(2, blocks.size)
         assertEquals(MarkdownBlock("val answer = 42", true, "kotlin"), blocks.last())
     }
+
+    private val render = HtmlRenderReference("attachment-1", "Chart", 300)
+    private fun htmlActivity(id: String, ordinal: Int, runId: String? = "r") =
+        ToolActivity(id, "mcp__t3-code__html_render", kind = "dynamic_tool", status = "completed", runId = runId, ordinal = ordinal, htmlRender = render)
+
+    @Test fun htmlRenderKeepsOrdinalPositionAndSplitsActivityStacks() {
+        val entries = conversationTimeline(listOf(ConversationMessage("u", "user", "Draw", runId = "r", ordinal = 0), ConversationMessage("a", "assistant", "Done", runId = "r", ordinal = 5)), listOf(
+            ToolActivity("t1", "Read", kind = "file_read", runId = "r", ordinal = 1),
+            ToolActivity("t2", "Read", kind = "file_read", runId = "r", ordinal = 2),
+            htmlActivity("h", 3),
+            ToolActivity("t3", "Read", kind = "file_read", runId = "r", ordinal = 4)))
+        assertEquals(listOf("message:u", "activity:t1", "html-render:h", "activity:t3", "message:a"), entries.map { it.key })
+        assertEquals(2, (entries[1] as ConversationEntry.Activities).activities.size)
+        assertEquals(listOf("t3"), (entries[3] as ConversationEntry.Activities).activities.map { it.id })
+        assertTrue(entries.filterIsInstance<ConversationEntry.Activities>().flatMap { it.activities }.none { it.htmlRender != null })
+    }
+
+    @Test fun htmlRenderStaysVisibleInActiveRun() {
+        val entries = conversationTimeline(listOf(ConversationMessage("u", "user", "Draw", runId = "r", ordinal = 0)), listOf(
+            ToolActivity("t1", "Read", kind = "file_read", status = "completed", runId = "r", ordinal = 1), htmlActivity("h", 2)))
+        val folded = foldConversationTimeline(entries, activeRunId = "r", runs = listOf(ConversationRun("r", "running")))
+        assertEquals(entries, folded)
+        assertEquals(1, folded.count { it is ConversationEntry.HtmlRender })
+    }
+
+    @Test fun htmlRenderStaysStandaloneWhenCompletedRunFolds() {
+        val entries = conversationTimeline(listOf(ConversationMessage("u", "user", "Draw", runId = "r", ordinal = 0), ConversationMessage("a", "assistant", "Done", runId = "r", ordinal = 5)), listOf(
+            ToolActivity("t1", "Read", kind = "file_read", status = "completed", runId = "r", ordinal = 1),
+            htmlActivity("h", 2),
+            ToolActivity("t2", "Edit", kind = "file_change", status = "completed", runId = "r", ordinal = 3),
+            ToolActivity("t3", "Edit", kind = "file_change", status = "completed", runId = "r", ordinal = 4)))
+        val folded = foldConversationTimeline(entries, runs = listOf(ConversationRun("r", "completed", completedAt = "2026-11-06T10:00:00Z")))
+        assertEquals(listOf("message:u", "run:r:activity:t1", "html-render:h", "run:r:activity:t2", "message:a"), folded.map { it.key })
+        // No duplicate: the render is not inside any Work group.
+        assertTrue(folded.filterIsInstance<ConversationEntry.Work>().none { work -> work.entries.any { it is ConversationEntry.HtmlRender || (it as? ConversationEntry.Activities)?.activities?.any { a -> a.htmlRender != null } == true } })
+        assertEquals(1, folded.count { it is ConversationEntry.HtmlRender })
+    }
+
+    @Test fun htmlRenderOnlyRunKeepsRenderVisibleAndNonHtmlDynamicToolsStayActivities() {
+        val entries = conversationTimeline(listOf(ConversationMessage("a", "assistant", "Done", runId = "r", ordinal = 2)), listOf(
+            htmlActivity("h", 1),
+            ToolActivity("p", "mcp__t3-code__html_preview", kind = "dynamic_tool", status = "completed", runId = "r", ordinal = 0)))
+        assertEquals(listOf("activity:p", "html-render:h", "message:a"), entries.map { it.key })
+        val folded = foldConversationTimeline(entries, runs = listOf(ConversationRun("r", "completed", completedAt = "2026-11-06T10:00:00Z")))
+        assertTrue(folded.any { it is ConversationEntry.HtmlRender })
+    }
+
+    @Test fun htmlToolHeadlines() {
+        fun tool(name: String, status: String = "completed") = ToolActivity("x", name, kind = "dynamic_tool", status = status)
+        assertEquals("Rendered HTML", activityHeadline(tool("mcp__t3-code__html_render")))
+        assertEquals("Rendering HTML", activityHeadline(tool("html_render", "running")))
+        assertEquals("Previewed HTML", activityHeadline(tool("mcp__t3-code__html_preview")))
+        assertEquals("Previewing HTML", activityHeadline(tool("html_preview", "in_progress")))
+        assertEquals("other_tool", activityHeadline(tool("other_tool")))
+    }
 }

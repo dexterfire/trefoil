@@ -25,6 +25,7 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.platform.testTag
+import com.tajchert.trefoil.ui.htmlrender.HtmlRenderCard
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -169,6 +170,7 @@ internal fun Conversation(
                                 } else !entry.message.streaming && (state.activeRunId == null || (entry.message.runId != null && entry.message.runId != state.activeRunId)) &&
                                     entry.message.id == state.messages.lastOrNull { it.role == "assistant" && it.runId == entry.message.runId }?.id)
                             is ConversationEntry.Activities -> ActivityStack(entry.activities, canLoadActivity = canLoadActivity, onLoadActivity = onLoadActivity)
+                            is ConversationEntry.HtmlRender -> HtmlRenderRow(entry.activity)
                             is ConversationEntry.Work -> CompletedWork(entry, canLoadActivity, onLoadActivity)
                         }
                     }
@@ -199,6 +201,13 @@ internal fun Conversation(
             }
         }
     }
+}
+
+/** Standalone timeline row for an agent HTML render; the wrapper owns the row's test tag. */
+@Composable
+internal fun HtmlRenderRow(activity: ToolActivity) {
+    val reference = activity.htmlRender ?: return
+    Box(Modifier.fillMaxWidth().testTag("html-render:${activity.id}")) { HtmlRenderCard(reference, Modifier.fillMaxWidth()) }
 }
 
 @Composable

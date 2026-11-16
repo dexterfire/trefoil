@@ -267,4 +267,19 @@ class ConversationUiTest {
         state.value = live.copy(canWrite = false, canRead = false, canWriteThreads = false, connection = ConnectionStatus.Reconnecting); compose.mainClock.advanceTimeByFrame()
         compose.onNodeWithContentDescription("Stop").assertIsNotEnabled()
     }
+
+    @Test fun htmlRenderEntryReachesCardAsOwnRow() {
+        val render = HtmlRenderReference("attachment-1", "Chart", 300)
+        val state = ClientState(
+            connection = ConnectionStatus.Connected, canWrite = true,
+            projects = listOf(Project("p", "backend")), threads = listOf(ThreadSummary("t", "p", "Thread")), selectedThreadId = "t",
+            messages = listOf(ConversationMessage("u", "user", "Draw", runId = "r", ordinal = 0), ConversationMessage("a", "assistant", "Done", runId = "r", ordinal = 3)),
+            activities = listOf(
+                ToolActivity("t1", "Read", kind = "file_read", status = "completed", runId = "r", ordinal = 1),
+                ToolActivity("h", "mcp__t3-code__html_render", kind = "dynamic_tool", status = "completed", runId = "r", ordinal = 2, htmlRender = render)),
+            runs = listOf(ConversationRun("r", "completed", completedAt = "2026-11-06T10:00:00Z")))
+        compose.setContent { TrefoilTheme(darkTheme = true) { Box(Modifier.width(390.dp).height(844.dp)) { Conversation(state, {}, {}, { _, _, _ -> }, onBack = {}) } } }
+        compose.onNodeWithTag("html-render:h").assertExists()
+        compose.onAllNodesWithTag("html-render:h").assertCountEquals(1)
+    }
 }

@@ -126,7 +126,7 @@ internal fun CompletedWork(work: ConversationEntry.Work, canLoadActivity: Boolea
                     when (entry) {
                         is ConversationEntry.Message -> MessageRow(entry.message, false, false)
                         is ConversationEntry.Activities -> ActivityStack(entry.activities, initiallyExpanded = true, canLoadActivity = canLoadActivity, onLoadActivity = onLoadActivity)
-                        is ConversationEntry.Work -> Unit
+                        is ConversationEntry.HtmlRender, is ConversationEntry.Work -> Unit
                     }
                 }
             }
@@ -240,6 +240,10 @@ internal fun diffStats(diff: String?): Pair<Int, Int>? {
 }
 
 internal fun activityHeadline(activity: ToolActivity): String {
+    if (activity.kind == "dynamic_tool") when {
+        activity.title.endsWith("html_render") -> return if (activity.isRunning) "Rendering HTML" else "Rendered HTML"
+        activity.title.endsWith("html_preview") -> return if (activity.isRunning) "Previewing HTML" else "Previewed HTML"
+    }
     if (activity.title.replace(' ', '_') != activity.kind) return activity.title
     return when (activity.kind) {
         "reasoning" -> if (activity.isRunning) "Thinking" else "Thought"

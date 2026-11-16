@@ -20,6 +20,10 @@ internal sealed interface ConversationEntry {
     data class Activities(val activities: List<ToolActivity>) : ConversationEntry {
         override val key = "activity:${activities.first().id}"
     }
+    /** An agent HTML render: always visible at its ordinal position, never part of an activity stack or collapsed work. */
+    data class HtmlRender(val activity: ToolActivity) : ConversationEntry {
+        override val key = "html-render:${activity.id}"
+    }
 }
 
 /** Authoritative turn-item ordinals win; timestamps are only used when that order is unavailable. */
@@ -48,6 +52,8 @@ internal fun conversationTimeline(messages: List<ConversationMessage>, activitie
         if (item.message != null) {
             val previous = (result.lastOrNull() as? ConversationEntry.Message)?.message
             result += ConversationEntry.Message(item.message, previous?.role == "user" && item.message.role == "user")
+        } else if (item.activity?.htmlRender != null) {
+            result += ConversationEntry.HtmlRender(item.activity)
         } else if (item.activity != null) {
             val previous = result.lastOrNull() as? ConversationEntry.Activities
             val activity = item.activity
@@ -73,6 +79,7 @@ private val ToolActivity.standalone: Boolean get() = kind in setOf("compaction",
 private val ConversationEntry.runId: String? get() = when (this) {
     is ConversationEntry.Message -> message.runId
     is ConversationEntry.Activities -> activities.first().runId
+    is ConversationEntry.HtmlRender -> activity.runId
     is ConversationEntry.Work -> runId
 }
 
@@ -99,7 +106,7 @@ internal fun foldConversationTimeline(
     fun hidden(entry: ConversationEntry): Boolean = entry.runId in foldable && when (entry) {
         is ConversationEntry.Message -> entry.message.role == "assistant" && entry.message.remoteFiles().isEmpty() && entry.key != finalByRun[entry.runId]?.key
         is ConversationEntry.Activities -> entry.activities.none { it.standalone }
-        is ConversationEntry.Work -> false
+        is ConversationEntry.HtmlRender, is ConversationEntry.Work -> false
     }
     fun label(runId: String): String {
         val run = runById[runId]
@@ -110,6 +117,7 @@ internal fun foldConversationTimeline(
             when (it) {
                 is ConversationEntry.Message -> timelineInstant(it.message.createdAt)
                 is ConversationEntry.Activities -> it.activities.firstNotNullOfOrNull { activity -> timelineInstant(activity.startedAt) }
+                is ConversationEntry.HtmlRender -> timelineInstant(it.activity.startedAt)
                 is ConversationEntry.Work -> null
             }
         }
@@ -117,6 +125,7 @@ internal fun foldConversationTimeline(
             when (it) {
                 is ConversationEntry.Message -> listOfNotNull(timelineInstant(it.message.updatedAt ?: it.message.createdAt))
                 is ConversationEntry.Activities -> it.activities.mapNotNull { activity -> timelineInstant(activity.completedAt ?: activity.startedAt) }
+                is ConversationEntry.HtmlRender -> listOfNotNull(timelineInstant(it.activity.completedAt ?: it.activity.startedAt))
                 is ConversationEntry.Work -> emptyList()
             }
         }
