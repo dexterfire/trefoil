@@ -1,5 +1,11 @@
 # Android releases
 
+Release `0.16.0` (`versionCode = 25`) shows pages that agents publish with T3's `html_render` tool
+inline in threads (themed, auto-sized, full screen with pinch zoom; subresources fetched app-side, public
+https only, see `docs/THREAD_HTML_RENDERS.md`) and adds an opt-in "Keep connected in background"
+foreground service. Check an HTML render and the keep-connected notification against a real environment
+on a device.
+
 Release `0.15.1` (`versionCode = 24`) fails over fast when the phone changes network (for example
 Wi-Fi to cellular): the live connection is pinged on a default-network change and, if it does not
 answer within 4 s, reconnects through the route plan at once, so the route badge no longer shows

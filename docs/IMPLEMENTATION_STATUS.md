@@ -142,7 +142,7 @@ staying connected throughout. The user's exact "Disconnected without error" bann
 directly; the likely silent paths are fixed. Plan mode, worktree launch, attachments and persisted drafts
 across process death remain follow-ups.
 
-## Keep connected in background (unreleased)
+## Keep connected in background (0.16.0)
 
 An opt-in "Keep connected in background" toggle in the overflow menu (off by default, stored in `trefoil.ui`
 preferences) runs a `specialUse` foreground service while a connection is live or an automatic reconnect is
