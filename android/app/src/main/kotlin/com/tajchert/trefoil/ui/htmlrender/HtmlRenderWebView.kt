@@ -21,8 +21,6 @@ import com.tajchert.trefoil.core.model.HTML_RENDER_MAX_FIT_HEIGHT
 import com.tajchert.trefoil.core.model.HTML_RENDER_MIN_HEIGHT
 import com.tajchert.trefoil.core.model.isPrivateLanAddress
 import java.io.ByteArrayInputStream
-import java.net.Inet4Address
-import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.URI
 import java.security.MessageDigest
@@ -50,9 +48,12 @@ internal const val HTML_RENDER_HEIGHT_SCRIPT = "<script>(function(){var p=window
 
 /**
  * Header CSP on the served document: no WebSockets (`https:` never matches `wss:`), no form posts that would
- * replace the in-memory main frame, no plugins. Everything else is filtered per request by [HtmlRenderPolicy].
+ * replace the in-memory main frame, no plugins, and no frames or workers, which would bring their own policy
+ * (or none) and whose WebSockets and fetches the request interceptor cannot see. Images and scripts from
+ * `data:`/`blob:` keep working. Everything else is filtered per request by [HtmlRenderPolicy].
  */
-internal const val HTML_RENDER_CSP = "connect-src https: data: blob:; form-action 'none'; object-src 'none'"
+internal const val HTML_RENDER_CSP = "connect-src https: data: blob:; form-action 'none'; object-src 'none'; " +
+    "frame-src 'none'; child-src 'none'; worker-src 'none'"
 
 /** The appended height script is the only change to the agent's (already bootstrapped) document. */
 internal fun htmlRenderDocument(html: String): ByteArray = (html + HTML_RENDER_HEIGHT_SCRIPT).toByteArray(Charsets.UTF_8)
@@ -65,14 +66,17 @@ internal fun htmlRenderReportedHeight(data: String?): Float? =
 /**
  * Request policy for an agent page. Only the exact in-memory document is served at the synthetic origin.
  * Subresources are GET `https:` to public-looking hosts (plus `data:`/`blob:`); loopback, `localhost`,
- * mDNS, single-label names, private/link-local/CGNAT/ULA literals, and the environment's own hosts are
- * refused. Hostnames are not resolved, so a public name that resolves privately is not caught here.
+ * mDNS, single-label names, private/link-local/CGNAT/ULA literals, and the environment's current hosts are
+ * refused. Remote ones are fetched by [HtmlRenderSubresourceFetcher] only while [network] is current, with
+ * this policy re-checked on every redirect hop and DNS answers limited to public addresses.
  */
-internal class HtmlRenderPolicy(val documentUrl: String, environmentHosts: Set<String>) {
-    private val environmentHosts = environmentHosts.map(::normalizeHost).toSet()
-
+internal class HtmlRenderPolicy(val documentUrl: String, private val network: HtmlRenderNetworkAccess) {
     fun allowsMainFrame(url: String, method: String?, redirect: Boolean): Boolean =
         url == documentUrl && method.equals("GET", ignoreCase = true) && !redirect
+
+    /** A remote hop (first request or redirect target) the fetcher may make right now. */
+    fun allowsFetch(url: String): Boolean =
+        url.startsWith("https://", ignoreCase = true) && allowsSubresource(url, "GET") && network.isCurrent()
 
     fun allowsSubresource(url: String, method: String?): Boolean {
         if (!method.equals("GET", ignoreCase = true)) return false
@@ -93,44 +97,58 @@ internal class HtmlRenderPolicy(val documentUrl: String, environmentHosts: Set<S
         return url
     }
 
+    /** Environment hosts are read live, so a route or active base learned after the page opened is refused. */
     fun isBlockedHost(rawHost: String): Boolean {
         val host = normalizeHost(rawHost)
-        if (host.isEmpty() || host == HTML_RENDER_HOST || host in environmentHosts) return true
-        if (host == "localhost" || listOf(".localhost", ".local", ".internal", ".home.arpa").any(host::endsWith)) return true
-        if (':' in host) return runCatching { InetAddress.getByName(host) }.getOrNull()?.let(::isNonPublicAddress) ?: true
-        if ('.' !in host) return true
-        val labels = host.split('.')
-        val last = labels.last()
-        // WHATWG treats a numeric (or hex) last label as IPv4; only plain dotted-quad public literals pass.
-        if (last.all(Char::isDigit) || last.startsWith("0x")) {
-            if (labels.size != 4 || labels.any { it.isEmpty() || it.length > 3 || !it.all(Char::isDigit) || (it.length > 1 && it[0] == '0') }) return true
-            val octets = labels.map { it.toInt() }
-            if (octets.any { it > 255 }) return true
-            return isNonPublicIpv4(octets) || isPrivateLanAddress(host)
-        }
-        return false
-    }
-
-    private fun isNonPublicAddress(address: InetAddress): Boolean = when (address) {
-        is Inet4Address -> isNonPublicIpv4(address.address.map { it.toInt() and 0xFF })
-        is Inet6Address -> {
-            val bytes = address.address
-            address.isLoopbackAddress || address.isAnyLocalAddress || address.isLinkLocalAddress || address.isSiteLocalAddress ||
-                address.isMulticastAddress || (bytes[0].toInt() and 0xFE) == 0xFC ||
-                // IPv4-compatible and mapped forms carry an IPv4 address in the low 32 bits.
-                (bytes.take(10).all { it.toInt() == 0 } && isNonPublicIpv4(bytes.takeLast(4).map { it.toInt() and 0xFF }))
-        }
-        else -> true
-    }
-
-    private fun isNonPublicIpv4(octets: List<Int>): Boolean {
-        val (a, b) = octets
-        return a == 0 || a == 10 || a == 127 || a >= 224 || (a == 169 && b == 254) || (a == 172 && b in 16..31) ||
-            (a == 192 && b == 168) || (a == 100 && b in 64..127) || (a == 198 && b in 18..19)
+        if (host.isEmpty() || host == HTML_RENDER_HOST) return true
+        if (network.environmentHosts().any { normalizeHost(it) == host }) return true
+        return isNonPublicName(host)
     }
 
     companion object {
         fun normalizeHost(host: String): String = host.trim().lowercase().removePrefix("[").removeSuffix("]").trimEnd('.')
+
+        /** Names and literals that are never public, without resolving anything. */
+        fun isNonPublicName(rawHost: String): Boolean {
+            val host = normalizeHost(rawHost)
+            if (host.isEmpty()) return true
+            if (host == "localhost" || listOf(".localhost", ".local", ".internal", ".home.arpa").any(host::endsWith)) return true
+            if (':' in host) return runCatching { InetAddress.getByName(host) }.getOrNull()?.let(HtmlRenderAddresses::isNonPublic) ?: true
+            if ('.' !in host) return true
+            val labels = host.split('.')
+            val last = labels.last()
+            // WHATWG treats a numeric (or hex) last label as IPv4; only plain dotted-quad public literals pass.
+            if (last.all(Char::isDigit) || last.startsWith("0x")) {
+                if (labels.size != 4 || labels.any { it.isEmpty() || it.length > 3 || !it.all(Char::isDigit) || (it.length > 1 && it[0] == '0') }) return true
+                val octets = labels.map { it.toInt() }
+                if (octets.any { it > 255 }) return true
+                return HtmlRenderAddresses.isNonPublicIpv4(octets) || isPrivateLanAddress(host)
+            }
+            return false
+        }
+    }
+}
+
+/**
+ * Keeps the page theme in step with the app. The URL fragment carries the theme at load time; a theme that
+ * changes before the document finishes loading is posted once it has, instead of to a page not yet there.
+ */
+internal class HtmlRenderThemeSync(private val loaded: HtmlRenderTheme) {
+    var latest: HtmlRenderTheme = loaded
+        private set
+    private var documentReady = false
+
+    /** Records [next]; true when the live document should receive it now. */
+    fun update(next: HtmlRenderTheme): Boolean {
+        if (next == latest) return false
+        latest = next
+        return documentReady
+    }
+
+    /** The document finished loading: the theme to post if it differs from the one in the URL fragment. */
+    fun documentFinished(): HtmlRenderTheme? {
+        documentReady = true
+        return latest.takeIf { it != loaded }
     }
 }
 
@@ -139,7 +157,27 @@ private class InlineHtmlFrame(context: Context) : FrameLayout(context) {
     override fun requestDisallowInterceptTouchEvent(disallowIntercept: Boolean) = Unit
 }
 
-private fun deniedResource() = WebResourceResponse("text/plain", "UTF-8", 403, "Blocked", mapOf("Cache-Control" to "no-store"), ByteArrayInputStream(byteArrayOf()))
+private fun deniedResource() = HtmlRenderResource.blocked().toWebResponse()
+
+private fun HtmlRenderResource.toWebResponse() = WebResourceResponse(mimeType, encoding, status, reason, headers, ByteArrayInputStream(body))
+
+/**
+ * Cookies are never accepted (as in StreamWebView), so `document.cookie` on the shared synthetic origin
+ * cannot carry state between pages or environments. Cookies from builds before this rule are dropped once;
+ * the app has no web login, so nothing else lives in the jar.
+ */
+private object HtmlRenderCookies {
+    @Volatile private var cleared = false
+    fun disable(webView: WebView) {
+        val cookies = CookieManager.getInstance()
+        cookies.setAcceptCookie(false)
+        cookies.setAcceptThirdPartyCookies(webView, false)
+        if (!cleared) {
+            cleared = true
+            runCatching { cookies.removeAllCookies(null) }
+        }
+    }
+}
 
 /** One hardened WebView showing one in-memory page. Not reused: [release] destroys it. */
 @SuppressLint("SetJavaScriptEnabled")
@@ -148,18 +186,18 @@ internal class HtmlRenderPage(
     html: String,
     attachmentId: String,
     initialTheme: HtmlRenderTheme,
-    environmentHosts: Set<String>,
+    private val network: HtmlRenderNetworkAccess,
     val fullScreen: Boolean,
 ) {
     val webView = WebView(context)
     val root: View
-    val policy = HtmlRenderPolicy(htmlRenderDocumentUrl(attachmentId), environmentHosts)
+    val policy = HtmlRenderPolicy(htmlRenderDocumentUrl(attachmentId), network)
     var onHeight: (Float) -> Unit = {}
     var onOpenLink: (String) -> Unit = {}
     var onFailure: () -> Unit = {}
     @Volatile private var documentBytes = htmlRenderDocument(html)
     @Volatile private var active = true
-    private var theme = initialTheme
+    private val themes = HtmlRenderThemeSync(initialTheme)
     var destroyed = false
         private set
 
@@ -196,7 +234,7 @@ internal class HtmlRenderPage(
         runCatching {
             if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) WebSettingsCompat.setAlgorithmicDarkeningAllowed(webView.settings, false)
         }
-        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, false)
+        HtmlRenderCookies.disable(webView)
         webView.webChromeClient = object : WebChromeClient() {
             override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean = true
             override fun onPermissionRequest(request: PermissionRequest) { request.deny() }
@@ -226,7 +264,17 @@ internal class HtmlRenderPage(
                         ), ByteArrayInputStream(documentBytes))
                     } else deniedResource()
                 }
-                return if (policy.allowsSubresource(url, request.method)) null else deniedResource()
+                if (!policy.allowsSubresource(url, request.method)) return deniedResource()
+                if (request.url.scheme?.lowercase() in setOf("data", "blob")) return null
+                // Remote GETs never reach the WebView's own network stack: the fetcher re-checks every hop and
+                // the connection gate, so a cached page shown offline gets no remote subresources.
+                val fetcher = network.fetcher ?: return deniedResource()
+                if (!policy.allowsFetch(url)) return deniedResource()
+                return fetcher.fetch(url, request.requestHeaders.orEmpty()) { hop -> active && policy.allowsFetch(hop) }.toWebResponse()
+            }
+            override fun onPageFinished(view: WebView?, url: String?) {
+                if (!active || url?.startsWith(policy.documentUrl) != true) return
+                themes.documentFinished()?.let { webView.evaluateJavascript(htmlRenderThemeScript(it), null) }
             }
             override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: android.net.http.SslError?) { handler?.cancel() }
             override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
@@ -264,10 +312,9 @@ internal class HtmlRenderPage(
     }
 
     fun applyTheme(next: HtmlRenderTheme) {
-        if (!active || next == theme) return
-        theme = next
+        if (!active || next == themes.latest) return
         webView.setBackgroundColor(next.backgroundArgb)
-        webView.evaluateJavascript(htmlRenderThemeScript(next), null)
+        if (themes.update(next)) webView.evaluateJavascript(htmlRenderThemeScript(next), null)
     }
 
     fun pause() { if (active) webView.onPause() }
@@ -296,7 +343,7 @@ internal fun HtmlRenderWebView(
     html: String,
     attachmentId: String,
     theme: HtmlRenderTheme,
-    environmentHosts: Set<String>,
+    network: HtmlRenderNetworkAccess,
     fullScreen: Boolean,
     onContentHeight: (Float) -> Unit,
     onFailure: () -> Unit,
@@ -318,11 +365,11 @@ internal fun HtmlRenderWebView(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-    key(html, attachmentId, fullScreen) {
+    key(html, attachmentId, fullScreen, network) {
         AndroidView(
             modifier = modifier,
             factory = { context ->
-                HtmlRenderPage(context, html, attachmentId, theme, environmentHosts, fullScreen).also { page ->
+                HtmlRenderPage(context, html, attachmentId, theme, network, fullScreen).also { page ->
                     page.onHeight = { heightCallback(it) }
                     page.onFailure = { failureCallback() }
                     page.onOpenLink = { url -> runCatching { uriHandler.openUri(url) } }

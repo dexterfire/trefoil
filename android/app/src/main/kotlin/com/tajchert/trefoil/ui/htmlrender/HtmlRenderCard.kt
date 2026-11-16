@@ -76,7 +76,10 @@ internal fun HtmlRenderCard(reference: HtmlRenderReference, modifier: Modifier =
             HtmlRenderFetch.Failed -> HtmlRenderState.Failed.also { failedAttempt = attempt }
         }
     }
-    val hosts = remember(loader, environment) { environment?.let { loader?.environmentHosts(it) }.orEmpty() }
+    // Read live per request: current routes/active base, and whether this environment and thread are still current.
+    val network = remember(loader, environment, thread) {
+        if (loader != null && environment != null && thread != null) loader.networkAccess(environment, thread) else HtmlRenderNetworkAccess.Offline
+    }
     val canRetry = ui.canDownload || cachedState() != null
     HtmlRenderCardContent(
         reference = reference,
@@ -87,7 +90,7 @@ internal fun HtmlRenderCard(reference: HtmlRenderReference, modifier: Modifier =
             state = cachedState() ?: HtmlRenderState.Loading
             attempt++
         },
-        environmentHosts = hosts,
+        network = network,
         onPageFailure = {
             failedAttempt = attempt
             state = HtmlRenderState.Failed
@@ -106,7 +109,7 @@ internal fun HtmlRenderCardContent(
     modifier: Modifier = Modifier,
     canRetry: Boolean = false,
     onRetry: () -> Unit = {},
-    environmentHosts: Set<String> = emptySet(),
+    network: HtmlRenderNetworkAccess = HtmlRenderNetworkAccess.Offline,
     onPageFailure: () -> Unit = {},
 ) {
     val c = Tf.colors
@@ -141,7 +144,7 @@ internal fun HtmlRenderCardContent(
                                     html = state.html,
                                     attachmentId = reference.attachmentId,
                                     theme = theme,
-                                    environmentHosts = environmentHosts,
+                                    network = network,
                                     fullScreen = false,
                                     onContentHeight = { contentHeight = it },
                                     onFailure = onPageFailure,
@@ -172,7 +175,7 @@ internal fun HtmlRenderCardContent(
         }
     }
     if (fullScreen && ready != null) {
-        HtmlRenderFullScreen(reference, ready.html, theme, environmentHosts) { fullScreen = false }
+        HtmlRenderFullScreen(reference, ready.html, theme, network) { fullScreen = false }
     }
 }
 
@@ -186,7 +189,7 @@ private fun StateMessage(text: String, action: @Composable () -> Unit = {}) {
 
 /** Full-screen page: scrolls and pinch-zooms. Reuses the bytes the card already holds; never refetches. */
 @Composable
-private fun HtmlRenderFullScreen(reference: HtmlRenderReference, html: String, theme: HtmlRenderTheme, environmentHosts: Set<String>, onClose: () -> Unit) {
+private fun HtmlRenderFullScreen(reference: HtmlRenderReference, html: String, theme: HtmlRenderTheme, network: HtmlRenderNetworkAccess, onClose: () -> Unit) {
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         val c = Tf.colors
         var failed by remember { mutableStateOf(false) }
@@ -205,7 +208,7 @@ private fun HtmlRenderFullScreen(reference: HtmlRenderReference, html: String, t
                             html = html,
                             attachmentId = reference.attachmentId,
                             theme = theme,
-                            environmentHosts = environmentHosts,
+                            network = network,
                             fullScreen = true,
                             onContentHeight = {},
                             onFailure = { failed = true },

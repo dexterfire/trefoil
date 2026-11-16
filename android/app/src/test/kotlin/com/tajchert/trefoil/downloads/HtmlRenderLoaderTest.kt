@@ -71,6 +71,23 @@ class HtmlRenderLoaderTest {
         assertNotNull(loader.cached(other, "fixture", "thread"))
     }
 
+    @Test fun networkAccessReadsLiveClientState() {
+        val client = ImageClient(ByteArray(0))
+        val access = HtmlRenderLoader(client).networkAccess("fixture", "thread")
+        assertTrue(access.isCurrent())
+        assertNotNull(access.fetcher)
+        assertFalse("learned.example" in access.environmentHosts())
+        client.state.value = client.state.value.copy(
+            environment = client.environment.copy(routes = listOf(EnvironmentRoute(RouteKind.Lan, "https://learned.example/", RouteSource.Learned))),
+        )
+        assertTrue("learned.example" in access.environmentHosts())
+        client.state.value = client.state.value.copy(selectedThreadId = "other-thread")
+        assertFalse(access.isCurrent())
+        client.state.value = client.state.value.copy(selectedThreadId = "thread", connection = ConnectionStatus.Disconnected)
+        assertFalse(access.isCurrent())
+        assertFalse(HtmlRenderLoader(client).networkAccess("other-env", "thread").isCurrent())
+    }
+
     @Test fun environmentHostsCoverPairedAndLearnedRoutes() {
         val client = ImageClient(ByteArray(0))
         client.state.value = client.state.value.copy(

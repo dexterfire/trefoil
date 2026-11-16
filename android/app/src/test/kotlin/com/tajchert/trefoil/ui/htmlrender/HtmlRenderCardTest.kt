@@ -3,6 +3,7 @@ package com.tajchert.trefoil.ui.htmlrender
 import android.net.Uri
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -20,6 +21,8 @@ import com.tajchert.trefoil.downloads.ImageClient
 import com.tajchert.trefoil.ui.FileDownloadUi
 import com.tajchert.trefoil.ui.LocalFileDownloadUi
 import com.tajchert.trefoil.ui.TrefoilTheme
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -95,7 +98,14 @@ class HtmlRenderCardTest {
         val client = ImageClient(html.toByteArray())
         val opened = mutableListOf<String>()
         val uriHandler = object : UriHandler { override fun openUri(uri: String) { opened += uri } }
-        val ui = FileDownloadUi("fixture", "thread", true, htmlLoader = HtmlRenderLoader(client))
+        val upstream = mutableListOf<String>()
+        val fetcher = HtmlRenderSubresourceFetcher(fakeHttp { request ->
+            upstream += request.url.toString()
+            okhttp3.Response.Builder().request(request).protocol(okhttp3.Protocol.HTTP_1_1).code(200).message("OK")
+                .header("Set-Cookie", "tracking=1").header("Access-Control-Allow-Origin", "*")
+                .body("chart()".toResponseBody("text/javascript; charset=utf-8".toMediaType())).build()
+        })
+        val ui = FileDownloadUi("fixture", "thread", true, htmlLoader = HtmlRenderLoader(client, HtmlRenderLoader.MAX_SOURCE_BYTES, HtmlRenderLoader.CACHE_BYTES, fetcher))
         val shown = mutableStateOf(true)
         var root: View? = null
         compose.setContent {
@@ -134,10 +144,21 @@ class HtmlRenderCardTest {
             assertFalse(body.contains("fixture-token"))
             assertEquals(403, client2.shouldInterceptRequest(view, request(documentUrl, method = "POST"))!!.statusCode)
             assertEquals(403, client2.shouldInterceptRequest(view, request("https://cdn.example/x.html"))!!.statusCode)
-            assertNull(client2.shouldInterceptRequest(view, request("https://cdn.example/chart.js", mainFrame = false)))
+            val proxied = client2.shouldInterceptRequest(view, request("https://cdn.example/chart.js", mainFrame = false, headers = mapOf("Cookie" to "a=b", "Accept" to "*/*")))!!
+            assertEquals(200, proxied.statusCode)
+            assertEquals("text/javascript", proxied.mimeType)
+            assertEquals("*", proxied.responseHeaders["Access-Control-Allow-Origin"])
+            assertNull(proxied.responseHeaders["Set-Cookie"])
+            assertEquals("chart()", proxied.data.bufferedReader().readText())
+            assertEquals(listOf("https://cdn.example/chart.js"), upstream)
+            assertNull(client2.shouldInterceptRequest(view, request("data:image/png;base64,iVBORw0KGgo=", mainFrame = false)))
             assertEquals(403, client2.shouldInterceptRequest(view, request("https://192.168.1.4/x.js", mainFrame = false))!!.statusCode)
             assertEquals(403, client2.shouldInterceptRequest(view, request("https://fixture.invalid/api", mainFrame = false))!!.statusCode)
             assertEquals(403, client2.shouldInterceptRequest(view, request("http://cdn.example/x.js", mainFrame = false))!!.statusCode)
+            // A cached page left on screen after disconnecting gets no remote subresources.
+            client.state.value = client.state.value.copy(connection = ConnectionStatus.Disconnected)
+            assertEquals(403, client2.shouldInterceptRequest(view, request("https://cdn.example/chart.js", mainFrame = false))!!.statusCode)
+            assertEquals(1, upstream.size)
             // Navigation never happens in place; gesture http(s) links go to the system browser.
             assertTrue(client2.shouldOverrideUrlLoading(view, request("https://example.com/docs", gesture = false)))
             assertTrue(client2.shouldOverrideUrlLoading(view, request("https://example.com/docs", gesture = true)))
@@ -146,6 +167,27 @@ class HtmlRenderCardTest {
         compose.runOnIdle { assertEquals(listOf("https://example.com/docs"), opened) }
         compose.runOnIdle { shown.value = false }
         compose.runOnIdle { assertTrue(shadowOf(view).wasDestroyCalled()) }
+    }
+
+    @Test fun themeChangedWhileLoadingIsReappliedOnPageFinished() {
+        val client = ImageClient(html.toByteArray())
+        val ui = FileDownloadUi("fixture", "thread", true, htmlLoader = HtmlRenderLoader(client))
+        val dark = mutableStateOf(true)
+        var root: View? = null
+        compose.setContent {
+            root = LocalView.current.rootView
+            TrefoilTheme(darkTheme = dark.value) { CompositionLocalProvider(LocalFileDownloadUi provides ui) { HtmlRenderCard(reference) } }
+        }
+        compose.waitUntil(5_000) { root?.let(::findWebView) != null }
+        val view = findWebView(root!!)!!
+        compose.runOnIdle { dark.value = false }
+        compose.runOnIdle {
+            assertSame(view, findWebView(root!!))
+            assertNull(shadowOf(view).lastEvaluatedJavascript)
+            shadowOf(view).webViewClient.onPageFinished(view, shadowOf(view).lastLoadedUrl)
+            assertTrue(shadowOf(view).lastEvaluatedJavascript.contains("\"theme\":\"light\""))
+            assertFalse(CookieManager.getInstance().acceptCookie())
+        }
     }
 
     @Test fun renderProcessGoneDestroysAndShowsError() {
@@ -190,13 +232,16 @@ class HtmlRenderCardTest {
         compose.onNodeWithText("Reconnect to load “Fixture chart”").assertExists()
     }
 
-    private fun request(value: String, mainFrame: Boolean = true, method: String = "GET", gesture: Boolean = false): WebResourceRequest = object : WebResourceRequest {
+    private fun fakeHttp(respond: (okhttp3.Request) -> okhttp3.Response) =
+        okhttp3.OkHttpClient.Builder().followRedirects(false).addInterceptor { respond(it.request()) }.build()
+
+    private fun request(value: String, mainFrame: Boolean = true, method: String = "GET", gesture: Boolean = false, headers: Map<String, String> = emptyMap()): WebResourceRequest = object : WebResourceRequest {
         override fun getUrl(): Uri = Uri.parse(value)
         override fun isForMainFrame(): Boolean = mainFrame
         override fun isRedirect(): Boolean = false
         override fun hasGesture(): Boolean = gesture
         override fun getMethod(): String = method
-        override fun getRequestHeaders(): Map<String, String> = emptyMap()
+        override fun getRequestHeaders(): Map<String, String> = headers
     }
 
     private fun findWebView(view: View): WebView? {

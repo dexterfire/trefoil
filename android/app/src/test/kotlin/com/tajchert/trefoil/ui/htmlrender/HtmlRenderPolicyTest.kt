@@ -5,7 +5,9 @@ import org.junit.Test
 
 class HtmlRenderPolicyTest {
     private val documentUrl = htmlRenderDocumentUrl("fixture-attachment")
-    private val policy = HtmlRenderPolicy(documentUrl, setOf("fixture.example", "[fd00::5]"))
+    private var hosts = setOf("fixture.example", "[fd00::5]")
+    private var connected = true
+    private val policy = HtmlRenderPolicy(documentUrl, HtmlRenderNetworkAccess({ hosts }, { connected }))
 
     @Test fun documentUrlIsSyntheticAndHashed() {
         assertTrue(documentUrl.matches(Regex("https://html-render\\.trefoil\\.invalid/[0-9a-f]{16}/index\\.html")))
@@ -54,6 +56,32 @@ class HtmlRenderPolicyTest {
         }
     }
 
+    @Test fun environmentHostsAreReadPerRequest() {
+        assertTrue(policy.allowsSubresource("https://new-route.example/x", "GET"))
+        hosts = hosts + "New-Route.Example."
+        assertFalse(policy.allowsSubresource("https://new-route.example/x", "GET"))
+        assertFalse(policy.allowsFetch("https://new-route.example/x"))
+        hosts = emptySet()
+        assertTrue(policy.allowsSubresource("https://fixture.example/api", "GET"))
+    }
+
+    @Test fun remoteFetchesNeedHttpsAndACurrentConnection() {
+        assertTrue(policy.allowsFetch("https://cdn.example/x.js"))
+        assertFalse(policy.allowsFetch("data:image/png;base64,iVBORw0KGgo="))
+        assertFalse(policy.allowsFetch("http://cdn.example/x.js"))
+        assertFalse(policy.allowsFetch("https://10.0.0.1/x.js"))
+        connected = false
+        assertFalse(policy.allowsFetch("https://cdn.example/x.js"))
+        // Inline schemes stay allowed so cached pages still render offline.
+        assertTrue(policy.allowsSubresource("data:image/png;base64,iVBORw0KGgo=", "GET"))
+    }
+
+    @Test fun offlineAccessNeverFetches() {
+        val offline = HtmlRenderPolicy(documentUrl, HtmlRenderNetworkAccess.Offline)
+        assertFalse(offline.allowsFetch("https://cdn.example/x.js"))
+        assertNull(HtmlRenderNetworkAccess.Offline.fetcher)
+    }
+
     @Test fun externalLinksNeedGestureAndHttp() {
         assertEquals("https://example.com/docs", policy.externalLink("https://example.com/docs", true))
         assertEquals("http://example.com/", policy.externalLink("http://example.com/", true))
@@ -80,5 +108,16 @@ class HtmlRenderPolicyTest {
         assertTrue(HTML_RENDER_HEIGHT_SCRIPT.contains("window.$HTML_RENDER_BRIDGE"))
         assertTrue(HTML_RENDER_CSP.contains("connect-src https: data: blob:"))
         assertTrue(HTML_RENDER_CSP.contains("form-action 'none'"))
+    }
+
+    @Test fun cspBlocksFramesAndWorkers() {
+        assertEquals(
+            "connect-src https: data: blob:; form-action 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'",
+            HTML_RENDER_CSP,
+        )
+        // img-src/script-src stay unrestricted, so data:/blob: images and scripts keep working.
+        assertFalse(HTML_RENDER_CSP.contains("img-src"))
+        assertFalse(HTML_RENDER_CSP.contains("script-src"))
+        assertFalse(HTML_RENDER_CSP.contains("default-src"))
     }
 }

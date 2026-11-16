@@ -97,4 +97,29 @@ class HtmlRenderThemeTest {
         assertEquals(theme.variables["--foreground"], params["styles"]!!.jsonObject["variables"]!!.jsonObject["--foreground"]!!.jsonPrimitive.content)
         assertTrue(htmlRenderThemeScript(theme).startsWith("window.postMessage({\"jsonrpc\":\"2.0\""))
     }
+
+    @Test fun themeChangedBeforeTheDocumentLoadsIsPostedWhenItFinishes() {
+        val dark = htmlRenderTheme(TrefoilDark)
+        val light = htmlRenderTheme(TrefoilLight)
+        val sync = HtmlRenderThemeSync(dark)
+        assertFalse(sync.update(dark))
+        // Not loaded yet: record, don't post into a page that isn't there.
+        assertFalse(sync.update(light))
+        assertEquals(light, sync.latest)
+        assertEquals(light, sync.documentFinished())
+        // Loaded: later changes post immediately.
+        assertTrue(sync.update(dark))
+        assertFalse(sync.update(dark))
+    }
+
+    @Test fun unchangedThemeIsNotRepostedOnLoad() {
+        val dark = htmlRenderTheme(TrefoilDark)
+        val sync = HtmlRenderThemeSync(dark)
+        assertNull(sync.documentFinished())
+        // Changed and changed back before load: the fragment already matches.
+        val other = HtmlRenderThemeSync(dark)
+        other.update(htmlRenderTheme(TrefoilLight))
+        other.update(dark)
+        assertNull(other.documentFinished())
+    }
 }

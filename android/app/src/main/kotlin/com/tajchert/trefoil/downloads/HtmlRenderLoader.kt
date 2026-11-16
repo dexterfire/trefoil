@@ -4,6 +4,8 @@ import android.util.LruCache
 import com.tajchert.trefoil.core.model.ConnectionStatus
 import com.tajchert.trefoil.core.model.HtmlRenderReference
 import com.tajchert.trefoil.core.model.TrefoilClient
+import com.tajchert.trefoil.ui.htmlrender.HtmlRenderNetworkAccess
+import com.tajchert.trefoil.ui.htmlrender.HtmlRenderSubresourceFetcher
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.OutputStream
@@ -26,20 +28,26 @@ sealed interface HtmlRenderFetch {
 /**
  * Fetches `html_render` pages through the authenticated client into memory only: never disk, never
  * MediaStore. The WebView receives the decoded document, so it never sees the bearer, the signed URL, or a
- * tunnel port. Nothing here logs content, titles, ids, or URLs.
+ * tunnel port. Nothing here logs content, titles, ids, or URLs. Page subresources go through
+ * [subresources] (never the T3 client) and only while [isCurrent].
  */
-class HtmlRenderLoader(
+class HtmlRenderLoader internal constructor(
     private val client: TrefoilClient,
-    private val maxSourceBytes: Long = MAX_SOURCE_BYTES,
-    cacheBytes: Int = CACHE_BYTES,
+    private val maxSourceBytes: Long,
+    cacheBytes: Int,
+    private val subresources: HtmlRenderSubresourceFetcher?,
 ) {
+    constructor(client: TrefoilClient, maxSourceBytes: Long = MAX_SOURCE_BYTES, cacheBytes: Int = CACHE_BYTES) :
+        this(client, maxSourceBytes, cacheBytes, null)
+
     private data class Key(val environmentId: String, val threadId: String, val referenceId: String)
     private class Page(val html: String, val bytes: Int)
     private val cache = object : LruCache<Key, Page>(cacheBytes) {
         override fun sizeOf(key: Key, value: Page) = value.bytes.coerceAtLeast(1)
     }
 
-    private fun isCurrent(environmentId: String, threadId: String): Boolean = client.state.value.let {
+    /** Connected, and [environmentId]/[threadId] are still the selection. Safe to call from any thread. */
+    fun isCurrent(environmentId: String, threadId: String): Boolean = client.state.value.let {
         // Same rule as InlineImageLoader: not canRead, which blinks off on every thread event.
         it.connection == ConnectionStatus.Connected && it.environment?.id == environmentId && it.selectedThreadId == threadId
     }
@@ -87,6 +95,13 @@ class HtmlRenderLoader(
             .filter { it.isNotBlank() }
             .toSet()
     }
+
+    /** Live network rules for a page shown in this environment and thread; every call reads current state. */
+    internal fun networkAccess(environmentId: String, threadId: String) = HtmlRenderNetworkAccess(
+        environmentHosts = { environmentHosts(environmentId) },
+        isCurrent = { isCurrent(environmentId, threadId) },
+        fetcher = subresources ?: HtmlRenderSubresourceFetcher.shared,
+    )
 
     private class LimitedSink(private val limit: Long, private val stillCurrent: () -> Boolean) : OutputStream() {
         private val buffer = ByteArrayOutputStream()
