@@ -121,6 +121,7 @@ class MainActivity : ComponentActivity() {
             val connectionAttempt by model.connectionAttempt.collectAsStateWithLifecycle()
             val machineProbes by model.machineProbes.collectAsStateWithLifecycle()
             val usage by model.usage.collectAsStateWithLifecycle()
+            val keepConnected by model.keepConnected.collectAsStateWithLifecycle()
             TrefoilApp(
                 usageOpenRequest = usageRequest,
                 pairLinkRequest = pairLinkRequest,
@@ -170,6 +171,8 @@ class MainActivity : ComponentActivity() {
                 onSshKeyPickerActive = { model.sshFilePickerActive = it },
                 machineProbes = machineProbes,
                 onAllowLocalNetworkHttp = model::allowLocalNetworkHttp,
+                keepConnected = keepConnected,
+                onKeepConnectedChange = ::onKeepConnectedChange,
             )
         }
     }

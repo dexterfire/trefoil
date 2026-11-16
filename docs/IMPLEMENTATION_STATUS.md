@@ -141,3 +141,15 @@ thread from its first message, approved a request, switched mode, reconnected an
 staying connected throughout. The user's exact "Disconnected without error" banner wasn't reproduced
 directly; the likely silent paths are fixed. Plan mode, worktree launch, attachments and persisted drafts
 across process death remain follow-ups.
+
+## Keep connected in background (unreleased)
+
+An opt-in "Keep connected in background" toggle in the overflow menu (off by default, stored in `trefoil.ui`
+preferences) runs a `specialUse` foreground service while a connection is live or an automatic reconnect is
+pending. It starts only while the app is visible, then keeps the process, socket and SSH tunnel alive across app
+switches: the 60-second background disconnect is skipped and automatic reconnects and network-change link checks
+continue in the background. Route switching, machine probes, screen sessions and SSH prompts stay foreground-only.
+The ongoing notification shows only the machine name and has a Disconnect action. Disconnecting, forgetting the
+machine, turning the setting off or closing the app stops the service. A refused start behaves as if the setting
+were off. On Android 13+ enabling it asks for notification permission; denying it keeps the service running with
+the notification hidden. Covered by Robolectric lifecycle and service tests; not yet exercised on a device.
