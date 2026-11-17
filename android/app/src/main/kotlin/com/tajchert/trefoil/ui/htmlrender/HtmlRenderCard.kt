@@ -10,6 +10,7 @@ import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -107,6 +108,14 @@ internal fun HtmlRenderCard(reference: HtmlRenderReference, modifier: Modifier =
 }
 
 /**
+ * The measured page height, kept across a lazy-list row leaving and re-entering composition so the list does not
+ * jump while the page reports its height again. A new page (different reference or html) starts unmeasured.
+ */
+@Composable
+internal fun rememberHtmlRenderContentHeight(reference: HtmlRenderReference, html: String?): MutableState<Float?> =
+    rememberSaveable(reference, html) { mutableStateOf<Float?>(null) }
+
+/**
  * Stateless card: header with title and full-screen button, then the page or a state message. In
  * LocalInspectionMode (previews, screenshot tests) the Ready state shows a placeholder instead of a WebView.
  */
@@ -124,7 +133,7 @@ internal fun HtmlRenderCardContent(
     val shape = RoundedCornerShape(14.dp)
     val theme = remember(c) { htmlRenderTheme(c) }
     var fullScreen by remember(reference) { mutableStateOf(false) }
-    var contentHeight by remember(reference, (state as? HtmlRenderState.Ready)?.html) { mutableStateOf<Float?>(null) }
+    var contentHeight by rememberHtmlRenderContentHeight(reference, (state as? HtmlRenderState.Ready)?.html)
     val ready = state as? HtmlRenderState.Ready
     Surface(modifier.fillMaxWidth(), shape = shape, color = c.s1, contentColor = c.text, border = BorderStroke(1.dp, c.line)) {
         Column {

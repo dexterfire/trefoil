@@ -94,6 +94,23 @@ class HtmlRenderCardTest {
         assertEquals(2, client.requests)
     }
 
+    @Test fun measuredHeightSurvivesTheRowLeavingAndReturningToComposition() {
+        val show = mutableStateOf(true)
+        val height = mutableStateOf(html)
+        var measured: androidx.compose.runtime.MutableState<Float?>? = null
+        compose.setContent {
+            val holder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
+            if (show.value) holder.SaveableStateProvider("row") { measured = rememberHtmlRenderContentHeight(reference, height.value) }
+        }
+        compose.runOnIdle { measured!!.value = 480f }
+        compose.runOnIdle { show.value = false }
+        compose.runOnIdle { show.value = true }
+        compose.runOnIdle { assertEquals(480f, measured!!.value) }
+        // A different page under the same row starts unmeasured.
+        compose.runOnIdle { height.value = "$html<!-- v2 -->" }
+        compose.runOnIdle { assertNull(measured!!.value) }
+    }
+
     @Test fun tooLargeState() {
         content(HtmlRenderState.TooLarge)
         compose.onNodeWithText("“Fixture chart” is too large to preview").assertExists()
