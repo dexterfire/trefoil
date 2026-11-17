@@ -1,5 +1,11 @@
 # Android releases
 
+Release `0.18.4` (`versionCode = 34`) ships a baseline profile, installed by `androidx.profileinstaller`, so
+ART compiles the cold-start path ahead of time instead of interpreting it on the first launches. The
+`:baselineprofile` module generates it from a fresh-install journey (startup, Machines screen, pairing dialog)
+and also holds a startup macrobenchmark; see `docs/BASELINE_PROFILE.md`. On an API 36 emulator the benchmark
+showed no measurable change, so measure cold start on a physical device before claiming a gain.
+
 Release `0.18.3` (`versionCode = 33`) turns on R8 code and resource shrinking for release builds, cutting
 the APK from 63 MB to 11 MB (most of the old size was unused Material icon classes and BouncyCastle).
 Keep rules in `android/app/proguard-rules.pro` cover the BouncyCastle JCA provider, sshj and the WebView
