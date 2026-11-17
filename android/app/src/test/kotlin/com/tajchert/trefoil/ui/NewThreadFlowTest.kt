@@ -57,6 +57,45 @@ class NewThreadFlowTest {
         compose.onNode(hasText("Project 11") and hasClickAction() and !isEditable()).assertExists()
     }
 
+    @Test fun tappingChipCollapsesPickerToSelectedPill() {
+        sheet(state)
+        compose.onNodeWithContentDescription("Search projects").assertExists()
+        compose.onNodeWithText("Beta").performClick()
+        compose.onNodeWithContentDescription("Project: Beta, change").assertExists()
+        compose.onNodeWithText("Alpha").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Search projects").assertDoesNotExist()
+    }
+
+    @Test fun focusingPromptCollapsesPickerAndPillReExpandsKeepingSelection() {
+        var started: ThreadDraft? = null
+        sheet(state) { draft, _ -> started = draft }
+        compose.onNodeWithText("Beta").performClick()
+        compose.onNodeWithContentDescription("Project: Beta, change").performClick()
+        compose.onNodeWithText("Alpha").assertExists()
+        compose.onNode(hasText("Beta") and hasClickAction()).assertIsSelected()
+        compose.onNodeWithText("Alpha").performClick()
+        compose.onNodeWithContentDescription("Project: Alpha, change").performClick()
+        compose.onNodeWithText("Beta").assertExists()
+        compose.onNodeWithText("What should the agent do?").performClick()
+        compose.onNodeWithContentDescription("Project: Alpha, change").assertExists()
+        compose.onNodeWithText("Beta").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Start").performClick()
+        compose.runOnIdle { assertEquals("p1", started?.projectId) }
+    }
+
+    @Test fun focusCollapseWorksFromExpandedDefaultSelection() {
+        sheet(state)
+        compose.onNodeWithText("Beta").assertExists()
+        compose.onNodeWithText("What should the agent do?").performClick()
+        compose.onNodeWithContentDescription("Project: Alpha, change").assertExists()
+        compose.onNodeWithText("Beta").assertDoesNotExist()
+    }
+
+    @Test fun singleProjectStartsCollapsed() {
+        sheet(state.copy(projects = listOf(Project("p1", "Alpha"))))
+        compose.onNodeWithContentDescription("Project: Alpha, change").assertExists()
+    }
+
     @Test fun defaultModeIsApprovalRequired() {
         var started: ThreadDraft? = null
         sheet(state) { draft, _ -> started = draft }
