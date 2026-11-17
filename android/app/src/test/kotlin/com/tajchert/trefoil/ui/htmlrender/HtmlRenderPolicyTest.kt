@@ -4,38 +4,37 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class HtmlRenderPolicyTest {
-    private val documentUrl = htmlRenderDocumentUrl("fixture-env", "fixture-thread", "fixture-attachment")
-    private val otherPage = htmlRenderOrigin("fixture-env", "fixture-thread", "fixture-other")
+    private val documentUrl = htmlRenderDocumentUrl()
+    private val otherPage = newHtmlRenderOrigin()
     private var hosts = setOf("fixture.example", "[fd00::5]")
     private var connected = true
     private val policy = HtmlRenderPolicy(documentUrl, HtmlRenderNetworkAccess({ hosts }, { connected }))
+    private val theme = HtmlRenderTheme(dark = true, variables = mapOf("--background" to "#000"))
 
-    @Test fun documentUrlIsSyntheticAndHashed() {
+    @Test fun documentUrlIsSyntheticAndRandomPerSession() {
         assertTrue(documentUrl, documentUrl.matches(Regex("https://[0-9a-f]{32}\\.html-render\\.trefoil\\.invalid/index\\.html")))
-        assertFalse(documentUrl.contains("fixture"))
-        assertEquals(documentUrl, htmlRenderDocumentUrl("fixture-env", "fixture-thread", "fixture-attachment"))
-        assertEquals(documentUrl, "${htmlRenderOrigin("fixture-env", "fixture-thread", "fixture-attachment")}/index.html")
-        assertEquals(htmlRenderOrigin("fixture-env", "fixture-thread", "fixture-attachment"), policy.origin)
+        assertEquals(documentUrl, "${policy.origin}/index.html")
+        assertEquals(documentUrl, htmlRenderDocumentUrl(policy.origin))
+        // Never derived from anything: every session gets a fresh origin.
+        assertNotEquals(documentUrl, htmlRenderDocumentUrl())
     }
 
-    @Test fun everyPageHasItsOwnOrigin() {
-        val origins = listOf(
-            htmlRenderOrigin("fixture-env", "fixture-thread", "fixture-attachment"),
-            htmlRenderOrigin("fixture-env", "fixture-thread", "fixture-other"),
-            htmlRenderOrigin("fixture-env", "fixture-thread-2", "fixture-attachment"),
-            htmlRenderOrigin("fixture-env-2", "fixture-thread", "fixture-attachment"),
-            // Field boundaries are part of the hash.
-            htmlRenderOrigin("fixture-env", "fixture-threadfixture-", "attachment"),
-            htmlRenderOrigin("", "", "fixture-attachment"),
-        )
+    @Test fun everySessionHasItsOwnOrigin() {
+        val origins = List(2_000) { newHtmlRenderOrigin() }
         assertEquals(origins.size, origins.toSet().size)
-        origins.forEach { assertFalse(it, it == "https://$HTML_RENDER_HOST") }
+        origins.forEach {
+            assertTrue(it, it.matches(Regex("https://[0-9a-f]{32}\\.html-render\\.trefoil\\.invalid")))
+            assertFalse(it, it == "https://$HTML_RENDER_HOST")
+        }
     }
 
     @Test fun policyOnlyAcceptsSyntheticDocumentUrls() {
         listOf(
             "https://cdn.example/index.html", "https://$HTML_RENDER_HOST.cdn.example/index.html", "https://$HTML_RENDER_HOST/index.html",
             "http://${otherPage.removePrefix("https://")}/index.html", "$otherPage:8443/index.html", "$otherPage/other.html", "not a url",
+            // Only one 32-hex session label directly under the synthetic host.
+            "https://fixture.$HTML_RENDER_HOST/index.html", "https://${"a".repeat(31)}.$HTML_RENDER_HOST/index.html",
+            "https://${"A".repeat(32)}.$HTML_RENDER_HOST/index.html", "https://x.${otherPage.removePrefix("https://")}/index.html",
         ).forEach { url -> assertThrows(url, IllegalArgumentException::class.java) { HtmlRenderPolicy(url, HtmlRenderNetworkAccess.Offline) } }
     }
 
@@ -140,7 +139,7 @@ class HtmlRenderPolicyTest {
 
     @Test fun servedDocumentAppendsOnlyTheHeightScript() {
         val html = "<!doctype html><p>Fixture</p>"
-        val served = htmlRenderDocument(html, rtcLockdown = false).toString(Charsets.UTF_8)
+        val served = htmlRenderDocument(html, scripted = true, theme = theme).toString(Charsets.UTF_8)
         assertTrue(served.startsWith(html))
         assertEquals(HTML_RENDER_HEIGHT_SCRIPT, served.removePrefix(html))
         assertTrue(HTML_RENDER_HEIGHT_SCRIPT.contains("window.$HTML_RENDER_BRIDGE"))
@@ -158,19 +157,34 @@ class HtmlRenderPolicyTest {
         assertFalse(HTML_RENDER_NO_RTC_SCRIPT.contains("</script"))
     }
 
-    @Test fun fallbackInlinesNoRtcScriptBeforeAnyPageScript() {
-        val script = "<script>$HTML_RENDER_NO_RTC_SCRIPT</script>"
-        val withDoctype = "<!DOCTYPE html><html><head><script>new RTCPeerConnection()</script></head></html>"
-        val served = htmlRenderDocument(withDoctype, rtcLockdown = true).toString(Charsets.UTF_8)
-        // After the doctype (standards mode kept), before the page's own script.
-        assertEquals("<!DOCTYPE html>$script<html><head><script>new RTCPeerConnection()</script></head></html>$HTML_RENDER_HEIGHT_SCRIPT", served)
-        val commented = "﻿ <!-- a -->\n<!doctype html ><p>x</p>"
-        assertEquals("﻿ <!-- a -->\n<!doctype html >$script<p>x</p>$HTML_RENDER_HEIGHT_SCRIPT", htmlRenderDocument(commented, rtcLockdown = true).toString(Charsets.UTF_8))
-        val bare = "<script>new RTCPeerConnection()</script><p>x</p>"
-        assertEquals("$script$bare$HTML_RENDER_HEIGHT_SCRIPT", htmlRenderDocument(bare, rtcLockdown = true).toString(Charsets.UTF_8))
-        // A doctype later in the document is not a doctype: the script still goes first.
-        val late = "<p>x</p><!doctype html>"
-        assertTrue(htmlRenderDocument(late, rtcLockdown = true).toString(Charsets.UTF_8).startsWith(script))
+    @Test fun scriptRunsOnlyBehindTheDocumentStartLockdown() {
+        var installs = 0
+        assertTrue(htmlRenderRunsScript(supportsDocumentStart = true) { installs++ })
+        assertEquals(1, installs)
+        // Without document-start support the lockdown is never attempted and the page gets no script.
+        assertFalse(htmlRenderRunsScript(supportsDocumentStart = false) { installs++ })
+        assertEquals(1, installs)
+        // A failed install is the same as no support.
+        assertFalse(htmlRenderRunsScript(supportsDocumentStart = true) { throw IllegalStateException("fixture") })
+    }
+
+    @Test fun staticDocumentGetsNoScriptOnlyTheThemeRule() {
+        // The parser-trick page from the review: nothing may be inserted ahead of the page's own markup.
+        val tricky = "<!--><script>window.savedRTC=RTCPeerConnection</script><!-- --><!doctype html><p>x</p>"
+        val served = htmlRenderDocument(tricky, scripted = false, theme = theme).toString(Charsets.UTF_8)
+        assertEquals(tricky + htmlRenderStaticThemeStyle(theme), served)
+        assertFalse(served.contains(HTML_RENDER_NO_RTC_SCRIPT))
+        assertFalse(served.contains(HTML_RENDER_HEIGHT_SCRIPT))
+        assertFalse(htmlRenderStaticThemeStyle(theme).contains("<script"))
+        assertTrue(htmlRenderDocument(tricky, scripted = true, theme = theme).toString(Charsets.UTF_8).startsWith(tricky))
+    }
+
+    @Test fun staticThemeRuleCarriesOnlySafeVariables() {
+        val style = htmlRenderStaticThemeStyle(HtmlRenderTheme(dark = false, variables = linkedMapOf(
+            "--background" to "#ffffff", "--font-sans" to "\"Segoe UI\", sans-serif",
+            "--evil" to "red}</style><script>x()</script>", "--semi" to "red;color:blue", "notvar" to "red", "--nl" to "a\nb",
+        )))
+        assertEquals("<style>:root{color-scheme:light;--background:#ffffff;--font-sans:\"Segoe UI\", sans-serif;}</style>", style)
     }
 
     @Test fun cspBlocksFramesAndWorkers() {

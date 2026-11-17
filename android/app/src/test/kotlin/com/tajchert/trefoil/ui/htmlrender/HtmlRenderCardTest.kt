@@ -39,6 +39,8 @@ class HtmlRenderCardTest {
     @get:Rule val compose = createComposeRule()
     private val reference = HtmlRenderReference("fixture-attachment", "Fixture chart", 240)
     private val html = "<!doctype html><html><head></head><body><p>Fixture page</p></body></html>"
+    @org.junit.Before fun scriptedWebView() { HtmlRenderDocumentStart.install = { _, _ -> true } }
+    @org.junit.After fun platformWebView() { HtmlRenderDocumentStart.install = HtmlRenderDocumentStart.platform }
 
     private fun content(state: HtmlRenderState, canRetry: Boolean = false, onRetry: () -> Unit = {}, inspection: Boolean = false) {
         compose.setContent {
@@ -214,7 +216,7 @@ class HtmlRenderCardTest {
                 assertEquals(android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW, mixedContentMode)
             }
             val shadow = shadowOf(view)
-            val documentUrl = htmlRenderDocumentUrl("fixture", "thread", reference.attachmentId)
+            val documentUrl = shadow.lastLoadedUrl.substringBefore('#').also { assertTrue(it, it.matches(Regex("https://[0-9a-f]{32}\\.$HTML_RENDER_HOST/index\\.html"))) }
             assertTrue(shadow.lastLoadedUrl.startsWith("$documentUrl#t3-theme=%7B%22appearance%22%3A%22dark%22"))
             assertFalse(shadow.lastLoadedUrl.contains("fixture.invalid"))
             val client2 = shadow.webViewClient
