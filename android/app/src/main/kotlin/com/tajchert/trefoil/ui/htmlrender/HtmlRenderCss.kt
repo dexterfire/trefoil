@@ -26,14 +26,35 @@ internal class HtmlRenderCssRebaseCount(val length: Long, val rewritten: Boolean
 
 /**
  * Counting pass of [htmlRenderRebaseCss]: allocates nothing proportional to the output and gives up (null) as
- * soon as the rebased text would pass [limitChars] chars.
+ * soon as the rebased text would pass [limitChars] chars. A target longer than [MAX_REBASED_TARGET_CHARS] is
+ * announced to [reserveScratch] (extra bytes about to be held for resolving it) first; a refusal gives up too.
  */
-internal fun htmlRenderCountRebasedCss(css: String, base: HttpUrl, limitChars: Long = Long.MAX_VALUE): HtmlRenderCssRebaseCount? {
+internal fun htmlRenderCountRebasedCss(
+    css: String,
+    base: HttpUrl,
+    limitChars: Long = Long.MAX_VALUE,
+    reserveScratch: ((Long) -> Boolean)? = null,
+): HtmlRenderCssRebaseCount? {
     val sink = CountingSink(limitChars)
-    val rebaser = CssRebaser(css, base, sink)
+    val rebaser = CssRebaser(css, base, sink, reserveScratch)
     return try {
         rebaser.run()
         HtmlRenderCssRebaseCount(sink.count, rebaser.rewritten)
+    } catch (_: CssOutputLimitExceeded) {
+        null
+    }
+}
+
+/**
+ * Build pass: the rebased text in a char array of exactly [length] chars (the counted length), or null when
+ * the pass does not write exactly that many (it always does for the input that was counted).
+ */
+internal fun htmlRenderBuildRebasedCss(css: String, base: HttpUrl, length: Int): CharArray? {
+    val chars = CharArray(length)
+    val sink = ArraySink(chars)
+    return try {
+        CssRebaser(css, base, sink).run()
+        if (sink.written == length) chars else null
     } catch (_: CssOutputLimitExceeded) {
         null
     }
@@ -68,18 +89,21 @@ internal fun htmlRenderRebaseCssBytes(
         decoded.flip()
         if (!reserve(decoded.remaining().toLong() * CHAR_BYTES)) return null
         val text = decoded.toString()
+        // Resolving a target allocates a few strings the size of the base URL plus the target, one at a time and
+        // in both passes: this one reservation covers them all.
+        if (!reserve(SCRATCH_FACTOR * (base.toString().length + MAX_REBASED_TARGET_CHARS) * CHAR_BYTES)) return null
         // Every charset encodes a char to at least one byte, so more than maxBytes chars cannot fit.
-        val count = htmlRenderCountRebasedCss(text, base, maxBytes) ?: return null
+        val count = htmlRenderCountRebasedCss(text, base, maxBytes, reserve) ?: return null
         if (!count.rewritten) return bytes
         if (!reserve(count.length * CHAR_BYTES)) return null
-        val builder = StringBuilder(count.length.toInt())
-        CssRebaser(text, base, BuilderSink(builder)).run()
+        // An array-backed source: the encoder reads it in place instead of copying it to an array of its own.
+        val rebased = htmlRenderBuildRebasedCss(text, base, count.length.toInt()) ?: return null
         val encoder = charset.newEncoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT)
-        val encodedCapacity = minOf(maxBytes, ceil(builder.length * encoder.maxBytesPerChar().toDouble()).toLong())
+        val encodedCapacity = minOf(maxBytes, ceil(rebased.size * encoder.maxBytesPerChar().toDouble()).toLong())
             .coerceAtMost(Int.MAX_VALUE.toLong())
         if (!reserve(encodedCapacity)) return null
         val encoded = ByteBuffer.allocate(encodedCapacity.toInt())
-        val chars = CharBuffer.wrap(builder)
+        val chars = CharBuffer.wrap(rebased, 0, rebased.size)
         var encodeResult = encoder.encode(chars, encoded, true)
         if (encodeResult.isUnderflow) encodeResult = encoder.flush(encoded)
         if (encodeResult.isOverflow) return null
@@ -97,7 +121,17 @@ internal fun htmlRenderRebaseCssBytes(
 
 private const val CHAR_BYTES = 2L
 
-/** A rebased URL or string target longer than this is copied as written: nothing near it is a real reference. */
+/**
+ * `base.resolve(target)` and `toString()` hold, at once, a parsed URL, its string, and a few intermediate copies of
+ * the base plus the target; this many times that many chars is reserved as scratch before they are made.
+ */
+private const val SCRATCH_FACTOR = 4L
+
+/**
+ * Targets up to this long are resolved within the fixed scratch reserved up front. Longer ones (a token in a
+ * query string, say) are still rebased, since copying one as written would resolve it against the wrong URL
+ * after a redirect, but the counting pass reserves extra scratch for each before resolving it.
+ */
 private const val MAX_REBASED_TARGET_CHARS = 8_192
 
 private object CssOutputLimitExceeded : RuntimeException() {
@@ -117,6 +151,22 @@ private class BuilderSink(private val out: StringBuilder) : CssSink {
     override fun append(text: CharSequence, start: Int, end: Int) { out.append(text, start, end) }
 }
 
+/** Writes into a fixed array sized by the counting pass; writing past its end fails like an over-limit count. */
+private class ArraySink(private val chars: CharArray) : CssSink {
+    var written = 0
+        private set
+
+    override fun append(c: Char) {
+        if (written >= chars.size) throw CssOutputLimitExceeded
+        chars[written++] = c
+    }
+
+    override fun append(text: CharSequence, start: Int, end: Int) {
+        if (end - start > chars.size - written) throw CssOutputLimitExceeded
+        for (k in start until end) chars[written++] = text[k]
+    }
+}
+
 private class CountingSink(private val limit: Long) : CssSink {
     var count = 0L
         private set
@@ -131,9 +181,17 @@ private class CountingSink(private val limit: Long) : CssSink {
 }
 
 /** The scanner behind [htmlRenderRebaseCss]; copies everything to [out] and rewrites relative references. */
-private class CssRebaser(private val css: String, private val base: HttpUrl, private val out: CssSink) {
+private class CssRebaser(
+    private val css: String,
+    private val base: HttpUrl,
+    private val out: CssSink,
+    private val reserveScratch: ((Long) -> Boolean)? = null,
+) {
     var rewritten = false
         private set
+
+    /** The target length the scratch held so far covers; resolutions are one at a time, so it only grows to the longest. */
+    private var scratchChars = MAX_REBASED_TARGET_CHARS
 
     fun run() {
         var i = 0
@@ -223,7 +281,13 @@ private class CssRebaser(private val css: String, private val base: HttpUrl, pri
         var to = end
         while (from < to && css[from].isWhitespace()) from++
         while (to > from && css[to - 1].isWhitespace()) to--
-        if (to == from || to - from > MAX_REBASED_TARGET_CHARS || css[from] == '#' || hasScheme(from, to)) return null
+        if (to == from || css[from] == '#' || hasScheme(from, to)) return null
+        val length = to - from
+        if (length > scratchChars) {
+            val extra = SCRATCH_FACTOR * (length - scratchChars) * CHAR_BYTES
+            if (reserveScratch?.invoke(extra) == false) throw CssOutputLimitExceeded
+            scratchChars = length
+        }
         val absolute = base.resolve(css.substring(from, to))?.toString() ?: return null
         // The result goes back into CSS unescaped: refuse anything that could end the token.
         if (absolute.any { it == '"' || it == '\'' || it == '(' || it == ')' || it == '\\' || it.code <= 0x20 || it.code == 0x7F }) return null

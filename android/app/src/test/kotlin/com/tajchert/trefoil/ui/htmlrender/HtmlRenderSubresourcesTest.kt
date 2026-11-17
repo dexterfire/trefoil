@@ -1,16 +1,26 @@
 package com.tajchert.trefoil.ui.htmlrender
 
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.Proxy
+import java.net.ProxySelector
 import java.net.ServerSocket
-import java.net.SocketTimeoutException
+import java.net.Socket
 import java.net.UnknownHostException
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import javax.net.SocketFactory
 import kotlin.concurrent.thread
+import okhttp3.Address
+import okhttp3.Authenticator
+import okhttp3.Connection
+import okhttp3.ConnectionSpec
 import okhttp3.Dns
+import okhttp3.Handshake
+import okhttp3.Interceptor
+import okhttp3.Route
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Call
 import okhttp3.Headers.Companion.headersOf
@@ -467,20 +477,6 @@ class HtmlRenderSubresourcesTest {
         assertEquals(0, budget.inUse)
     }
 
-    /** A plain TCP listener on loopback that counts connection attempts; a refused client never reaches it. */
-    private class LoopbackListener : AutoCloseable {
-        private val socket = ServerSocket(0, 50, InetAddress.getLoopbackAddress()).apply { soTimeout = 200 }
-        val port get() = socket.localPort
-        val accepted = AtomicInteger()
-        @Volatile private var open = true
-        private val acceptor = thread {
-            while (open) {
-                try { socket.accept().close(); accepted.incrementAndGet() } catch (_: SocketTimeoutException) {} catch (_: java.io.IOException) { return@thread }
-            }
-        }
-        override fun close() { open = false; socket.close(); acceptor.join(2_000) }
-    }
-
     @Test fun productionClientKeepsItsHardenedConfiguration() {
         val client = createHtmlRenderHttpClient()
         assertSame(Proxy.NO_PROXY, client.proxy)
@@ -497,72 +493,137 @@ class HtmlRenderSubresourcesTest {
         assertEquals(30_000, client.callTimeoutMillis)
     }
 
-    @Test fun productionClientRefusesANameThatResolvesToLoopback() {
-        LoopbackListener().use { listener ->
-            val loopback = object : Dns { override fun lookup(hostname: String) = listOf(InetAddress.getLoopbackAddress()) }
-            val client = createHtmlRenderHttpClient(loopback)
-            val fetcher = HtmlRenderSubresourceFetcher(client, budget = HtmlRenderByteBudget(1024 * 1024))
-            // A public-looking name that rebinds to 127.0.0.1, and one that resolves to a private LAN host.
-            assertEquals(502, fetcher.fetch("https://rebind.example:${listener.port}/x.js", emptyMap()) { true }.status)
-            val lan = createHtmlRenderHttpClient(object : Dns { override fun lookup(hostname: String) = listOf(InetAddress.getByName("192.168.1.10")) })
-            assertEquals(502, HtmlRenderSubresourceFetcher(lan).fetch("https://rebind.example/x.js", emptyMap()) { true }.status)
-            // Private-looking names are refused even if the resolver answers with a public address.
-            val publicAnswer = createHtmlRenderHttpClient(object : Dns { override fun lookup(hostname: String) = listOf(InetAddress.getByName("93.184.216.34")) })
-            assertEquals(502, HtmlRenderSubresourceFetcher(publicAnswer).fetch("https://localhost:${listener.port}/x.js", emptyMap()) { true }.status)
-            // A request outside the fetcher carries no hop gate and DNS still stops it before any connection.
-            assertThrows(java.io.IOException::class.java) { client.newCall(Request.Builder().url("https://rebind.example:${listener.port}/").build()).execute() }
-            Thread.sleep(300)
-            assertEquals(0, listener.accepted.get())
-        }
+    /** Counts every socket the client under test asks for: a refused request must never open one. */
+    private class RecordingSocketFactory : SocketFactory() {
+        private val delegate: SocketFactory = getDefault()
+        val created = AtomicInteger()
+        private fun <T> counted(create: () -> T): T { created.incrementAndGet(); return create() }
+        override fun createSocket(): Socket = counted { delegate.createSocket() }
+        override fun createSocket(host: String?, port: Int): Socket = counted { delegate.createSocket(host, port) }
+        override fun createSocket(host: String?, port: Int, localHost: InetAddress?, localPort: Int): Socket =
+            counted { delegate.createSocket(host, port, localHost, localPort) }
+        override fun createSocket(host: InetAddress?, port: Int): Socket = counted { delegate.createSocket(host, port) }
+        override fun createSocket(address: InetAddress?, port: Int, localAddress: InetAddress?, localPort: Int): Socket =
+            counted { delegate.createSocket(address, port, localAddress, localPort) }
     }
 
-    @Test fun productionClientNeverConnectsToANonPublicIpLiteral() {
-        LoopbackListener().use { listener ->
-            val client = createHtmlRenderHttpClient()
-            val fetcher = HtmlRenderSubresourceFetcher(client, budget = HtmlRenderByteBudget(1024 * 1024))
-            // An IP literal skips DNS entirely, so even a permissive hop gate must not get a socket opened.
-            listOf("127.0.0.1", "[::1]", "[::ffff:127.0.0.1]", "[::127.0.0.1]").forEach { host ->
-                val result = fetcher.fetch("https://$host:${listener.port}/x.js", emptyMap()) { true }
-                assertEquals(host, 502, result.status)
-                assertEquals(host, 0, result.body.size)
-            }
-            // Outside the fetcher, and for a private LAN literal, too.
-            assertThrows(java.io.IOException::class.java) { client.newCall(Request.Builder().url("https://127.0.0.1:${listener.port}/").build()).execute() }
-            assertEquals(502, fetcher.fetch("https://192.168.1.10/x.js", emptyMap()) { true }.status)
-            Thread.sleep(300)
-            assertEquals(0, listener.accepted.get())
+    /** The production client with a recording socket factory; every interceptor and the DNS filter stay in place. */
+    private fun recordingProductionClient(systemDns: Dns = Dns.SYSTEM): Pair<OkHttpClient, RecordingSocketFactory> {
+        val sockets = RecordingSocketFactory()
+        return createHtmlRenderHttpClient(systemDns).newBuilder().socketFactory(sockets).build() to sockets
+    }
+
+    private fun dnsAnswering(literal: String) = object : Dns { override fun lookup(hostname: String) = listOf(InetAddress.getByName(literal)) }
+
+    @Test fun recordingSocketFactoryCountsSocketsAnUnguardedClientOpens() {
+        // Control for the tests below: a client without the guards does ask for a socket (the connect is refused).
+        val sockets = RecordingSocketFactory()
+        val port = ServerSocket(0, 1, InetAddress.getLoopbackAddress()).use { it.localPort }
+        val unguarded = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).socketFactory(sockets).build()
+        assertThrows(java.io.IOException::class.java) { unguarded.newCall(Request.Builder().url("http://127.0.0.1:$port/").build()).execute() }
+        assertTrue(sockets.created.get() >= 1)
+    }
+
+    @Test fun productionClientRefusesANameThatResolvesToLoopback() {
+        val (client, sockets) = recordingProductionClient(dnsAnswering("127.0.0.1"))
+        val fetcher = HtmlRenderSubresourceFetcher(client, budget = HtmlRenderByteBudget(1024 * 1024))
+        // A public-looking name that rebinds to 127.0.0.1, and one that resolves to a private LAN host.
+        assertEquals(502, fetcher.fetch("https://rebind.example:8443/x.js", emptyMap()) { true }.status)
+        val (lan, lanSockets) = recordingProductionClient(dnsAnswering("192.168.1.10"))
+        assertEquals(502, HtmlRenderSubresourceFetcher(lan).fetch("https://rebind.example/x.js", emptyMap()) { true }.status)
+        // Private-looking names are refused even if the resolver answers with a public address.
+        val (publicAnswer, publicSockets) = recordingProductionClient(dnsAnswering("93.184.216.34"))
+        assertEquals(502, HtmlRenderSubresourceFetcher(publicAnswer).fetch("https://localhost:8443/x.js", emptyMap()) { true }.status)
+        // A request outside the fetcher carries no hop gate and DNS still stops it before any connection.
+        assertThrows(java.io.IOException::class.java) { client.newCall(Request.Builder().url("https://rebind.example:8443/").build()).execute() }
+        assertEquals(0, sockets.created.get())
+        assertEquals(0, lanSockets.created.get())
+        assertEquals(0, publicSockets.created.get())
+    }
+
+    @Test fun productionClientNeverOpensASocketToANonPublicIpLiteral() {
+        val (client, sockets) = recordingProductionClient()
+        val fetcher = HtmlRenderSubresourceFetcher(client, budget = HtmlRenderByteBudget(1024 * 1024))
+        // An IP literal skips DNS entirely, so even a permissive hop gate must not get a socket opened.
+        listOf(
+            "127.0.0.1", "[::1]", "192.168.1.10", "10.0.0.1", "169.254.169.254", "[::ffff:127.0.0.1]", "[::127.0.0.1]",
+            "[fd00::1]", "[fe80::1]",
+        ).forEach { host ->
+            val result = fetcher.fetch("https://$host:8443/x.js", emptyMap()) { true }
+            assertEquals(host, 502, result.status)
+            assertEquals(host, 0, result.body.size)
+            assertEquals(host, 0, sockets.created.get())
+            // Outside the fetcher, too.
+            assertThrows(java.io.IOException::class.java) { client.newCall(Request.Builder().url("https://$host:8443/").build()).execute() }
+            assertEquals(host, 0, sockets.created.get())
         }
     }
 
     @Test fun urlPolicyGateRejectsNonPublicLiteralsBeforeAnyConnection() {
-        LoopbackListener().use { listener ->
-            val fetcher = HtmlRenderSubresourceFetcher(createHtmlRenderHttpClient(), budget = HtmlRenderByteBudget(1024 * 1024))
-            // The same policy the WebView passes as the hop gate, for the literal and for redirects to it.
-            listOf("127.0.0.1", "[::1]", "10.0.0.1", "169.254.169.254", "[::ffff:127.0.0.1]").forEach { host ->
-                val result = fetcher.fetch("https://$host:${listener.port}/x.js", emptyMap(), policy::allowsFetch)
-                assertEquals(host, 403, result.status)
-                assertEquals(host, 0, result.body.size)
-            }
-            Thread.sleep(300)
-            assertEquals(0, listener.accepted.get())
+        val (client, sockets) = recordingProductionClient()
+        val fetcher = HtmlRenderSubresourceFetcher(client, budget = HtmlRenderByteBudget(1024 * 1024))
+        // The same policy the WebView passes as the hop gate, for the literal and for redirects to it.
+        listOf("127.0.0.1", "[::1]", "10.0.0.1", "169.254.169.254", "[::ffff:127.0.0.1]", "192.168.1.10", "[fd00::1]").forEach { host ->
+            val result = fetcher.fetch("https://$host:8443/x.js", emptyMap(), policy::allowsFetch)
+            assertEquals(host, 403, result.status)
+            assertEquals(host, 0, result.body.size)
+            assertEquals(host, 0, sockets.created.get())
         }
     }
 
-    @Test fun publicPeerInterceptorRejectsAConnectionToANonPublicPeerBeforeTheRequestIsSent() {
-        LoopbackListener().use { listener ->
-            // Plain HTTP so the network interceptor runs right after the TCP connect, standing in for the TLS case.
-            val guarded = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).addNetworkInterceptor(PublicPeerInterceptor).build()
-            val blocked = assertThrows(java.io.IOException::class.java) {
-                guarded.newCall(Request.Builder().url("http://127.0.0.1:${listener.port}/").build()).execute()
+    /** A minimal chain: a request, a connection whose peer is [peer] (none when null), and a recorded `proceed`. */
+    private class FakeChain(private val request: Request, peer: String?) : Interceptor.Chain {
+        var proceeded = 0
+        private val connection: Connection? = peer?.let {
+            val address = Address(
+                request.url.host, request.url.port, Dns.SYSTEM, SocketFactory.getDefault(), null, null, null,
+                Authenticator.NONE, null, listOf(Protocol.HTTP_1_1), listOf(ConnectionSpec.MODERN_TLS), ProxySelector.getDefault(),
+            )
+            val route = Route(address, Proxy.NO_PROXY, InetSocketAddress(InetAddress.getByName(it), request.url.port))
+            object : Connection {
+                override fun route() = route
+                override fun socket(): Socket = throw UnsupportedOperationException()
+                override fun handshake(): Handshake? = null
+                override fun protocol() = Protocol.HTTP_1_1
             }
-            assertEquals("Blocked peer", blocked.message)
-            // Control: without the interceptor the same request gets past the connect and only then fails.
-            val unguarded = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).build()
-            val other = assertThrows(java.io.IOException::class.java) {
-                unguarded.newCall(Request.Builder().url("http://127.0.0.1:${listener.port}/").build()).execute()
-            }
-            assertNotEquals("Blocked peer", other.message)
         }
+        override fun request() = request
+        override fun proceed(request: Request): Response {
+            proceeded++
+            return Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK").build()
+        }
+        override fun connection() = connection
+        override fun call(): Call = throw UnsupportedOperationException()
+        override fun connectTimeoutMillis() = 1_000
+        override fun withConnectTimeout(timeout: Int, unit: TimeUnit) = this
+        override fun readTimeoutMillis() = 1_000
+        override fun withReadTimeout(timeout: Int, unit: TimeUnit) = this
+        override fun writeTimeoutMillis() = 1_000
+        override fun withWriteTimeout(timeout: Int, unit: TimeUnit) = this
+    }
+
+    @Test fun publicPeerInterceptorRejectsANonPublicPeerOverHttpsAndLetsAPublicOneThrough() {
+        val https = Request.Builder().url("https://cdn.example/x.js").build()
+        // The connection is already open: a private, loopback, link-local, mapped or ULA peer must not get the request.
+        listOf("192.168.1.10", "10.0.0.1", "127.0.0.1", "169.254.169.254", "::1", "fd00::1", "::ffff:192.168.1.10").forEach { peer ->
+            val chain = FakeChain(https, peer)
+            val blocked = assertThrows(peer, java.io.IOException::class.java) { PublicPeerInterceptor.intercept(chain) }
+            assertEquals(peer, "Blocked peer", blocked.message)
+            assertEquals(peer, 0, chain.proceeded)
+        }
+        // The same HTTPS request with a public peer proceeds, so the rejections above are down to the peer address.
+        listOf("93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946").forEach { peer ->
+            val chain = FakeChain(https, peer)
+            assertEquals(peer, 200, PublicPeerInterceptor.intercept(chain).code)
+            assertEquals(peer, 1, chain.proceeded)
+        }
+        // No connection, or a public peer over plain HTTP, is refused as well.
+        val noConnection = FakeChain(https, null)
+        assertThrows(java.io.IOException::class.java) { PublicPeerInterceptor.intercept(noConnection) }
+        assertEquals(0, noConnection.proceeded)
+        val plain = FakeChain(Request.Builder().url("http://cdn.example/x.js").build(), "93.184.216.34")
+        assertThrows(java.io.IOException::class.java) { PublicPeerInterceptor.intercept(plain) }
+        assertEquals(0, plain.proceeded)
     }
 
     private val cssBase = "https://cdn.example/v2/css/style.css".toHttpUrl()
@@ -683,16 +744,93 @@ class HtmlRenderSubresourcesTest {
         }
     }
 
-    @Test fun absurdlyLongReferencesAreCopiedAsWritten() {
-        val long = "a".repeat(20_000)
-        listOf("a{background:url($long)}", "a{background:url('$long')}", "@import '$long';").forEach {
-            assertEquals(it, htmlRenderRebaseCss(it, cssBase))
+    @Test fun buildPassWritesExactlyTheCountedCharsIntoAnArrayBackedBuffer() {
+        cssFixtures.forEach { css ->
+            val count = htmlRenderCountRebasedCss(css, cssBase)!!
+            val chars = htmlRenderBuildRebasedCss(css, cssBase, count.length.toInt())
+            assertNotNull(css, chars)
+            assertEquals(css, count.length, chars!!.size.toLong())
+            assertEquals(css, htmlRenderRebaseCss(css, cssBase), String(chars))
+            // A length that is off by one either way is refused rather than padded or truncated.
+            assertNull(css, htmlRenderBuildRebasedCss(css, cssBase, count.length.toInt() + 1))
+            if (count.length > 0) assertNull(css, htmlRenderBuildRebasedCss(css, cssBase, count.length.toInt() - 1))
         }
+        // The encoder is fed from that array, so a rewritten stylesheet round-trips through the byte path.
+        val css = "a{background:url(b.png)}".toByteArray()
+        assertEquals(
+            "a{background:url(https://cdn.example/v2/css/b.png)}",
+            htmlRenderRebaseCssBytes(css, null, cssBase, 1_000) { true }!!.toString(Charsets.UTF_8),
+        )
+    }
+
+    private val longToken = "t".repeat(9_000)
+    private val longCss = "a{background:url(\"sprite.svg?token=$longToken\")}"
+    private val longRebased = "a{background:url(\"https://cdn.example/v2/css/sprite.svg?token=$longToken\")}"
+
+    @Test fun longRelativeTargetsAreRebasedToo() {
+        assertEquals(longRebased, htmlRenderRebaseCss(longCss, cssBase))
+        // Unquoted and @import forms, and a target far over the old copy-as-written limit.
+        val huge = "h".repeat(20_000)
+        assertEquals("a{background:url(https://cdn.example/v2/css/$huge)}", htmlRenderRebaseCss("a{background:url($huge)}", cssBase))
+        assertEquals("@import 'https://cdn.example/v2/css/$huge';", htmlRenderRebaseCss("@import '$huge';", cssBase))
+        // Through the byte path with its reservations, and the counting pass agrees with the build pass.
+        val rebased = htmlRenderRebaseCssBytes(longCss.toByteArray(), null, cssBase, 1L shl 20) { true }!!
+        assertEquals(longRebased, rebased.toString(Charsets.UTF_8))
+        assertEquals(longRebased.length.toLong(), htmlRenderCountRebasedCss(longCss, cssBase)!!.length)
+    }
+
+    @Test fun longTargetReservesExtraScratchBeforeItIsResolvedAndRefusalFailsTheRebase() {
+        val reservations = mutableListOf<Long>()
+        htmlRenderRebaseCssBytes(longCss.toByteArray(), null, cssBase, 1L shl 20) { reservations += it; true }!!
+        // Decode buffer, decoded string, fixed scratch, scratch for the long target, rebuilt text, encode buffer, trim.
+        val extra = 4L * (longToken.length + "sprite.svg?token=".length - 8_192) * 2
+        assertEquals(extra, reservations[3])
+        assertEquals(7, reservations.size)
+        var calls = 0
+        assertNull(htmlRenderRebaseCssBytes(longCss.toByteArray(), null, cssBase, 1L shl 20) { calls++ != 3 })
+        // Refused at the scratch: nothing after it (builder, encode buffer) was reserved.
+        assertEquals(4, calls)
+        // Targets within the limit never ask for extra scratch, however many there are.
+        val shortCss = "a{background:url(b.png)}".repeat(100)
+        var shortCalls = 0
+        assertNotNull(htmlRenderRebaseCssBytes(shortCss.toByteArray(), null, cssBase, 1L shl 20) { shortCalls++; true })
+        assertEquals(6, shortCalls)
+        // Many long targets share one scratch: only growth over the longest so far is reserved.
+        val many = "a{background:url(\"s.svg?t=$longToken\")}".repeat(50)
+        var manyCalls = 0
+        assertNotNull(htmlRenderRebaseCssBytes(many.toByteArray(), null, cssBase, 1L shl 24) { manyCalls++; true })
+        assertEquals(7, manyCalls)
+    }
+
+    @Test fun redirectedStylesheetWithALongTargetIsRebasedAndUnderATooSmallBudgetFailsCleanly() {
+        val server = redirectedStylesheet(longCss)
+        val rebased = HtmlRenderSubresourceFetcher(server.client, budget = HtmlRenderByteBudget(2L * 1024 * 1024))
+            .fetch("https://cdn.example/latest.css", emptyMap(), policy::allowsFetch)
+        assertEquals(200, rebased.status)
+        assertEquals(
+            "a{background:url(\"https://cdn.example/v2/p/sprite.svg?token=$longToken\")}",
+            rebased.body.toString(Charsets.UTF_8),
+        )
+        val outcomes = (10_000..400_000 step 1_000).map { limit ->
+            val budget = HtmlRenderByteBudget(limit.toLong())
+            val result = HtmlRenderSubresourceFetcher(server.client, budget = budget)
+                .fetch("https://cdn.example/latest.css", emptyMap(), policy::allowsFetch)
+            assertEquals("limit $limit", 0, budget.inUse)
+            if (result.status == 200) assertEquals("limit $limit", rebased.body.toString(Charsets.UTF_8), result.body.toString(Charsets.UTF_8))
+            else { assertEquals(502, result.status); assertEquals(0, result.body.size) }
+            limit to result.status
+        }
+        val firstOk = outcomes.first { it.second == 200 }.first
+        assertTrue(outcomes.all { (limit, status) -> (status == 200) == (limit >= firstOk) })
+        assertTrue("first ok $firstOk", firstOk > 10_000)
     }
 
     /** `url(a)` many times against a long final URL: the rebased text is vastly larger than the stylesheet. */
     private val bombCss = "u{background:url(a)}".repeat(3_000)
     private val bombBase = "https://cdn.example/${"p/".repeat(500)}style.css".toHttpUrl()
+
+    /** The fixed scratch reserved for resolving targets: 4 x (base URL + 8 192 chars) x 2 bytes. */
+    private fun scratchBytes(base: okhttp3.HttpUrl) = 4L * (base.toString().length + 8_192) * 2
 
     @Test fun expansionBombIsRefusedBeforeAnythingProportionalToTheOutputIsReserved() {
         val bytes = bombCss.toByteArray()
@@ -703,8 +841,9 @@ class HtmlRenderSubresourcesTest {
         var reserved = 0L
         val result = htmlRenderRebaseCssBytes(bytes, null, bombBase, maxBytes) { reserved += it; true }
         assertNull(result)
-        // Only the decode stages (a few times the input) were reserved, never a builder or encode buffer.
-        assertTrue("reserved $reserved", reserved <= bytes.size * 5L)
+        // Only the decode stages (a few times the input) and the fixed resolve scratch were reserved, never a
+        // builder or encode buffer.
+        assertTrue("reserved $reserved", reserved <= bytes.size * 4L + scratchBytes(bombBase))
     }
 
     @Test fun rebaseReservesEveryStageBeforeAllocatingAndRefusesWhenOverBudget() {
@@ -712,9 +851,10 @@ class HtmlRenderSubresourcesTest {
         val reservations = mutableListOf<Long>()
         val rebased = htmlRenderRebaseCssBytes(css, null, cssBase, 1_000) { reservations += it; true }!!
         assertEquals("a{background:url(https://cdn.example/v2/css/b.png)}", rebased.toString(Charsets.UTF_8))
-        // Decode buffer, decoded string, rebuilt text, encode buffer, and the trimmed copy of it.
-        assertEquals(5, reservations.size)
+        // Decode buffer, decoded string, resolve scratch, rebuilt text, encode buffer, and the trimmed copy of it.
+        assertEquals(6, reservations.size)
         assertTrue(reservations.all { it > 0 })
+        assertEquals(scratchBytes(cssBase), reservations[2])
         // Refusing any one of them fails the whole rebase, without ever reaching the next stage.
         reservations.indices.forEach { refused ->
             var calls = 0
@@ -724,7 +864,7 @@ class HtmlRenderSubresourcesTest {
         // Over the output cap: refused after the counting pass, before the builder is reserved.
         var calls = 0
         assertNull(htmlRenderRebaseCssBytes(css, null, cssBase, css.size + 5L) { calls++; true })
-        assertEquals(2, calls)
+        assertEquals(3, calls)
     }
 
     private fun redirectedStylesheet(body: String, target: String = "/v2/p/style.css") = FakeServer { request ->
@@ -749,8 +889,9 @@ class HtmlRenderSubresourcesTest {
     @Test fun redirectedStylesheetUnderATooSmallBudgetFailsCleanlyAndRebasesWithEnough() {
         val css = "a{background:url(b.png)}"
         val expected = "a{background:url(https://cdn.example/v2/p/b.png)}"
-        // Byte-exact sweep around the buffering reservation (one 8 KiB chunk): the rebase needs more than that.
-        val outcomes = (8_000..9_000).map { limit ->
+        // Sweep from below the buffering reservation (one 8 KiB chunk) past the rebase's own reservations,
+        // which include the fixed resolve scratch: the rebase needs well more than the chunk.
+        val outcomes = (8_000..100_000 step 250).map { limit ->
             val budget = HtmlRenderByteBudget(limit.toLong())
             val result = HtmlRenderSubresourceFetcher(redirectedStylesheet(css).client, budget = budget)
                 .fetch("https://cdn.example/latest.css", emptyMap(), policy::allowsFetch)
