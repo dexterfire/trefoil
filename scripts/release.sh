@@ -12,13 +12,20 @@ CHECK=0; NOTES=""; VERSION=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --check) CHECK=1 ;;
-    --notes) shift; NOTES="${1:-}" ;;
+    --notes)
+      [ $# -ge 2 ] && [ -n "$2" ] || die "--notes requires a FILE argument"
+      shift; NOTES="$1" ;;
     -*) die "unknown option $1" ;;
     *) VERSION="$1" ;;
   esac
   shift
 done
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "usage: scripts/release.sh [--check] [--notes FILE] <x.y.z>"
+
+# Resolve the notes file now: the script changes directory later.
+if [ -n "$NOTES" ] && [ -f "$NOTES" ]; then
+  NOTES="$(cd "$(dirname "$NOTES")" && pwd)/$(basename "$NOTES")"
+fi
 
 ROOT="$(git rev-parse --show-toplevel)"
 ANDROID="$ROOT/android"
