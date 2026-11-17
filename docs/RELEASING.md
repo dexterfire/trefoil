@@ -1,5 +1,11 @@
 # Android releases
 
+Release `0.18.1` (`versionCode = 31`) makes the effort and permission pills icon-only in the New thread
+sheet and the thread composer, using the desktop app's icons: lock (Supervised), pen (Auto-accept edits),
+shield check (Auto) and crossed-out shield (Full access); menus show the same icons. In a thread the model
+pill no longer spells out the effort; a signal-bars pill next to it shows the level and opens the model sheet.
+Check mode switching and effort selection against a real environment on a device.
+
 Release `0.18.0` (`versionCode = 30`) adds a reasoning effort picker: the composer model pill opens a
 bottom sheet with models grouped by provider, reasoning choices and a Fast switch, and the pill shows the
 effort and Fast state. Model option changes are serialized. The New thread sheet collapses the project
