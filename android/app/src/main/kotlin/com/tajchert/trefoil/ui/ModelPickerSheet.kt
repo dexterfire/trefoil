@@ -39,9 +39,9 @@ internal fun instanceHeader(instanceId: String, providers: List<ProviderInstance
     providers.firstOrNull { it.instanceId == instanceId }?.displayName?.takeIf { it.isNotBlank() } ?: instanceId
 
 /** Resolved reasoning choice of [model], or null when it has no reasoning control or no value resolves. */
-internal fun reasoningChoice(model: ModelOption?, explicit: ModelOptionValues): ModelOptionChoice? {
+internal fun reasoningChoice(model: ModelOption?, explicit: ModelOptionValues, threadSelection: Boolean = false): ModelOptionChoice? {
     val d = model?.reasoning ?: return null
-    val value = model.resolvedOptionValue(d, explicit) as? String ?: return null
+    val value = model.resolvedOptionValue(d, explicit, threadSelection) as? String ?: return null
     return d.choices.firstOrNull { it.id == value } ?: ModelOptionChoice(value, value)
 }
 
@@ -51,9 +51,9 @@ internal fun fastModeOn(model: ModelOption?, explicit: ModelOptionValues): Boole
 }
 
 /** Composer pill text: `<model> · <effort>` plus ` · Fast` when Fast mode is on. */
-internal fun modelPillLabel(model: ModelOption?, explicit: ModelOptionValues): String {
+internal fun modelPillLabel(model: ModelOption?, explicit: ModelOptionValues, threadSelection: Boolean = false): String {
     if (model == null) return "Model"
-    val parts = listOfNotNull(model.label, reasoningChoice(model, explicit)?.label, if (fastModeOn(model, explicit)) "Fast" else null)
+    val parts = listOfNotNull(model.label, reasoningChoice(model, explicit, threadSelection)?.label, if (fastModeOn(model, explicit)) "Fast" else null)
     return parts.joinToString(" · ")
 }
 
@@ -66,7 +66,7 @@ internal fun hasModelOptions(model: ModelOption?): Boolean = model != null && (m
 @Composable
 internal fun ModelPickerSheet(
     models: List<ModelOption>, providers: List<ProviderInstance>, current: ModelOption?, explicit: ModelOptionValues, enabled: Boolean,
-    dismiss: () -> Unit, onSetModel: (ModelOption) -> Unit, onSetModelOption: (String, Any) -> Unit,
+    dismiss: () -> Unit, onSetModel: (ModelOption) -> Unit, onSetModelOption: (String, Any) -> Unit, threadSelection: Boolean = false,
 ) {
     val c = Tf.colors
     ModalBottomSheet(
@@ -76,7 +76,7 @@ internal fun ModelPickerSheet(
         contentWindowInsets = { WindowInsets(0) },
         dragHandle = { Box(Modifier.padding(top = 12.dp, bottom = 8.dp).size(36.dp, 4.dp).background(c.s3, RoundedCornerShape(2.dp))) },
     ) {
-        ModelPickerContent(models, providers, current, explicit, enabled, { dismiss() }, onSetModel, onSetModelOption, Modifier.navigationBarsPadding())
+        ModelPickerContent(models, providers, current, explicit, enabled, { dismiss() }, onSetModel, onSetModelOption, Modifier.navigationBarsPadding(), threadSelection)
     }
 }
 
@@ -84,7 +84,7 @@ internal fun ModelPickerSheet(
 @Composable
 internal fun ModelPickerContent(
     models: List<ModelOption>, providers: List<ProviderInstance>, current: ModelOption?, explicit: ModelOptionValues, enabled: Boolean,
-    closeSheet: () -> Unit, onSetModel: (ModelOption) -> Unit, onSetModelOption: (String, Any) -> Unit, modifier: Modifier = Modifier,
+    closeSheet: () -> Unit, onSetModel: (ModelOption) -> Unit, onSetModelOption: (String, Any) -> Unit, modifier: Modifier = Modifier, threadSelection: Boolean = false,
 ) {
     val c = Tf.colors
     // A pick on a thread lands asynchronously: keep showing the picked model's options until the selection catches up.
@@ -109,7 +109,7 @@ internal fun ModelPickerContent(
         }
         val reasoning = highlighted?.reasoning
         if (reasoning != null) {
-            val choice = reasoningChoice(highlighted, values)
+            val choice = reasoningChoice(highlighted, values, threadSelection)
             SectionLabel(reasoning.label.ifBlank { "Reasoning" }, Modifier.padding(start = 4.dp, top = 18.dp, bottom = 2.dp))
             reasoning.selectableChoices.forEach { option ->
                 CheckRow(option.label, option.description, option.id == choice?.id, optionsEnabled, "${reasoning.label} ${option.label}") { onSetModelOption(reasoning.id, option.id) }
