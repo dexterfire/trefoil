@@ -15,6 +15,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
@@ -430,7 +431,8 @@ internal class HtmlRenderPage(
             if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
                 // The sandboxed main frame reports an opaque origin, so the rule is `*` and only the main frame counts.
                 WebViewCompat.addWebMessageListener(webView, HTML_RENDER_BRIDGE, setOf("*")) { _, message, _, isMainFrame, _ ->
-                    if (active && isMainFrame) htmlRenderReportedHeight(message.data)?.let { onHeight(it) }
+                    // `data` throws for an ArrayBuffer message, and this callback runs on the main thread.
+                    if (active && isMainFrame && message.type == WebMessageCompat.TYPE_STRING) htmlRenderReportedHeight(message.data)?.let { onHeight(it) }
                 }
             }
         }

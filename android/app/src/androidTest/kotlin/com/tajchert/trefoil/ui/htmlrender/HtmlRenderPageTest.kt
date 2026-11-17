@@ -109,6 +109,18 @@ class HtmlRenderPageTest {
         assertEquals("static", title)
     }
 
+    @Test fun binaryBridgeMessagesAreIgnored() {
+        assumeTrue(WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_ARRAY_BUFFER))
+        val page = open(fixture)
+        val later = AtomicReference<Float?>(null)
+        instrumentation.runOnMainSync { page.onHeight = { later.set(it) } }
+        // Reading an ArrayBuffer message as a string throws inside the listener, on the main thread.
+        evaluate(page, "$HTML_RENDER_BRIDGE.postMessage(new ArrayBuffer(8));$HTML_RENDER_BRIDGE.postMessage('321');1")
+        val deadline = SystemClock.uptimeMillis() + 10_000
+        while (later.get() == null && SystemClock.uptimeMillis() < deadline) SystemClock.sleep(100)
+        assertEquals(321f, later.get())
+    }
+
     @Test fun webSocketIsBlocked() {
         val page = open(probe)
         evaluate(page, "try{var s=new WebSocket('wss://echo.example/');s.onopen=function(){window.__open=true};}catch(e){};1")
