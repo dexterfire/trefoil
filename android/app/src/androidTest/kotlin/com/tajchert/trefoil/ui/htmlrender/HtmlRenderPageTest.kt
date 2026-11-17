@@ -63,7 +63,8 @@ class HtmlRenderPageTest {
 
     @Test fun peerConnectionsAndWebTransportAreGone() {
         val page = open(probe)
-        listOf("RTCPeerConnection", "webkitRTCPeerConnection", "WebTransport").forEach { name ->
+        // `caches` too: Cache Storage is not cleared by WebStorage.deleteOrigin when the session is released.
+        listOf("RTCPeerConnection", "webkitRTCPeerConnection", "WebTransport", "caches").forEach { name ->
             assertEquals(name, "\"undefined\"", evaluate(page, "typeof window.$name"))
             // The page cannot delete or redefine the lockdown.
             assertEquals(name, "\"undefined\"", evaluate(page, "(function(){try{delete window.$name;}catch(e){}return typeof window.$name})()"))

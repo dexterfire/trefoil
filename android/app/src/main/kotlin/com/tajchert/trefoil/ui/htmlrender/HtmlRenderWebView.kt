@@ -74,12 +74,13 @@ internal const val HTML_RENDER_CSP = "connect-src https: data: blob:; form-actio
 
 /**
  * Removes WebRTC and WebTransport before any page script runs: ICE sends STUN/TURN to arbitrary (LAN) hosts and
- * WebTransport speaks QUIC, and neither passes `shouldInterceptRequest` or the CSP. Installed only through
+ * WebTransport speaks QUIC, and neither passes `shouldInterceptRequest` or the CSP. Cache Storage (`caches`) goes
+ * too: `WebStorage.deleteOrigin` does not clear it, so a released session would leave it on disk. Installed only through
  * document-start injection, which also runs in frames by itself. The globals become undefined and
  * non-configurable, and same-origin iframe windows reached through `contentWindow`/`contentDocument` are locked
  * the same way as a second layer.
  */
-internal const val HTML_RENDER_NO_RTC_SCRIPT = "(function(){var n=['RTCPeerConnection','webkitRTCPeerConnection','WebTransport'];" +
+internal const val HTML_RENDER_NO_RTC_SCRIPT = "(function(){var n=['RTCPeerConnection','webkitRTCPeerConnection','WebTransport','caches'];" +
     "function l(w){if(w)for(var i=0;i<n.length;i++){try{Object.defineProperty(w,n[i],{value:undefined,writable:false,enumerable:false,configurable:false});}catch(e){}}return w;}" +
     "l(window);var p=window.HTMLIFrameElement&&HTMLIFrameElement.prototype;if(!p)return;" +
     "var w=Object.getOwnPropertyDescriptor(p,'contentWindow'),d=Object.getOwnPropertyDescriptor(p,'contentDocument');" +
@@ -266,7 +267,7 @@ private object HtmlRenderCookies {
 }
 
 /**
- * DOM storage and Web SQL are off, but IndexedDB, Cache Storage and similar still work per origin, and every
+ * DOM storage, Web SQL and Cache Storage are off, but IndexedDB and similar still work per origin, and every
  * WebView session has its own random origin. A released session's origin is deleted. Once per process, every
  * other html render origin left on disk (older builds' shared or per-page origins, sessions lost to process
  * death) is deleted too; a live session's origin is never a leftover, and no new session can reuse an old one.

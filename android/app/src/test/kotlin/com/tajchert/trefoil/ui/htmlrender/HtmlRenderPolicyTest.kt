@@ -148,7 +148,7 @@ class HtmlRenderPolicyTest {
     }
 
     @Test fun noRtcScriptRemovesPeerConnectionsAndWebTransport() {
-        listOf("'RTCPeerConnection'", "'webkitRTCPeerConnection'", "'WebTransport'").forEach { assertTrue(it, HTML_RENDER_NO_RTC_SCRIPT.contains(it)) }
+        listOf("'RTCPeerConnection'", "'webkitRTCPeerConnection'", "'WebTransport'", "'caches'").forEach { assertTrue(it, HTML_RENDER_NO_RTC_SCRIPT.contains(it)) }
         assertTrue(HTML_RENDER_NO_RTC_SCRIPT.contains("Object.defineProperty(w,n[i],{value:undefined,writable:false,enumerable:false,configurable:false})"))
         assertTrue(HTML_RENDER_NO_RTC_SCRIPT.contains("l(window);"))
         // Same-origin iframe windows are locked when reached through the element.
