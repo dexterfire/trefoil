@@ -125,7 +125,7 @@ OUT="$ANDROID/app/build/outputs/apk/release"
 cp "$OUT/app-release.apk" "$OUT/trefoil-$VERSION.apk"
 (cd "$OUT" && shasum -a 256 "trefoil-$VERSION.apk" > "trefoil-$VERSION.apk.sha256")
 git add android/app/build.gradle.kts
-git commit -m "chore(release): $VERSION" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git commit -m "chore(release): $VERSION" -m "${RELEASE_TRAILER:-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>}"
 COMMITTED=1
 git tag "$TAG"
 git push --atomic origin main "$TAG"

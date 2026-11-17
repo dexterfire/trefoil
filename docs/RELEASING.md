@@ -161,7 +161,8 @@ The script checks, in order:
 
 It then commits `chore(release): X.Y.Z`, tags, runs `git push --atomic origin main vX.Y.Z` and
 `gh release create` with the APK and its SHA-256 file. If anything fails before the release commit exists, the
-version bump is reverted automatically.
+version bump is reverted automatically. Set `RELEASE_TRAILER` to replace the release commit's default
+`Co-Authored-By` trailer.
 
 `--check` is a dry run: it bumps, runs the gate and the signature check, then reverts. It can run on any branch,
 does not require `HEAD == origin/main`, and never commits, tags, pushes or publishes. Run it first.
