@@ -423,8 +423,8 @@ class T3Client(
         shellReady = false; threadReady = false; authorized = false; previewAuthorized = false
         resetRoute()
         resetScreens()
-        undoPlan = null
-        update { it.copy(connection = ConnectionStatus.Error, canWrite = false, canRead = false, canReadUsage = false, busy = false, error = message, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
+        undoPlan = null; pendingModelSelections = null
+        update { it.copy(connection =ConnectionStatus.Error, canWrite = false, canRead = false, canReadUsage = false, busy = false, error = message, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
         pending.values.forEach { it.completeExceptionally(IllegalStateException(message)) }; pending.clear()
         streams.clear(); heartbeat?.cancel(); socket?.cancel(); socket = null
     }
@@ -440,8 +440,8 @@ class T3Client(
         pending.clear(); streams.clear(); threadSubscription = null; shellReady = false; threadReady = false; authorized = false; previewAuthorized = false
         resetRoute()
         resetScreens()
-        undoPlan = null
-        update { it.copy(connection = ConnectionStatus.Disconnected, canWrite = false, canRead = false, canReadUsage = false, busy = false, error = reason ?: it.error, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
+        undoPlan = null; pendingModelSelections = null
+        update { it.copy(connection =ConnectionStatus.Disconnected, canWrite = false, canRead = false, canReadUsage = false, busy = false, error = reason ?: it.error, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
     }
 
     private fun usageEnvironment(): SavedEnvironment {
@@ -619,6 +619,7 @@ class T3Client(
             selectedModel = selectedModel(thread["modelSelection"] as? JsonObject, it.models),
             selectedModelOptions = modelOptionValues(thread.obj("modelSelection")["options"]),
             selectedProviderLocked = providerLocked(value)) }
+        reconcilePendingModelSelections(threadId)
     }
     /** T3 `thread.modelSelection {instanceId, model}`; prefers the server catalog entry for its label. */
     private fun selectedModel(selection: JsonObject?, models: List<ModelOption>): ModelOption? {
@@ -937,38 +938,116 @@ class T3Client(
      * provider instance ([ClientState.selectedProviderLocked]).
      */
     override suspend fun setModel(model: ModelOption) {
-        dispatch("thread.model-selection.set", "model change") {
-            val current = state.value
+        dispatchModelSelection("model change") { current, base, pending ->
             val selected = current.models.firstOrNull { it.instanceId == model.instanceId && it.model == model.model } ?: error("Choose a server-provided model")
-            val selection = projection.obj("thread").obj("modelSelection")
-            val currentInstance = selection.string("instanceId").ifBlank { current.selectedModel?.instanceId.orEmpty() }
-            check(!current.selectedProviderLocked || currentInstance.isBlank() || currentInstance == selected.instanceId) {
+            check(!current.selectedProviderLocked || base.instanceId.isBlank() || base.instanceId == selected.instanceId) {
                 "This conversation has started and its provider cannot change. Choose a model from the same provider."
             }
-            // Either wire form is passed through unchanged.
-            val options = selection["options"]?.takeIf { (it is JsonObject || it is JsonArray) && selection.string("instanceId") == selected.instanceId && selection.string("model") == selected.model }
-            buildJsonObject { put("modelSelection", buildJsonObject {
+            val sameModel = base.instanceId == selected.instanceId && base.model == selected.model
+            val wire = projection.obj("thread").obj("modelSelection")["options"]
+            // Without an accepted change still pending, either projected wire form is passed through unchanged.
+            val options: JsonElement? = when {
+                !sameModel -> null
+                !pending -> wire?.takeIf { it is JsonObject || it is JsonArray }
+                base.options.isNotEmpty() -> modelOptionsJson(base.options)
+                else -> null
+            }
+            ModelSelection(selected.instanceId, selected.model, if (sameModel) base.options else emptyMap()) to buildJsonObject { put("modelSelection", buildJsonObject {
                 put("instanceId", selected.instanceId); put("model", selected.model); options?.let { put("options", it) }
             }) }
         }
     }
     /**
-     * Same instance and model with the thread's options merged: [id] gets [value], the others stay.
-     * Sent in the canonical array form; an id or value the model does not offer is refused locally.
+     * Same instance and model with the thread's options merged: [id] gets [value], the others stay
+     * unless the current catalog no longer offers them. Sent in the canonical array form; an id or
+     * value the model does not offer is refused locally.
      */
     override suspend fun setModelOption(id: String, value: Any) {
-        dispatch("thread.model-selection.set", "model option change") {
-            val current = state.value
-            val selection = projection.obj("thread").obj("modelSelection")
-            val instanceId = selection.string("instanceId").ifBlank { current.selectedModel?.instanceId.orEmpty() }
-            val modelId = selection.string("model").ifBlank { current.selectedModel?.model.orEmpty() }
-            check(instanceId.isNotBlank() && modelId.isNotBlank()) { "This conversation has no model yet" }
-            val model = current.models.firstOrNull { it.instanceId == instanceId && it.model == modelId } ?: error("The conversation's model is not offered by this server")
+        dispatchModelSelection("model option change") { current, base, _ ->
+            check(base.instanceId.isNotBlank() && base.model.isNotBlank()) { "This conversation has no model yet" }
+            val model = current.models.firstOrNull { it.instanceId == base.instanceId && it.model == base.model } ?: error("The conversation's model is not offered by this server")
             model.requireOptionValue(id, value)
-            val options = modelOptionValues(selection["options"]) + (id to value)
-            buildJsonObject { put("modelSelection", buildJsonObject {
+            val options = model.validOptions(base.options) + (id to value)
+            ModelSelection(model.instanceId, model.model, options) to buildJsonObject { put("modelSelection", buildJsonObject {
                 put("instanceId", model.instanceId); put("model", model.model); put("options", modelOptionsJson(options))
             }) }
+        }
+    }
+    /** A thread model selection compared by value: instance, model, and explicit options. */
+    private data class ModelSelection(val instanceId: String, val model: String, val options: ModelOptionValues)
+    /**
+     * Model selections T3 accepted for one connection and thread selection that the projection does
+     * not show yet, oldest first. The next model-selection change builds on the newest one instead of
+     * the stale projection. It is only ever a base for a new user-initiated change, never resent.
+     * [base] is the projected selection they were built on.
+     */
+    private class PendingModelSelections(val epoch: Long, val selection: Long, val threadId: String, var base: ModelSelection, val accepted: MutableList<ModelSelection>)
+    private var pendingModelSelections: PendingModelSelections? = null
+    private val modelSelectionMutex = Mutex()
+    private fun projectedModelSelection(current: ClientState = state.value): ModelSelection {
+        val selection = projection.obj("thread").obj("modelSelection")
+        return ModelSelection(
+            selection.string("instanceId").ifBlank { current.selectedModel?.instanceId.orEmpty() },
+            selection.string("model").ifBlank { current.selectedModel?.model.orEmpty() },
+            modelOptionValues(selection["options"]),
+        )
+    }
+    private fun livePendingModelSelections(): PendingModelSelections? = pendingModelSelections?.takeIf {
+        it.epoch == generation && it.selection == threadGeneration && it.threadId == state.value.selectedThreadId && it.accepted.isNotEmpty()
+    }
+    /**
+     * Drops pending selections the projection now shows (and older ones). A projection that shows
+     * neither them nor their base means another change landed: the overlay is discarded.
+     */
+    private fun reconcilePendingModelSelections(threadId: String?) {
+        val pending = pendingModelSelections ?: return
+        if (pending.epoch != generation || pending.selection != threadGeneration || pending.threadId != threadId) { pendingModelSelections = null; return }
+        val projected = projectedModelSelection()
+        val index = pending.accepted.lastIndexOf(projected)
+        if (index >= 0) {
+            repeat(index + 1) { pending.accepted.removeAt(0) }
+            pending.base = projected
+            if (pending.accepted.isEmpty()) pendingModelSelections = null
+        } else if (projected != pending.base) pendingModelSelections = null
+    }
+    /**
+     * Model-selection changes run one at a time: each builds its payload from the newest accepted
+     * selection ([build] gets that base and whether it is a pending one), so overlapping changes never
+     * drop each other. Failures follow [mutation]; a rejection records nothing, and an uncertain
+     * outcome fails the session, which discards the overlay with its connection generation.
+     */
+    private suspend fun dispatchModelSelection(subject: String, build: (ClientState, ModelSelection, Boolean) -> Pair<ModelSelection, JsonObject>) = modelSelectionMutex.withLock {
+        mutating {
+            awaitFreshThread()
+            data class Prepared(val epoch: Long, val selection: Long, val threadId: String, val projected: ModelSelection, val sent: ModelSelection, val payload: JsonObject)
+            val prepared = synchronized(lifecycleLock) {
+                requireWrite()
+                val current = state.value
+                val threadId = current.selectedThreadId ?: error("Select a thread")
+                val projected = projectedModelSelection(current)
+                val pending = livePendingModelSelections()
+                val (sent, extra) = build(current, pending?.accepted?.last() ?: projected, pending != null)
+                Prepared(generation, threadGeneration, threadId, projected, sent, command("thread.model-selection.set", extra))
+            }
+            try { mutation(prepared.epoch, subject) { rpc("orchestration.dispatchCommand", prepared.payload, prepared.epoch) } }
+            catch (error: Throwable) {
+                // After a rejection the next change starts again from the projection.
+                synchronized(lifecycleLock) { if (prepared.epoch == generation) pendingModelSelections = null }
+                throw error
+            }
+            synchronized(lifecycleLock) {
+                // Recorded only while the same session still shows the selection it was built on.
+                if (prepared.epoch == generation && prepared.selection == threadGeneration && state.value.selectedThreadId == prepared.threadId) {
+                    val projected = projectedModelSelection()
+                    val pending = livePendingModelSelections()
+                    when {
+                        projected == prepared.sent -> pendingModelSelections = null
+                        projected != prepared.projected -> pendingModelSelections = null
+                        pending != null -> pending.accepted += prepared.sent
+                        else -> pendingModelSelections = PendingModelSelections(prepared.epoch, prepared.selection, prepared.threadId, projected, mutableListOf(prepared.sent))
+                    }
+                }
+            }
         }
     }
     private var undoPlan: Triple<SettlementUndo, Long, List<Pair<ThreadAction, String?>>>? = null
