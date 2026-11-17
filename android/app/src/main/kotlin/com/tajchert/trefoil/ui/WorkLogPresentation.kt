@@ -393,14 +393,20 @@ private val errorTag = Regex("""(?:Error|Failure)$""")
 /** Port of T3 `t3ToolResultIndicatesFailure`: MCP errors can be returned as data even when the call completed. */
 private fun t3ResultIndicatesFailure(output: String?): Boolean {
     if (output == null) return false
-    // Truncated JSON never parses, so an oversized result is checked for the failure markers in its head and tail instead
-    // (MCP puts `isError`/`_tag` at the edges of the envelope). Cost stays bounded by 2 * maxScannedOutput.
-    if (output.length > maxScannedOutput) return t3FailureMarker.containsMatchIn(output.take(maxScannedOutput)) || t3FailureMarker.containsMatchIn(output.takeLast(maxScannedOutput))
+    // An oversized result is not parsed. Only its two edges are checked, for a failure flag that provably belongs to the
+    // result envelope: the first key of the opening object, or a key closed by the final brace. Flags nested in payload data
+    // (a successful result carrying somebody's `_tag: "SyntaxError"`) are ignored, as the structured parser ignores them.
+    if (output.length > maxScannedOutput) return t3FailureHead.containsMatchIn(output.take(t3EnvelopeEdge)) || t3FailureTail.containsMatchIn(output.takeLast(t3EnvelopeEdge))
     return output.trim().takeIf { it.isNotEmpty() }?.let { runCatching { Json.parseToJsonElement(it) }.getOrNull() }?.let { t3ResultFailed(it, 1) } == true
 }
 
+private const val t3EnvelopeEdge = 512
 /** A failure flag in raw (possibly string-escaped) JSON text: `"isError":true`, `\"is_error\":true` or an `…Error`/`…Failure` `_tag`. */
-private val t3FailureMarker = Regex("""\\*"(?:isError|is_error)\\*"\s*:\s*true\b|\\*"_tag\\*"\s*:\s*\\*"[A-Za-z]*(?:Error|Failure)\\*"""")
+private const val t3FailureFlag = """(?:\\*"(?:isError|is_error)\\*"\s*:\s*true\b|\\*"_tag\\*"\s*:\s*\\*"[A-Za-z]*(?:Error|Failure)\\*")"""
+/** The flag as the first key of the envelope, which may be JSON embedded in a text content block (`[{"type":"text","text":"{…`). */
+private val t3FailureHead = Regex("""^\s*(?:\[\s*\{\s*"type"\s*:\s*"text"\s*,\s*"text"\s*:\s*")?\s*\{\s*""" + t3FailureFlag)
+/** The flag as the last key of the envelope: closed by the final brace, or by the embedded envelope's brace before `"}]`. */
+private val t3FailureTail = Regex(t3FailureFlag + """\s*\}\s*(?:"\s*\}\s*\])?\s*$""")
 
 private fun t3ResultFailed(value: JsonElement?, depth: Int): Boolean {
     if (value == null || depth > 4) return false

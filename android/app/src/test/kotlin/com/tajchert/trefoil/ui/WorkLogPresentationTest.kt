@@ -94,6 +94,10 @@ class WorkLogPresentationTest {
         // Large successful results stay successful.
         assertFalse(preview(output = """{"content":[{"type":"text","text":"$filler"}],"isError":false}""").displayFailure)
         assertFalse(preview(output = """{"content":[{"type":"text","text":"$filler"}]}""").displayFailure)
+        // Failure-looking fields inside the payload are data, not the envelope's verdict.
+        assertFalse(preview(output = """{"isError":false,"structuredContent":{"value":{"_tag":"SyntaxError"}},"pad":"$filler"}""").displayFailure)
+        assertFalse(preview(output = """{"isError":false,"pad":"$filler","structuredContent":{"value":{"_tag":"SyntaxError","isError":true}}}""").displayFailure)
+        assertFalse(preview(output = """{"content":[{"type":"text","text":"$filler \"isError\":true"}],"isError":false}""").displayFailure)
     }
 
     @Test fun commandProgramNameSkipsNavigationEnvAndWrappers() {
