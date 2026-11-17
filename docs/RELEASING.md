@@ -1,5 +1,14 @@
 # Android releases
 
+Release `0.17.2` (`versionCode = 29`) is a review-fix release. HTML render pages now run sandboxed on a
+random origin per session, without WebRTC, WebTransport, Cache Storage, IndexedDB or cookies, and stay
+script-free if the lockdown script cannot be injected; their subresource fetches refuse non-public literal,
+NAT64 and 6to4 hosts and share a 32 MiB memory budget. The render card offers Retry when offline, keeps its
+height while scrolling and stays full screen across rotation. The work log flags stale running entries,
+bounds long labels and detects large failed tool results; keep-alive reconnects at once on resume. Known
+gap: `<link rel="preconnect">` still opens sockets outside the fetcher (see `docs/THREAD_HTML_RENDERS.md`).
+Run `:app:connectedDebugAndroidTest` and check an HTML render against a real environment on a device.
+
 Release `0.17.1` (`versionCode = 28`) shows live turns like T3 Code: a ticking "Working for X" row at the
 top of the active turn (it becomes the "Worked for X" fold in place), each subagent as one inline row
 (avatar, current activity, status and elapsed time, tap to open), and a single "Thinking" row at the bottom,
