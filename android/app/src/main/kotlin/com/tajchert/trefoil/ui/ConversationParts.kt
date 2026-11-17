@@ -147,9 +147,13 @@ internal fun WorkGroup(activities: List<ToolActivity>, live: Boolean = false, ca
             val summary = remember(activities) { summarizeWorkGroup(visible) }
             var expanded by rememberSaveable(activities.first().id) { mutableStateOf(initiallyExpanded) }
             val running = if (live) visible.lastOrNull { it.isRunning } else null
-            val label = running?.let(::liveWorkLabel) ?: summary.label
+            // A running entry outside the live run has an unknown outcome; the header must say so even while the group is collapsed.
+            val stale = visible.any { !live && it.isRunning }
+            val base = running?.let(::liveWorkLabel) ?: summary.label
+            val label = if (stale) "$base · outcome unknown" else base
+            val description = listOfNotNull(if (summary.hasFailure) "tool call failed" else null, if (stale) "outcome unknown" else null)
             WorkRow(summary.icon.vector, c.muted.copy(alpha = .7f), label, c.muted, expanded, { expanded = !expanded }, if (expanded) "Collapse work details" else "Expand work details",
-                spinner = running != null, description = if (summary.hasFailure) "$label, tool call failed" else null)
+                spinner = running != null, description = if (description.isEmpty()) null else (listOf(base) + description).joinToString(", "))
             if (expanded) Column(Modifier.padding(start = 16.dp)) {
                 visible.forEach { activity -> key(activity.id) { WorkEntry(activity, single = false, live = live, canLoadActivity = canLoadActivity, onLoadActivity = onLoadActivity) } }
             }

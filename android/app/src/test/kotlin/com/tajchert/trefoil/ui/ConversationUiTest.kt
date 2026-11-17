@@ -59,6 +59,28 @@ class ConversationUiTest {
         compose.onAllNodes(clickLabeled("Expand details")).assertCountEquals(2)
     }
 
+    @Test fun staleRunningGroupSignalsUnknownOutcomeOnTheCollapsedHeader() {
+        val done = ToolActivity("one", "Run", kind = "command_execution", status = "completed", input = "first", exitCode = 0)
+        val stale = ToolActivity("two", "Run", kind = "command_execution", status = "running", input = "second")
+        compose.setContent { MaterialTheme { WorkGroup(listOf(done, stale)) } }
+        compose.onNodeWithText("Ran 2 commands · outcome unknown").assertExists()
+        compose.onNode(hasContentDescription("Ran 2 commands, outcome unknown")).assertExists()
+    }
+
+    @Test fun liveRunningGroupHasNoUnknownOutcomeSignal() {
+        val done = ToolActivity("one", "Run", kind = "command_execution", status = "completed", input = "first", exitCode = 0)
+        val running = ToolActivity("two", "Run", kind = "command_execution", status = "running", input = "second")
+        compose.setContent { MaterialTheme { WorkGroup(listOf(done, running), live = true) } }
+        compose.onNode(hasContentDescription("outcome unknown", substring = true)).assertDoesNotExist()
+        compose.onNodeWithText("outcome unknown", substring = true).assertDoesNotExist()
+    }
+
+    @Test fun staleRunningSingleEntryStillSignalsUnknownOutcome() {
+        val stale = ToolActivity("two", "Run", kind = "command_execution", status = "running", input = "second")
+        compose.setContent { MaterialTheme { WorkGroup(listOf(stale)) } }
+        compose.onNodeWithText("· outcome unknown").assertExists()
+    }
+
     @Test fun subagentFooterTracksLiveAgentsAndOpensSheet() {
         val agent = Subagent("a", "fixture", status = "running", driver = "codex")
         val state = mutableStateOf(ClientState(selectedThreadId = "fixture", subagents = listOf(agent)))
