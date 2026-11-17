@@ -104,6 +104,20 @@ class HtmlRenderLoaderTest {
         assertEquals(html, loader.cached(ref, "second", "thread"))
     }
 
+    @Test fun decodesOffTheCallingThread() = runBlocking {
+        val callingThread = Thread.currentThread()
+        var decodeThread: Thread? = null
+        val dispatcher = object : kotlinx.coroutines.CoroutineDispatcher() {
+            override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
+                Thread { decodeThread = Thread.currentThread(); block.run() }.start()
+            }
+        }
+        val loader = HtmlRenderLoader(ImageClient(html.toByteArray()), HtmlRenderLoader.MAX_SOURCE_BYTES, HtmlRenderLoader.CACHE_BYTES, null, dispatcher)
+        assertEquals(html, (loader.load(ref, "fixture", "thread") as HtmlRenderFetch.Ready).html)
+        assertNotNull(decodeThread)
+        assertNotSame(callingThread, decodeThread)
+    }
+
     @Test fun networkAccessReadsLiveClientState() {
         val client = ImageClient(ByteArray(0))
         val access = HtmlRenderLoader(client).networkAccess("fixture", "thread")

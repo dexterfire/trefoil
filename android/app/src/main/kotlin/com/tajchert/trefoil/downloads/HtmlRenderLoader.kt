@@ -12,10 +12,13 @@ import java.io.IOException
 import java.io.OutputStream
 import java.net.URI
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 
 /** Result of fetching an `html_render` page. Never carries a URL, title, or attachment id in `toString`. */
 sealed interface HtmlRenderFetch {
@@ -39,6 +42,7 @@ class HtmlRenderLoader internal constructor(
     private val maxSourceBytes: Long,
     private val cacheBytes: Int,
     private val subresources: HtmlRenderSubresourceFetcher?,
+    private val decodeDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) {
     constructor(client: TrefoilClient, maxSourceBytes: Long = MAX_SOURCE_BYTES, cacheBytes: Int = CACHE_BYTES) :
         this(client, maxSourceBytes, cacheBytes, null)
@@ -77,8 +81,9 @@ class HtmlRenderLoader internal constructor(
             client.downloadFile(reference.file, sink, environmentId, threadId)
             currentCoroutineContext().ensureActive()
             if (!isCurrent(environmentId, threadId)) return HtmlRenderFetch.NotCurrent
-            val bytes = sink.bytes()
-            val html = bytes.toString(Charsets.UTF_8)
+            // Copying up to 10 MiB and decoding it must not run on the main thread this is usually collected on.
+            val html = withContext(decodeDispatcher) { sink.bytes().toString(Charsets.UTF_8) }
+            if (!isCurrent(environmentId, threadId)) return HtmlRenderFetch.NotCurrent
             val cost = html.length.toLong() * 2
             // A page over the cap is shown but not cached: LruCache would evict everything else to make room.
             if (cost <= cacheBytes) synchronized(cache) { cache.put(key(reference, environmentId, threadId), Page(html, cost.toInt())) }
