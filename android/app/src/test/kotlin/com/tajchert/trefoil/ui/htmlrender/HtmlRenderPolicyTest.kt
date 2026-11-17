@@ -107,12 +107,37 @@ class HtmlRenderPolicyTest {
 
     @Test fun servedDocumentAppendsOnlyTheHeightScript() {
         val html = "<!doctype html><p>Fixture</p>"
-        val served = htmlRenderDocument(html).toString(Charsets.UTF_8)
+        val served = htmlRenderDocument(html, rtcLockdown = false).toString(Charsets.UTF_8)
         assertTrue(served.startsWith(html))
         assertEquals(HTML_RENDER_HEIGHT_SCRIPT, served.removePrefix(html))
         assertTrue(HTML_RENDER_HEIGHT_SCRIPT.contains("window.$HTML_RENDER_BRIDGE"))
         assertTrue(HTML_RENDER_CSP.contains("connect-src https: data: blob:"))
         assertTrue(HTML_RENDER_CSP.contains("form-action 'none'"))
+    }
+
+    @Test fun noRtcScriptRemovesPeerConnectionsAndWebTransport() {
+        listOf("'RTCPeerConnection'", "'webkitRTCPeerConnection'", "'WebTransport'").forEach { assertTrue(it, HTML_RENDER_NO_RTC_SCRIPT.contains(it)) }
+        assertTrue(HTML_RENDER_NO_RTC_SCRIPT.contains("Object.defineProperty(w,n[i],{value:undefined,writable:false,enumerable:false,configurable:false})"))
+        assertTrue(HTML_RENDER_NO_RTC_SCRIPT.contains("l(window);"))
+        // Same-origin iframe windows are locked when reached through the element.
+        assertTrue(HTML_RENDER_NO_RTC_SCRIPT.contains("'contentWindow'"))
+        assertTrue(HTML_RENDER_NO_RTC_SCRIPT.contains("'contentDocument'"))
+        assertFalse(HTML_RENDER_NO_RTC_SCRIPT.contains("</script"))
+    }
+
+    @Test fun fallbackInlinesNoRtcScriptBeforeAnyPageScript() {
+        val script = "<script>$HTML_RENDER_NO_RTC_SCRIPT</script>"
+        val withDoctype = "<!DOCTYPE html><html><head><script>new RTCPeerConnection()</script></head></html>"
+        val served = htmlRenderDocument(withDoctype, rtcLockdown = true).toString(Charsets.UTF_8)
+        // After the doctype (standards mode kept), before the page's own script.
+        assertEquals("<!DOCTYPE html>$script<html><head><script>new RTCPeerConnection()</script></head></html>$HTML_RENDER_HEIGHT_SCRIPT", served)
+        val commented = "﻿ <!-- a -->\n<!doctype html ><p>x</p>"
+        assertEquals("﻿ <!-- a -->\n<!doctype html >$script<p>x</p>$HTML_RENDER_HEIGHT_SCRIPT", htmlRenderDocument(commented, rtcLockdown = true).toString(Charsets.UTF_8))
+        val bare = "<script>new RTCPeerConnection()</script><p>x</p>"
+        assertEquals("$script$bare$HTML_RENDER_HEIGHT_SCRIPT", htmlRenderDocument(bare, rtcLockdown = true).toString(Charsets.UTF_8))
+        // A doctype later in the document is not a doctype: the script still goes first.
+        val late = "<p>x</p><!doctype html>"
+        assertTrue(htmlRenderDocument(late, rtcLockdown = true).toString(Charsets.UTF_8).startsWith(script))
     }
 
     @Test fun cspBlocksFramesAndWorkers() {

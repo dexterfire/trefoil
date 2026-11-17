@@ -55,8 +55,33 @@ internal const val HTML_RENDER_HEIGHT_SCRIPT = "<script>(function(){var p=window
 internal const val HTML_RENDER_CSP = "connect-src https: data: blob:; form-action 'none'; object-src 'none'; " +
     "frame-src 'none'; child-src 'none'; worker-src 'none'"
 
-/** The appended height script is the only change to the agent's (already bootstrapped) document. */
-internal fun htmlRenderDocument(html: String): ByteArray = (html + HTML_RENDER_HEIGHT_SCRIPT).toByteArray(Charsets.UTF_8)
+/**
+ * Removes WebRTC and WebTransport before any page script runs: ICE sends STUN/TURN to arbitrary (LAN) hosts and
+ * WebTransport speaks QUIC, and neither passes `shouldInterceptRequest` or the CSP. The globals become undefined
+ * and non-configurable, and same-origin iframe windows reached through `contentWindow`/`contentDocument` are
+ * locked the same way (document-start injection also runs in frames by itself).
+ */
+internal const val HTML_RENDER_NO_RTC_SCRIPT = "(function(){var n=['RTCPeerConnection','webkitRTCPeerConnection','WebTransport'];" +
+    "function l(w){if(w)for(var i=0;i<n.length;i++){try{Object.defineProperty(w,n[i],{value:undefined,writable:false,enumerable:false,configurable:false});}catch(e){}}return w;}" +
+    "l(window);var p=window.HTMLIFrameElement&&HTMLIFrameElement.prototype;if(!p)return;" +
+    "var w=Object.getOwnPropertyDescriptor(p,'contentWindow'),d=Object.getOwnPropertyDescriptor(p,'contentDocument');" +
+    "if(w&&w.get&&w.configurable)Object.defineProperty(p,'contentWindow',{get:function(){return l(w.get.call(this));},enumerable:w.enumerable,configurable:false});" +
+    "if(d&&d.get&&d.configurable)Object.defineProperty(p,'contentDocument',{get:function(){var x=d.get.call(this);if(x)l(x.defaultView);return x;},enumerable:d.enumerable,configurable:false});})();"
+
+private val HTML_RENDER_DOCTYPE = Regex("^\\uFEFF?\\s*(?:<!--.*?-->\\s*)*<!doctype[^>]*>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+
+/**
+ * The served bytes: the agent's (already bootstrapped) document plus the appended height script. Without
+ * document-start injection ([rtcLockdown]), [HTML_RENDER_NO_RTC_SCRIPT] goes first as an inline script, after
+ * any doctype so the page keeps standards mode.
+ */
+internal fun htmlRenderDocument(html: String, rtcLockdown: Boolean): ByteArray {
+    val body = if (!rtcLockdown) html else {
+        val doctypeEnd = HTML_RENDER_DOCTYPE.find(html)?.range?.last?.plus(1) ?: 0
+        html.substring(0, doctypeEnd) + "<script>$HTML_RENDER_NO_RTC_SCRIPT</script>" + html.substring(doctypeEnd)
+    }
+    return (body + HTML_RENDER_HEIGHT_SCRIPT).toByteArray(Charsets.UTF_8)
+}
 
 /** Parses a height message from the page; anything else is ignored. */
 internal fun htmlRenderReportedHeight(data: String?): Float? =
@@ -196,7 +221,13 @@ internal class HtmlRenderPage(
     var onHeight: (Float) -> Unit = {}
     var onOpenLink: (String) -> Unit = {}
     var onFailure: () -> Unit = {}
-    @Volatile private var documentBytes = htmlRenderDocument(html)
+    /** True when [HTML_RENDER_NO_RTC_SCRIPT] runs at document start; otherwise it is inlined into the document. */
+    private val rtcLockedAtDocumentStart = runCatching {
+        WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT).also { supported ->
+            if (supported) WebViewCompat.addDocumentStartJavaScript(webView, HTML_RENDER_NO_RTC_SCRIPT, setOf(HTML_RENDER_ORIGIN))
+        }
+    }.getOrDefault(false)
+    @Volatile private var documentBytes = htmlRenderDocument(html, rtcLockdown = !rtcLockedAtDocumentStart)
     @Volatile private var active = true
     /** This WebView's remote fetches: bounded, tracked, and cancelled on release or loss of context. */
     private val fetches = network.fetcher?.let(::HtmlRenderFetchSession)
