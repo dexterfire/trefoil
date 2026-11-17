@@ -172,6 +172,7 @@ class PresentationProjectionTest {
           {"id":"file","type":"file_change","fileName":"Main.kt","diffStr":"+hello","oldStr":"old","newStr":"new"},
           {"id":"search","type":"file_search","pattern":"hello","results":[{"fileName":"Main.kt","line":7,"preview":"hello"}]},
           {"id":"error","type":"error","failure":{"class":"unknown","message":"Process failed","code":null,"retryable":false}},
+          {"id":"agent","type":"subagent","subagentId":"sub-1","title":"Explore","status":"running","prompt":"Look around"},
           {"id":"a","type":"assistant_message","messageId":"answer","providerTurnId":"turn","runId":"run"}
         ]}""")
         val command = toolActivities(projection).first()
@@ -188,6 +189,8 @@ class PresentationProjectionTest {
         assertTrue(toolActivities(projection)[2].searchResults.orEmpty().contains("Main.kt"))
         assertEquals("hello", toolActivities(projection)[2].input)
         assertEquals("Process failed", toolActivities(projection)[3].failure)
+        assertNull(toolActivities(projection)[3].subagentId)
+        assertEquals("sub-1", toolActivities(projection)[4].subagentId)
         assertEquals("retry", conversationMessages(projection).single().runAttemptId)
     }
 

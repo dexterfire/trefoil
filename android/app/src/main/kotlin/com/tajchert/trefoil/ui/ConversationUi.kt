@@ -54,6 +54,8 @@ internal fun Conversation(
     /** "Subagent of <parent title>" header subtitle for subagent children. */
     subtitle: String? = null,
     onOpenAgents: (() -> Unit)? = null,
+    /** Opens a subagent's local child thread from its inline timeline row. */
+    onOpenThread: ((String) -> Unit)? = null,
     /** Other threads waiting for the user; shown as a badge on the back arrow. */
     otherNeedsYou: Int = 0,
 ) {
@@ -111,6 +113,10 @@ internal fun Conversation(
         foldConversationTimeline(conversationTimeline(state.messages, state.activities), state.activeRunId, state.runs)
     }
     val roster = remember(state.runs, state.subagents, draft) { if (draft == null) subagentRoster(state.runs, state.subagents) else null }
+    val streaming = state.messages.any { it.streaming }
+    val liveTurn = remember(entries, state.activeRunId, roster, state.subagents, streaming, state.requests.isNotEmpty()) {
+        liveTurnLayout(entries, state.activeRunId, roster, state.subagents, streaming, state.requests.isNotEmpty())
+    }
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val nearBottom by remember { derivedStateOf { !list.canScrollForward || (list.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= list.layoutInfo.totalItemsCount - 2 } }
@@ -118,7 +124,7 @@ internal fun Conversation(
     LaunchedEffect(list) {
         snapshotFlow { list.isScrollInProgress to nearBottom }.collect { (scrolling, bottom) -> if (scrolling) following = bottom }
     }
-    LaunchedEffect(entries, state.requests, state.activeRunId) {
+    LaunchedEffect(entries, state.requests, state.activeRunId, liveTurn) {
         if (following) {
             // Let LazyColumn measure new rows before scrolling to the trailing anchor.
             withFrameNanos { }
@@ -145,6 +151,8 @@ internal fun Conversation(
     val workStartedAt = thread?.let(::threadWorkStartedAt)?.let(::validThreadInstant)
     val clock = rememberThreadWorkClock(state.activeRunId != null && workStartedAt != null)
     val workLabel = "Working" + if (workStartedAt != null) " ${formatWorkDuration(clock - workStartedAt)}" else ""
+    val activeRun = state.runs.firstOrNull { it.id == state.activeRunId }
+    val turnStartedAt = workStartedAt ?: validThreadInstant(activeRun?.workStartedAt ?: activeRun?.startedAt)
     CompositionLocalProvider(LocalFileDownloadUi provides fileDownloadUi, LocalContentColor provides c.text) {
         Column(Modifier.fillMaxSize()) {
             ConversationHeader(
@@ -155,34 +163,36 @@ internal fun Conversation(
             Box(Modifier.weight(1f)) {
                 LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     if (state.busy && entries.isEmpty()) item { LinearProgressIndicator(Modifier.fillMaxWidth(), color = c.accent, trackColor = c.s2) }
-                    if (!state.busy && entries.isEmpty()) item {
+                    if (!state.busy && entries.isEmpty() && state.activeRunId == null) item {
                         Column(Modifier.fillMaxWidth().padding(vertical = 56.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                             TrefoilMark(Modifier.size(40.dp))
                             Text(if (draft != null) "New thread in ${project?.title ?: "this project"}" else "Nothing here yet", Modifier.padding(top = 18.dp), style = MaterialTheme.typography.titleMedium)
                             Text(if (draft != null) "Your first message starts the thread." else "Send a message to get started.", Modifier.padding(top = 6.dp), style = TrefoilType.preview, color = c.muted)
                         }
                     }
-                    items(entries, key = { it.key }) { entry ->
+                    val entryRow: @Composable (ConversationEntry) -> Unit = { entry ->
                         when (entry) {
                             is ConversationEntry.Message -> MessageRow(entry.message, entry.stacked,
                                 showMetadata = if (entry.message.role == "user") {
                                     (entries.getOrNull(entries.indexOf(entry) + 1) as? ConversationEntry.Message)?.message?.role != "user"
                                 } else !entry.message.streaming && (state.activeRunId == null || (entry.message.runId != null && entry.message.runId != state.activeRunId)) &&
                                     entry.message.id == state.messages.lastOrNull { it.role == "assistant" && it.runId == entry.message.runId }?.id)
-                            is ConversationEntry.Activities -> WorkGroup(entry.activities, live = state.activeRunId != null && entry.activities.first().runId == state.activeRunId, canLoadActivity = canLoadActivity, onLoadActivity = onLoadActivity)
+                            is ConversationEntry.Activities -> if (entry.isSubagentGroup) SubagentActivityRows(entry.activities, state.subagents, onOpenThread, onOpenAgents)
+                                else WorkGroup(entry.activities, live = state.activeRunId != null && entry.activities.first().runId == state.activeRunId, canLoadActivity = canLoadActivity, onLoadActivity = onLoadActivity)
                             is ConversationEntry.HtmlRender -> HtmlRenderRow(entry.activity)
-                            is ConversationEntry.Work -> CompletedWork(entry, canLoadActivity, onLoadActivity)
+                            is ConversationEntry.Work -> CompletedWork(entry, canLoadActivity, onLoadActivity, subagents = state.subagents, onOpenThread = onOpenThread, onOpenAgents = onOpenAgents)
                         }
                     }
-                    if ((state.activeRunId != null && state.messages.none { it.streaming }) || (roster?.liveCount ?: 0) > 0) item(key = "working") {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            if (state.activeRunId != null && state.messages.none { it.streaming }) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                WorkingSpinner(size = 16.dp)
-                                Text("Working…", style = TrefoilType.meta, color = c.blue)
-                            }
-                            if (roster != null) SubagentWorkingRow(roster, onOpenAgents)
-                        }
+                    // The active turn opens with its "Working for" header, right after the prompt that started it.
+                    val headerAt = liveTurn.headerIndex?.coerceIn(0, entries.size)
+                    items(if (headerAt == null) entries else entries.subList(0, headerAt), key = { it.key }) { entryRow(it) }
+                    if (headerAt != null) {
+                        val headerKey = state.activeRunId?.let(::workingHeaderKey)?.takeIf { key -> entries.none { it.key == key } } ?: "working-header"
+                        item(key = headerKey) { WorkingTurnHeader(turnStartedAt) }
+                        items(entries.subList(headerAt, entries.size), key = { it.key }) { entryRow(it) }
                     }
+                    items(liveTurn.orphanSubagents, key = { "subagent:${it.id}" }) { SubagentTimelineRow(it, onOpenThread, onOpenAgents) }
+                    liveTurn.thinkingLabel?.let { label -> item(key = "thinking") { ThinkingRow(label) } }
                     items(state.requests, key = { "request:${it.id}" }) { RequestCard(it, canSend, respond) }
                     item(key = "bottom") { Spacer(Modifier.height(1.dp)) }
                 }

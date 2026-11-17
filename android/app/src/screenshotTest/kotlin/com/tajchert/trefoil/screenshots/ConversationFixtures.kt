@@ -12,6 +12,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import com.tajchert.trefoil.core.model.ClientState
 import com.tajchert.trefoil.core.model.ConnectionStatus
 import com.tajchert.trefoil.core.model.ConversationMessage
+import com.tajchert.trefoil.core.model.ConversationRun
 import com.tajchert.trefoil.core.model.ModelOption
 import com.tajchert.trefoil.core.model.Question
 import com.tajchert.trefoil.core.model.RemoteFileReference
@@ -52,10 +53,14 @@ object ConversationFixtures {
     """.trimIndent()
 
     val thread = fx.thread("t-chat", "Add screenshot previews", updatedMinutesAgo = 5, branch = "feat/previews")
-    fun workingThread() = thread.copy(status = "running", activeRunId = "run-2", latestRunId = "run-2")
+    /** Frozen "now" for live timers: 1m 11s after [RUN_STARTED]. */
+    val now: Long = java.time.Instant.parse("2026-01-01T10:01:11Z").toEpochMilli()
+    private const val RUN_STARTED = "2026-01-01T10:00:00Z"
+    fun workingThread() = thread.copy(status = "running", activeRunId = "run-2", latestRunId = "run-2",
+        activityRunStartedAt = RUN_STARTED, activityRunStartedAtPresent = true)
 
-    private fun msg(id: String, role: String, text: String, ordinal: Int, streaming: Boolean = false, attachments: List<RemoteFileReference> = emptyList()) =
-        ConversationMessage(id = id, role = role, text = text, streaming = streaming, ordinal = ordinal, attachments = attachments)
+    private fun msg(id: String, role: String, text: String, ordinal: Int, streaming: Boolean = false, attachments: List<RemoteFileReference> = emptyList(), runId: String? = null) =
+        ConversationMessage(id = id, role = role, text = text, streaming = streaming, ordinal = ordinal, attachments = attachments, runId = runId)
 
     private fun act(id: String, title: String, kind: String, status: String, ordinal: Int, input: String? = null, output: String? = null,
                     fileName: String? = null, diff: String? = null, exit: Int? = null) =
@@ -85,13 +90,38 @@ object ConversationFixtures {
         activities = listOf(commandActivity, editActivity),
     )
 
+    private val liveThought = act("a-live-think", "Reasoning", "reasoning", "completed", 2,
+        output = "**Checking the theme tokens** before running the unit tests.").copy(runId = "run-2")
+    private val livePlan = msg("m2", "assistant", "I'll have a subagent review the dark theme tokens while I run the unit tests.", 3, runId = "run-2")
+    private fun agentItem(id: String, agentId: String, status: String, ordinal: Int) =
+        ToolActivity(id = id, title = "Subagent", kind = "subagent", status = status, ordinal = ordinal, runId = "run-2", subagentId = agentId)
+    private val reviewAgent = Subagent(id = "s-review", threadId = "t-chat", runId = "run-2", origin = "provider_native", driver = "claudeAgent",
+        childThreadId = "child-review", title = "Review dark theme tokens", prompt = "Review dark theme tokens", status = "completed",
+        result = "Dark theme tokens match the spec; no changes needed.", startedAt = "2026-01-01T10:00:05Z", completedAt = "2026-01-01T10:00:52Z")
+    private val lintAgent = Subagent(id = "s-lint", threadId = "t-chat", runId = "run-2", origin = "provider_native", driver = "claudeAgent",
+        childThreadId = "child-lint", title = "Investigate lint crash", prompt = "Investigate lint crash", status = "running",
+        progress = "Running cd /home/dev/trefoil && ./gradlew :app:lintDebug --stacktrace", startedAt = "2026-01-01T10:00:28Z")
+    private val docsAgent = Subagent(id = "s-docs", threadId = "t-chat", runId = "run-2", origin = "app_owned", driver = "codex",
+        childThreadId = "child-docs", title = "Update screenshot README", prompt = "Update screenshot README", status = "running", startedAt = "2026-01-01T10:00:50Z")
+
+    /** Active turn: "Working for" header, a settled subagent and a finished command, then the trailing Thinking row. */
     fun workingState(): ClientState = chatState().copy(
         threads = listOf(workingThread()), activeRunId = "run-2",
-        messages = listOf(
-            msg("m1", "user", "Now run the unit tests too.", 1),
-            msg("m2", "assistant", "Starting the test run. I will check the **unit** tests first and then", 3, streaming = true),
-        ),
-        activities = listOf(runningActivity.copy(ordinal = 2, runId = "run-2")),
+        runs = listOf(ConversationRun("run-2", "running", startedAt = RUN_STARTED)),
+        messages = listOf(msg("m1", "user", "Now run the unit tests too.", 1), livePlan),
+        activities = listOf(liveThought, agentItem("a-agent", "s-review", "completed", 4),
+            commandActivity.copy(id = "a-unit", ordinal = 5, runId = "run-2", input = "./gradlew :app:testDebugUnitTest", output = "BUILD SUCCESSFUL in 41s")),
+        subagents = listOf(reviewAgent),
+    )
+
+    /** Active turn waiting on a running subagent, plus a roster-only agent rendered at the end of the turn. */
+    fun liveSubagentState(): ClientState = chatState().copy(
+        threads = listOf(workingThread()), activeRunId = "run-2",
+        runs = listOf(ConversationRun("run-2", "running", startedAt = RUN_STARTED)),
+        messages = listOf(msg("m1", "user", "Lint crashes with a FIR lazy resolve error. Can you find out why?", 1),
+            livePlan.copy(text = "I'll have a subagent reproduce the crash and find the cause. It will fix it only if the fix is clear and low-risk.")),
+        activities = listOf(liveThought.copy(output = "**Looking into the lint crash** from the FIR lazy resolve error."), agentItem("a-agent", "s-lint", "running", 4)),
+        subagents = listOf(lintAgent, docsAgent),
     )
 
     fun disconnectedState(): ClientState = chatState().copy(connection = ConnectionStatus.Disconnected, canWrite = false, canWriteThreads = false)

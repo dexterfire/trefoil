@@ -243,6 +243,7 @@ fun TrefoilApp(
                                                     onBack = if (backParent != null) ({ select(backParent.id) }) else if (twoPane) null else ({ cancelDraft(); showThread = false }),
                                                     onOpenParent = parentThread?.let { p -> { select(p.id) } },
                                                     onOpenAgents = if (roster != null) ({ showAgents = true }) else null,
+                                                    onOpenThread = openAgent,
                                                     otherNeedsYou = otherNeedsYou,
                                                     subtitle = selectedThread?.takeIf { draft == null && it.relationshipToParent == "subagent" }?.let { t -> parentThread?.let { "Subagent of ${it.title}" } ?: "Subagent" },
                                                     actions = {

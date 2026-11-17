@@ -1,5 +1,11 @@
 # Android releases
 
+Release `0.17.1` (`versionCode = 28`) shows live turns like T3 Code: a ticking "Working for X" row at the
+top of the active turn (it becomes the "Worked for X" fold in place), each subagent as one inline row
+(avatar, current activity, status and elapsed time, tap to open), and a single "Thinking" row at the bottom,
+replacing the separate "Working…" and subagent summary rows. Check a running thread with a subagent against
+a real environment on a device.
+
 Release `0.17.0` (`versionCode = 27`) renders thread work like T3 Code: settled turns fold under a muted
 "Worked for X" row (tool failures no longer block the fold; failed or interrupted runs stay open), a run's
 tool calls and thinking group into flat summary rows ("Ran 1 command and read 2 files") that expand to

@@ -356,6 +356,7 @@ internal fun toolActivities(projection: JsonObject): List<ToolActivity> {
             searchResults = item.detailText("results"), failure = failure,
             sourceThreadId = item.optionalText("sourceThreadId"), sourceItemId = item.optionalText("sourceItemId"),
             images = images, htmlRender = htmlRender,
+            subagentId = if (kind == "subagent") item.optionalText("subagentId") else null,
         )
     }
 }

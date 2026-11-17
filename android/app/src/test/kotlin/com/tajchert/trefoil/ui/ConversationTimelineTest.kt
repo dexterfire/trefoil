@@ -34,7 +34,7 @@ class ConversationTimelineTest {
             ToolActivity("notice", "System notice", kind = "system_notice", status = "completed", runId = "r", ordinal = 2))
         val ordered = conversationTimeline(listOf(ConversationMessage("answer", "assistant", "Done", runId = "r", ordinal = 3)), activities)
         val folded = foldConversationTimeline(ordered, runs = listOf(ConversationRun("r", "completed", completedAt = "2026-11-06T10:00:00Z")))
-        assertEquals(listOf("run:r:activity:command", "activity:plan", "activity:notice", "message:answer"), folded.map { it.key })
+        assertEquals(listOf("run:r", "activity:plan", "activity:notice", "message:answer"), folded.map { it.key })
     }
     @Test fun toolWorkStaysBetweenUserPromptAndAssistantAnswer() {
         val entries = conversationTimeline(listOf(ConversationMessage("u", "user", "Help", ordinal = 0), ConversationMessage("a", "assistant", "Done", ordinal = 3)), listOf(ToolActivity("t1", "Read", runId = "r", ordinal = 1), ToolActivity("t2", "Edit", runId = "r", ordinal = 2)))
@@ -81,7 +81,7 @@ class ConversationTimelineTest {
             ConversationMessage("answer", "assistant", "Finished", runId = "r", ordinal = 3),
         ), listOf(ToolActivity("tool", "Read", status = "completed", runId = "r", ordinal = 2)))
         val folded = foldConversationTimeline(entries)
-        assertEquals(listOf("message:u", "run:r:message:comment", "message:answer"), folded.map { it.key })
+        assertEquals(listOf("message:u", "run:r", "message:answer"), folded.map { it.key })
         assertEquals(listOf("message:comment", "activity:tool"), (folded[1] as ConversationEntry.Work).entries.map { it.key })
     }
     @Test fun activeInterruptedAndUnknownWorkNeverFoldsButToolFailuresDo() {
@@ -92,7 +92,7 @@ class ConversationTimelineTest {
         }
         // A failed or declined tool call is settled work: T3 folds the turn (legacy snapshots have no run status).
         for (status in listOf("failed", "declined"))
-            assertEquals("status=$status", listOf("run:r:message:a", "message:b"), foldConversationTimeline(legacy(status)).map { it.key })
+            assertEquals("status=$status", listOf("run:r", "message:b"), foldConversationTimeline(legacy(status)).map { it.key })
         val completed = conversationTimeline(listOf(ConversationMessage("a", "assistant", "Answer", runId = "r", ordinal = 1)), listOf(ToolActivity("t", "Tool", status = "completed", runId = "r", ordinal = 0)))
         assertEquals(completed, foldConversationTimeline(completed, activeRunId = "r"))
     }
@@ -135,7 +135,7 @@ class ConversationTimelineTest {
             ToolActivity("t", "Command", kind = "command_execution", status = "completed", outputIndicatesFailure = true, runId = "r", ordinal = 0),
             ToolActivity("t", "mcp__t3-code__html_preview", kind = "dynamic_tool", status = "failed", runId = "r", ordinal = 0))) {
             val entries = conversationTimeline(messages, listOf(tool))
-            assertEquals(listOf("run:r:activity:t", "message:a"), foldConversationTimeline(entries, runs = run).map { it.key })
+            assertEquals(listOf("run:r", "message:a"), foldConversationTimeline(entries, runs = run).map { it.key })
         }
         for (tool in listOf(
             ToolActivity("t", "Child", status = "running", kind = "subagent", runId = "r", ordinal = 0),
@@ -191,7 +191,7 @@ class ConversationTimelineTest {
             ToolActivity("t2", "Edit", kind = "file_change", status = "completed", runId = "r", ordinal = 3),
             ToolActivity("t3", "Edit", kind = "file_change", status = "completed", runId = "r", ordinal = 4)))
         val folded = foldConversationTimeline(entries, runs = listOf(ConversationRun("r", "completed", completedAt = "2026-11-06T10:00:00Z")))
-        assertEquals(listOf("message:u", "run:r:activity:t1", "html-render:h", "run:r:activity:t2", "message:a"), folded.map { it.key })
+        assertEquals(listOf("message:u", "run:r", "html-render:h", "run:r:activity:t2", "message:a"), folded.map { it.key })
         // No duplicate: the render is not inside any Work group.
         assertTrue(folded.filterIsInstance<ConversationEntry.Work>().none { work -> work.entries.any { it is ConversationEntry.HtmlRender || (it as? ConversationEntry.Activities)?.activities?.any { a -> a.htmlRender != null } == true } })
         assertEquals(1, folded.count { it is ConversationEntry.HtmlRender })
@@ -210,7 +210,7 @@ class ConversationTimelineTest {
         val run = ConversationRun("r", "completed", startedAt = "2026-01-01T12:00:00Z", completedAt = "2026-01-01T12:10:00Z")
         val folded = foldConversationTimeline(entries, runs = listOf(run))
         val work = folded.filterIsInstance<ConversationEntry.Work>()
-        assertEquals(listOf("run:r:activity:t1", "run:r:activity:t2"), work.map { it.key })
+        assertEquals(listOf("run:r", "run:r:activity:t2"), work.map { it.key })
         assertEquals(listOf("Worked for 4s", "Worked for 40s"), work.map { it.label })
         // A split row whose only entry never recorded an end shows no duration rather than "Worked for 1ms".
         val openEnded = foldConversationTimeline(conversationTimeline(listOf(
@@ -256,7 +256,7 @@ class ConversationTimelineTest {
         val keys = folded.filterIsInstance<ConversationEntry.Work>().map { it.key }
         assertEquals(2, keys.size)
         assertEquals(keys.size, keys.toSet().size)
-        assertEquals(listOf("run:r:activity:t1", "html-render:h", "run:r:activity:t2", "message:a"), folded.map { it.key })
+        assertEquals(listOf("run:r", "html-render:h", "run:r:activity:t2", "message:a"), folded.map { it.key })
     }
 
     @Test fun htmlRenderOnlyRunKeepsRenderVisibleAndNonHtmlDynamicToolsStayActivities() {
