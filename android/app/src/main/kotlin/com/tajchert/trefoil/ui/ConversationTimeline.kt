@@ -120,29 +120,33 @@ internal fun foldConversationTimeline(
         is ConversationEntry.Activities -> entry.activities.none { it.standalone }
         is ConversationEntry.HtmlRender, is ConversationEntry.Work -> false
     }
+    fun firstStart(items: List<ConversationEntry>): Instant? = items.firstNotNullOfOrNull {
+        when (it) {
+            is ConversationEntry.Message -> timelineInstant(it.message.createdAt)
+            is ConversationEntry.Activities -> it.activities.firstNotNullOfOrNull { activity -> timelineInstant(activity.startedAt) }
+            is ConversationEntry.HtmlRender -> timelineInstant(it.activity.startedAt)
+            is ConversationEntry.Work -> null
+        }
+    }
+    fun lastEnd(items: List<ConversationEntry>): Instant? = items.flatMap {
+        when (it) {
+            is ConversationEntry.Message -> listOfNotNull(timelineInstant(it.message.updatedAt ?: it.message.createdAt))
+            is ConversationEntry.Activities -> it.activities.mapNotNull { activity -> timelineInstant(activity.completedAt ?: activity.startedAt) }
+            is ConversationEntry.HtmlRender -> listOfNotNull(timelineInstant(it.activity.completedAt ?: it.activity.startedAt))
+            is ConversationEntry.Work -> emptyList()
+        }
+    }.maxOrNull()
+    fun workLabel(start: Instant?, end: Instant?): String =
+        if (start != null && end != null) "Worked for ${workDuration(Duration.between(start, end).toMillis().coerceAtLeast(0))}" else "Worked"
+    // A run folded into one row covers the whole run; a run split by a render or standalone entry labels each row from its own entries.
     fun label(runId: String): String {
         val run = runById[runId]
         val runEntries = entries.filter { it.runId == runId }
         val final = finalByRun[runId]?.message
         val prompt = entries.filterIsInstance<ConversationEntry.Message>().lastOrNull { it.message.role == "user" && it.message.runId == runId }?.message
-        val start = timelineInstant(run?.startedAt) ?: timelineInstant(prompt?.createdAt) ?: runEntries.firstNotNullOfOrNull {
-            when (it) {
-                is ConversationEntry.Message -> timelineInstant(it.message.createdAt)
-                is ConversationEntry.Activities -> it.activities.firstNotNullOfOrNull { activity -> timelineInstant(activity.startedAt) }
-                is ConversationEntry.HtmlRender -> timelineInstant(it.activity.startedAt)
-                is ConversationEntry.Work -> null
-            }
-        }
-        val ends = runEntries.flatMap {
-            when (it) {
-                is ConversationEntry.Message -> listOfNotNull(timelineInstant(it.message.updatedAt ?: it.message.createdAt))
-                is ConversationEntry.Activities -> it.activities.mapNotNull { activity -> timelineInstant(activity.completedAt ?: activity.startedAt) }
-                is ConversationEntry.HtmlRender -> listOfNotNull(timelineInstant(it.activity.completedAt ?: it.activity.startedAt))
-                is ConversationEntry.Work -> emptyList()
-            }
-        }
-        val end = timelineInstant(run?.completedAt) ?: ends.maxOrNull() ?: timelineInstant(final?.updatedAt)
-        return if (start != null && end != null) "Worked for ${workDuration(Duration.between(start, end).toMillis().coerceAtLeast(0))}" else "Worked"
+        val start = timelineInstant(run?.startedAt) ?: timelineInstant(prompt?.createdAt) ?: firstStart(runEntries)
+        val end = timelineInstant(run?.completedAt) ?: lastEnd(runEntries) ?: timelineInstant(final?.updatedAt)
+        return workLabel(start, end)
     }
     val result = mutableListOf<ConversationEntry>()
     var pending = mutableListOf<ConversationEntry>()
@@ -162,7 +166,11 @@ internal fun foldConversationTimeline(
         }
     }
     flush()
-    return result
+    val splitRuns = result.filterIsInstance<ConversationEntry.Work>().groupingBy { it.runId }.eachCount().filterValues { it > 1 }.keys
+    if (splitRuns.isEmpty()) return result
+    return result.map { entry ->
+        if (entry is ConversationEntry.Work && entry.runId in splitRuns) entry.copy(label = workLabel(firstStart(entry.entries), lastEnd(entry.entries))) else entry
+    }
 }
 
 /** Mirrors T3 shared/orchestrationTiming's rounding at unit boundaries. */

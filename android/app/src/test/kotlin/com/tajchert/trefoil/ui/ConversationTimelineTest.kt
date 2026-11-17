@@ -197,6 +197,29 @@ class ConversationTimelineTest {
         assertEquals(1, folded.count { it is ConversationEntry.HtmlRender })
     }
 
+    @Test fun runSplitByAnHtmlRenderLabelsEachRowFromItsOwnEntries() {
+        fun timed(id: String, ordinal: Int, start: String, end: String, kind: String = "file_change") =
+            ToolActivity(id, "Edit", kind = kind, status = "completed", runId = "r", ordinal = ordinal, startedAt = start, completedAt = end)
+        val entries = conversationTimeline(listOf(
+            ConversationMessage("u", "user", "Draw", runId = "r", ordinal = 0, createdAt = "2026-01-01T12:00:00Z"),
+            ConversationMessage("a", "assistant", "Done", runId = "r", ordinal = 6, createdAt = "2026-01-01T12:10:00Z")), listOf(
+            timed("t1", 1, "2026-01-01T12:00:01Z", "2026-01-01T12:00:05Z"),
+            htmlActivity("h", 2).copy(startedAt = "2026-01-01T12:00:06Z", completedAt = "2026-01-01T12:00:07Z"),
+            timed("t2", 3, "2026-01-01T12:05:00Z", "2026-01-01T12:05:30Z"),
+            timed("t3", 4, "2026-01-01T12:05:31Z", "2026-01-01T12:05:40Z")))
+        val run = ConversationRun("r", "completed", startedAt = "2026-01-01T12:00:00Z", completedAt = "2026-01-01T12:10:00Z")
+        val folded = foldConversationTimeline(entries, runs = listOf(run))
+        val work = folded.filterIsInstance<ConversationEntry.Work>()
+        assertEquals(listOf("run:r:activity:t1", "run:r:activity:t2"), work.map { it.key })
+        assertEquals(listOf("Worked for 4s", "Worked for 40s"), work.map { it.label })
+        // A run that folds into a single row keeps the authoritative whole-run duration.
+        val single = foldConversationTimeline(conversationTimeline(listOf(
+            ConversationMessage("u", "user", "Draw", runId = "r", ordinal = 0, createdAt = "2026-01-01T12:00:00Z"),
+            ConversationMessage("a", "assistant", "Done", runId = "r", ordinal = 6, createdAt = "2026-01-01T12:10:00Z")),
+            listOf(timed("t1", 1, "2026-01-01T12:00:01Z", "2026-01-01T12:00:05Z"))), runs = listOf(run))
+        assertEquals("Worked for 10m", single.filterIsInstance<ConversationEntry.Work>().single().label)
+    }
+
     @Test fun htmlRenderOnlyRunKeepsRenderVisibleAndNonHtmlDynamicToolsStayActivities() {
         val entries = conversationTimeline(listOf(ConversationMessage("a", "assistant", "Done", runId = "r", ordinal = 2)), listOf(
             htmlActivity("h", 1),
