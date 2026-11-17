@@ -1,5 +1,12 @@
 # Android releases
 
+Release `0.18.2` (`versionCode = 32`) keeps the live connection when you tap the machine you are already
+connected to on the Machines screen (or rail): a session that answered a ping within 20 s is reused, with no
+reconnect and the selected thread kept; a different machine still closes the old connection first. The
+Machines working badge now counts only threads that are actively running or starting, ignoring idle threads
+with past runs, archived threads, threads awaiting approval or input and unknown statuses. Check returning
+to the same machine and the badge against a real environment on a device.
+
 Release `0.18.1` (`versionCode = 31`) makes the effort and permission pills icon-only in the New thread
 sheet and the thread composer, using the desktop app's icons: lock (Supervised), pen (Auto-accept edits),
 shield check (Auto) and crossed-out shield (Full access); menus show the same icons. In a thread the model
