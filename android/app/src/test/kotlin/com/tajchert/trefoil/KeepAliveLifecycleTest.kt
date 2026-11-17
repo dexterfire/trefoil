@@ -385,9 +385,13 @@ class KeepAliveLifecycleTest {
         model.onDefaultNetworkLost(1)
         model.resume(); advance(1_000)
         assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
-        // The episode handed over to the network watch, which connects once a network returns.
+        // The episode handed over to the network watch, which connects once a network returns. The held lock keeps
+        // that attempt in Testing, so the assertion does not depend on how fast the fixture host fails to resolve.
+        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
+        assertTrue(mutex.tryLock())
         model.onDefaultNetwork(2); advance(0)
         assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+        mutex.unlock(); advance(0)
     }
 
     @Test fun notificationShowsReconnectingInTheBackgroundWithoutFlapping() {
