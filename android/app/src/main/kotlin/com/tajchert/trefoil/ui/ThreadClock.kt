@@ -9,9 +9,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlin.coroutines.coroutineContext
 
+/** A frozen wall clock for previews and screenshot tests; null (the default) reads real time. */
+internal val LocalFixedClock = staticCompositionLocalOf<Long?> { null }
+
 /** Detail routes stop clock work while backgrounded; returning immediately reads wall time. */
 @Composable
 internal fun rememberThreadWorkClock(ticking: Boolean): Long {
+    LocalFixedClock.current?.let { return it }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val clock by produceState(System.currentTimeMillis(), lifecycle, ticking) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {

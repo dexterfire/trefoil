@@ -59,14 +59,30 @@ class ConversationUiTest {
         compose.onAllNodes(clickLabeled("Expand details")).assertCountEquals(2)
     }
 
-    @Test fun subagentFooterTracksLiveAgentsAndOpensSheet() {
-        val agent = Subagent("a", "fixture", status = "running", driver = "codex")
+    @Test fun rosterOnlyAgentRendersInlineAndOpensSheetUntilItSettles() {
+        val agent = Subagent("a", "fixture", status = "running", driver = "codex", title = "Explore code")
         val state = mutableStateOf(ClientState(selectedThreadId = "fixture", subagents = listOf(agent)))
         var opened = false
         compose.setContent { MaterialTheme { Conversation(state.value, {}, {}, { _, _, _ -> }, onOpenAgents = { opened = true }) } }
-        compose.onNodeWithContentDescription("1 subagent, 1 working, 0 done").performClick()
+        compose.onNode(clickLabeled("Open Explore code")).performClick()
         compose.runOnIdle { assertTrue(opened); state.value = state.value.copy(subagents = listOf(agent.copy(status = "completed"))) }
-        compose.onNodeWithContentDescription("1 subagent, 1 working, 0 done").assertDoesNotExist()
+        compose.onNodeWithTag("subagent-row-a").assertDoesNotExist()
+    }
+
+    @Test fun activeTurnShowsWorkingHeaderInlineAgentAndWaitingRowInsteadOfWorkingFooter() {
+        val agent = Subagent("s", "fixture", runId = "run", status = "running", driver = "claudeAgent", title = "Investigate crash", childThreadId = "child",
+            progress = "Running ./gradlew lint")
+        val state = ClientState(selectedThreadId = "fixture", activeRunId = "run", subagents = listOf(agent),
+            messages = listOf(ConversationMessage("u", "user", "Why does lint crash?", ordinal = 1, runId = "run")),
+            activities = listOf(ToolActivity("item", "Subagent", kind = "subagent", status = "running", runId = "run", ordinal = 2, subagentId = "s")))
+        var openedThread: String? = null
+        compose.setContent { MaterialTheme { Conversation(state, {}, {}, { _, _, _ -> }, onOpenThread = { openedThread = it }) } }
+        compose.onNodeWithTag("working-header").assertExists()
+        compose.onNodeWithText("Running ./gradlew lint").assertExists()
+        compose.onNodeWithText("Waiting on a subagent").assertExists()
+        compose.onNode(hasText("1 subagent")).assertDoesNotExist()
+        compose.onNode(clickLabeled("Open Investigate crash")).performClick()
+        compose.runOnIdle { assertEquals("child", openedThread) }
     }
 
     @Test fun draftWaitsForNewServerMessageAndNeverResendsOnReconnection() {

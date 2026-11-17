@@ -14,8 +14,13 @@ internal sealed interface ConversationEntry {
     data class Message(val message: ConversationMessage, val stacked: Boolean = false) : ConversationEntry {
         override val key = "message:${message.id}"
     }
-    data class Work(val runId: String, val entries: List<ConversationEntry>, val label: String) : ConversationEntry {
-        override val key = "run:$runId:${entries.first().key}"
+    /**
+     * A folded run. The first fold of a run is keyed `run:<runId>`, the same key the live "Working for" header uses
+     * ([workingHeaderKey]), so a settling turn swaps rows in place instead of jumping. Later parts of a run that a visible
+     * entry split apart carry their first entry's key.
+     */
+    data class Work(val runId: String, val entries: List<ConversationEntry>, val label: String, val part: Int = 0) : ConversationEntry {
+        override val key = if (part == 0) "run:$runId" else "run:$runId:${entries.first().key}"
     }
     data class Activities(val activities: List<ToolActivity>) : ConversationEntry {
         override val key = "activity:${activities.first().id}"
@@ -146,10 +151,13 @@ internal fun foldConversationTimeline(
     }
     val result = mutableListOf<ConversationEntry>()
     var pending = mutableListOf<ConversationEntry>()
+    val parts = mutableMapOf<String, Int>()
     fun flush() {
         if (pending.isEmpty()) return
         val runId = pending.first().runId!!
-        result += ConversationEntry.Work(runId, pending.toList(), label(runId))
+        val part = parts[runId] ?: 0
+        parts[runId] = part + 1
+        result += ConversationEntry.Work(runId, pending.toList(), label(runId), part)
         pending = mutableListOf()
     }
     for (entry in entries) {

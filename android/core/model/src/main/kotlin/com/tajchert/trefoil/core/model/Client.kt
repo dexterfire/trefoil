@@ -68,6 +68,8 @@ data class ToolActivity(
     val images: List<RemoteFileReference> = emptyList(),
     /** Set only for a completed, non-error `html_render` dynamic_tool item. */
     val htmlRender: HtmlRenderReference? = null,
+    /** `subagent` items only: the projection's `subagents[].id` this item reports on. */
+    val subagentId: String? = null,
 )
 data class ConversationRun(
     val id: String, val status: String,

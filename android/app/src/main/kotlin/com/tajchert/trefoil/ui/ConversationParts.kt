@@ -69,7 +69,7 @@ private fun messageTime(value: String?): String? = timelineInstant(value)?.let {
 
 /* ---------- Work log: flat, muted rows (after T3 Code's TimelineWorkGroupRows) ---------- */
 
-private val WorkRowText = TrefoilType.meta.copy(fontSize = 14.sp, fontWeight = FontWeight.Normal)
+internal val WorkRowText = TrefoilType.meta.copy(fontSize = 14.sp, fontWeight = FontWeight.Normal)
 
 private val WorkIcon.vector: ImageVector get() = when (this) {
     WorkIcon.Read -> TfIcons.File
@@ -106,7 +106,10 @@ private fun WorkRow(
 
 /** "Worked for 42s": a quiet fold row with a divider beneath; expanded it reveals the run's messages and work groups inline. */
 @Composable
-internal fun CompletedWork(work: ConversationEntry.Work, canLoadActivity: Boolean, onLoadActivity: (String) -> Unit, initiallyExpanded: Boolean = false) {
+internal fun CompletedWork(
+    work: ConversationEntry.Work, canLoadActivity: Boolean, onLoadActivity: (String) -> Unit, initiallyExpanded: Boolean = false,
+    subagents: List<Subagent> = emptyList(), onOpenThread: ((String) -> Unit)? = null, onOpenAgents: (() -> Unit)? = null,
+) {
     var expanded by rememberSaveable(work.key) { mutableStateOf(initiallyExpanded) }
     val c = Tf.colors
     Column(Modifier.fillMaxWidth()) {
@@ -121,7 +124,8 @@ internal fun CompletedWork(work: ConversationEntry.Work, canLoadActivity: Boolea
                 key(entry.key) {
                     when (entry) {
                         is ConversationEntry.Message -> MessageRow(entry.message, false, false)
-                        is ConversationEntry.Activities -> WorkGroup(entry.activities, live = false, canLoadActivity = canLoadActivity, onLoadActivity = onLoadActivity)
+                        is ConversationEntry.Activities -> if (entry.isSubagentGroup) SubagentActivityRows(entry.activities, subagents, onOpenThread, onOpenAgents)
+                            else WorkGroup(entry.activities, live = false, canLoadActivity = canLoadActivity, onLoadActivity = onLoadActivity)
                         is ConversationEntry.HtmlRender, is ConversationEntry.Work -> Unit
                     }
                 }

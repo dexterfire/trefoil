@@ -25,10 +25,14 @@ import com.tajchert.trefoil.ui.MessageFileCards
 import com.tajchert.trefoil.ui.QuickReplies
 import com.tajchert.trefoil.ui.ReadOnlySubagentBar
 import com.tajchert.trefoil.ui.RequestCard
-import com.tajchert.trefoil.ui.SubagentWorkingRow
 import com.tajchert.trefoil.ui.ThreadAgentsSheetContent
 import com.tajchert.trefoil.ui.TrefoilTheme
+import com.tajchert.trefoil.ui.LocalFixedClock
+import com.tajchert.trefoil.ui.SubagentTimelineRowContent
+import com.tajchert.trefoil.ui.ThinkingRow
 import com.tajchert.trefoil.ui.WorkGroup
+import com.tajchert.trefoil.ui.WorkingTurnHeader
+import com.tajchert.trefoil.ui.subagentTimelineRow
 import com.tajchert.trefoil.ui.agentRows
 import com.tajchert.trefoil.ui.subagentPill
 import com.tajchert.trefoil.core.model.ClientState
@@ -39,13 +43,15 @@ private val fx = ConversationFixtures
 @Composable
 private fun Frame(dark: Boolean = false, content: @Composable () -> Unit) {
     TrefoilTheme(darkTheme = dark) {
-        Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.background) { content() }
+        CompositionLocalProvider(LocalFixedClock provides fx.now) {
+            Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.background) { content() }
+        }
     }
 }
 
 @Composable
 private fun Screen(state: ClientState, dark: Boolean = false) {
-    Frame(dark) { Conversation(state, send = {}, interrupt = {}, respond = { _, _, _ -> }, onBack = {}, onOpenAgents = null) }
+    Frame(dark) { Conversation(state, send = {}, interrupt = {}, respond = { _, _, _ -> }, onBack = {}, onOpenAgents = null, onOpenThread = {}) }
 }
 
 // ---------- Full conversation ----------
@@ -69,6 +75,16 @@ fun Conversation_AgentWorking_Light() = Screen(fx.workingState())
 @Preview(showBackground = true, widthDp = 400, heightDp = 800, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun Conversation_AgentWorking_Dark() = Screen(fx.workingState(), dark = true)
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, heightDp = 800)
+@Composable
+fun Conversation_LiveSubagent_Light() = Screen(fx.liveSubagentState())
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, heightDp = 800, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun Conversation_LiveSubagent_Dark() = Screen(fx.liveSubagentState(), dark = true)
 
 @PreviewTest
 @Preview(showBackground = true, widthDp = 400, heightDp = 800)
@@ -207,12 +223,25 @@ private fun completedWork() = ConversationEntry.Work(
 
 // ---------- Subagents ----------
 
-@PreviewTest
-@Preview(showBackground = true, widthDp = 400, heightDp = 100)
+/** Working header, one inline row per agent state (running, completed, failed, running without detail), Thinking. */
 @Composable
-fun SubagentWorkingRow_Light() {
-    Frame { Column(Modifier.padding(16.dp)) { SubagentWorkingRow(fx.roster(), onOpenAgents = {}) } }
+private fun LiveTurnRows(dark: Boolean) = WorkFrame(dark) {
+    WorkingTurnHeader(startedAt = fx.now - 71_000)
+    val now = java.time.Instant.parse("2026-01-01T10:00:43Z").toEpochMilli()
+    fx.subagents.map { subagentTimelineRow(it.copy(startedAt = it.startedAt ?: "2026-01-01T10:00:00Z", progress = it.progress ?: "Reading ui/ThreadList.kt".takeIf { _ -> it.id == "s1" }), now) }
+        .forEach { SubagentTimelineRowContent(it, onClick = {}) }
+    ThinkingRow("Thinking")
 }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, heightDp = 340)
+@Composable
+fun LiveTurnRows_Light() = LiveTurnRows(dark = false)
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, heightDp = 340, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun LiveTurnRows_Dark() = LiveTurnRows(dark = true)
 
 @PreviewTest
 @Preview(showBackground = true, widthDp = 400, heightDp = 120)
