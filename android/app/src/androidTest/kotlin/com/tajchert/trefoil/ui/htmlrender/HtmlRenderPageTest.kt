@@ -66,6 +66,67 @@ class HtmlRenderPageTest {
         }
     }
 
+    @Test fun peerConnectionsAndWebTransportAreGone() {
+        val page = open(probe, "fixture-attachment-rtc")
+        listOf("RTCPeerConnection", "webkitRTCPeerConnection", "WebTransport").forEach { name ->
+            assertEquals(name, "\"undefined\"", evaluate(page, "typeof window.$name"))
+            // The page cannot delete or redefine the lockdown.
+            assertEquals(name, "\"undefined\"", evaluate(page, "(function(){try{delete window.$name;}catch(e){}return typeof window.$name})()"))
+            assertEquals(name, "\"threw\"", evaluate(page, "(function(){try{Object.defineProperty(window,'$name',{value:1});return 'redefined'}catch(e){return 'threw'}})()"))
+        }
+        assertEquals("\"threw\"", evaluate(page, "(function(){try{new RTCPeerConnection({iceServers:[{urls:'stun:192.168.1.1:3478'}]});return 'created'}catch(e){return 'threw'}})()"))
+        assertEquals("\"undefined\"", evaluate(page, "typeof window.__pageSawRtc"))
+        // A same-origin child window has no peer connection either.
+        assertEquals("\"undefined\"", evaluate(page, "(function(){var f=document.createElement('iframe');document.body.appendChild(f);return typeof f.contentWindow.RTCPeerConnection})()"))
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            assertEquals("\"undefined\"", evaluate(page, "(function(){var f=document.createElement('iframe');document.body.appendChild(f);return typeof window[window.length-1].RTCPeerConnection})()"))
+        }
+    }
+
+    @Test fun webSocketIsBlocked() {
+        val page = open(probe, "fixture-attachment-ws")
+        evaluate(page, "try{var s=new WebSocket('wss://echo.example/');s.onopen=function(){window.__open=true};}catch(e){};1")
+        assertViolation(page, "connect-src")
+        assertEquals("null", evaluate(page, "window.__open"))
+    }
+
+    @Test fun iframeIsBlocked() {
+        val page = open(probe, "fixture-attachment-frame")
+        evaluate(page, "var f=document.createElement('iframe');f.src='https://cdn.example/frame.html';document.body.appendChild(f);1")
+        assertViolation(page, "frame-src")
+    }
+
+    @Test fun workerIsBlocked() {
+        val page = open(probe, "fixture-attachment-worker")
+        assertEquals("\"blocked\"", evaluate(page, "(function(){try{new Worker(URL.createObjectURL(new Blob(['postMessage(1)'],{type:'text/javascript'})));return 'created'}catch(e){return 'blocked'}})()"))
+        assertViolation(page, "worker-src")
+    }
+
+    @Test fun formPostIsBlocked() {
+        val page = open(probe, "fixture-attachment-form")
+        val origin = "\"${page.policy.origin}\""
+        evaluate(page, "var f=document.createElement('form');f.method='post';f.action='https://cdn.example/collect';document.body.appendChild(f);f.submit();1")
+        assertViolation(page, "form-action")
+        // The in-memory document is still the one in the frame.
+        assertEquals(origin, evaluate(page, "location.origin"))
+        assertEquals("\"fixture\"", evaluate(page, "document.getElementById('probe').textContent"))
+    }
+
+    /** Records CSP violations; also notes if the page could ever see a peer connection at parse time. */
+    private val probe = """<!doctype html><html><head><script>window.__violations=[];
+document.addEventListener('securitypolicyviolation',function(e){window.__violations.push(e.effectiveDirective||e.violatedDirective)});
+if(typeof RTCPeerConnection!=='undefined')window.__pageSawRtc=true;</script></head><body><p id="probe">fixture</p></body></html>"""
+
+    private fun assertViolation(page: HtmlRenderPage, directive: String) {
+        val deadline = SystemClock.uptimeMillis() + 10_000
+        var violations = evaluate(page, "JSON.stringify(window.__violations)")
+        while (violations?.contains(directive) != true && SystemClock.uptimeMillis() < deadline) {
+            SystemClock.sleep(100)
+            violations = evaluate(page, "JSON.stringify(window.__violations)")
+        }
+        assertTrue("no $directive violation in $violations", violations?.contains(directive) == true)
+    }
+
     /** Opens [html] as a page and waits until it reports its height. */
     private fun open(
         html: String,
