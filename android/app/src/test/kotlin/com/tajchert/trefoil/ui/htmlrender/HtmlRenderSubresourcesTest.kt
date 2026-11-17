@@ -489,7 +489,7 @@ class HtmlRenderSubresourcesTest {
         assertFalse(client.followSslRedirects)
         assertSame(okhttp3.CookieJar.NO_COOKIES, client.cookieJar)
         assertNull(client.cache)
-        assertTrue(client.interceptors.isEmpty())
+        assertEquals(listOf<Any>(PublicHostInterceptor), client.interceptors)
         assertEquals(listOf<Any>(PublicPeerInterceptor, HtmlRenderGateInterceptor), client.networkInterceptors)
         assertEquals(10_000, client.connectTimeoutMillis)
         assertEquals(15_000, client.readTimeoutMillis)
@@ -516,12 +516,52 @@ class HtmlRenderSubresourcesTest {
         }
     }
 
-    @Test fun productionClientNeverCompletesARequestToALoopbackLiteral() {
+    @Test fun productionClientNeverConnectsToANonPublicIpLiteral() {
         LoopbackListener().use { listener ->
-            // An IP literal skips DNS entirely; it must still never yield a response (TLS or the peer check stops it).
-            val result = HtmlRenderSubresourceFetcher(createHtmlRenderHttpClient()).fetch("https://127.0.0.1:${listener.port}/x.js", emptyMap()) { true }
-            assertEquals(502, result.status)
-            assertEquals(0, result.body.size)
+            val client = createHtmlRenderHttpClient()
+            val fetcher = HtmlRenderSubresourceFetcher(client, budget = HtmlRenderByteBudget(1024 * 1024))
+            // An IP literal skips DNS entirely, so even a permissive hop gate must not get a socket opened.
+            listOf("127.0.0.1", "[::1]", "[::ffff:127.0.0.1]", "[::127.0.0.1]").forEach { host ->
+                val result = fetcher.fetch("https://$host:${listener.port}/x.js", emptyMap()) { true }
+                assertEquals(host, 502, result.status)
+                assertEquals(host, 0, result.body.size)
+            }
+            // Outside the fetcher, and for a private LAN literal, too.
+            assertThrows(java.io.IOException::class.java) { client.newCall(Request.Builder().url("https://127.0.0.1:${listener.port}/").build()).execute() }
+            assertEquals(502, fetcher.fetch("https://192.168.1.10/x.js", emptyMap()) { true }.status)
+            Thread.sleep(300)
+            assertEquals(0, listener.accepted.get())
+        }
+    }
+
+    @Test fun urlPolicyGateRejectsNonPublicLiteralsBeforeAnyConnection() {
+        LoopbackListener().use { listener ->
+            val fetcher = HtmlRenderSubresourceFetcher(createHtmlRenderHttpClient(), budget = HtmlRenderByteBudget(1024 * 1024))
+            // The same policy the WebView passes as the hop gate, for the literal and for redirects to it.
+            listOf("127.0.0.1", "[::1]", "10.0.0.1", "169.254.169.254", "[::ffff:127.0.0.1]").forEach { host ->
+                val result = fetcher.fetch("https://$host:${listener.port}/x.js", emptyMap(), policy::allowsFetch)
+                assertEquals(host, 403, result.status)
+                assertEquals(host, 0, result.body.size)
+            }
+            Thread.sleep(300)
+            assertEquals(0, listener.accepted.get())
+        }
+    }
+
+    @Test fun publicPeerInterceptorRejectsAConnectionToANonPublicPeerBeforeTheRequestIsSent() {
+        LoopbackListener().use { listener ->
+            // Plain HTTP so the network interceptor runs right after the TCP connect, standing in for the TLS case.
+            val guarded = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).addNetworkInterceptor(PublicPeerInterceptor).build()
+            val blocked = assertThrows(java.io.IOException::class.java) {
+                guarded.newCall(Request.Builder().url("http://127.0.0.1:${listener.port}/").build()).execute()
+            }
+            assertEquals("Blocked peer", blocked.message)
+            // Control: without the interceptor the same request gets past the connect and only then fails.
+            val unguarded = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).build()
+            val other = assertThrows(java.io.IOException::class.java) {
+                unguarded.newCall(Request.Builder().url("http://127.0.0.1:${listener.port}/").build()).execute()
+            }
+            assertNotEquals("Blocked peer", other.message)
         }
     }
 
@@ -568,18 +608,21 @@ class HtmlRenderSubresourcesTest {
         ).forEach { assertEquals(it, it, htmlRenderRebaseCss(it, cssBase)) }
     }
 
+    private fun rebaseBytes(bytes: ByteArray, charset: java.nio.charset.Charset?) =
+        htmlRenderRebaseCssBytes(bytes, charset, cssBase, 1L shl 20) { true }!!
+
     @Test fun cssBytesKeepTheirCharset() {
         val latin1 = "@charset \"iso-8859-1\";\n/* caf\u00e9 */ a{background:url(a.png)}".toByteArray(Charsets.ISO_8859_1)
-        val rebased = htmlRenderRebaseCssBytes(latin1, null, cssBase)
+        val rebased = rebaseBytes(latin1, null)
         assertEquals("@charset \"iso-8859-1\";\n/* caf\u00e9 */ a{background:url(https://cdn.example/v2/css/a.png)}", rebased.toString(Charsets.ISO_8859_1))
         val bom = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()) + "a{background:url(\u00e9.png)}".toByteArray()
-        val withBom = htmlRenderRebaseCssBytes(bom, null, cssBase)
+        val withBom = rebaseBytes(bom, null)
         assertArrayEquals(bom.copyOf(3), withBom.copyOf(3))
         assertEquals("\uFEFFa{background:url(https://cdn.example/v2/css/%C3%A9.png)}", withBom.toString(Charsets.UTF_8))
         val malformed = byteArrayOf(0xC3.toByte(), 0x28) + "a{background:url(a.png)}".toByteArray()
-        assertArrayEquals(malformed, htmlRenderRebaseCssBytes(malformed, Charsets.UTF_8, cssBase))
+        assertArrayEquals(malformed, rebaseBytes(malformed, Charsets.UTF_8))
         val plain = "a{color:red}".toByteArray()
-        assertSame(plain, htmlRenderRebaseCssBytes(plain, null, cssBase))
+        assertSame(plain, rebaseBytes(plain, null))
     }
 
     @Test fun redirectedStylesheetIsRebasedOntoTheFinalUrl() {
@@ -612,5 +655,113 @@ class HtmlRenderSubresourcesTest {
         val capped = HtmlRenderSubresourceFetcher(server.client, maxBytes = css.length.toLong() + 5)
         assertEquals(502, capped.fetch("https://cdn.example/latest.css", emptyMap(), policy::allowsFetch).status)
         assertEquals(200, capped.fetch("https://cdn.example/v2/style.css", emptyMap(), policy::allowsFetch).status)
+    }
+
+    private val cssFixtures = listOf(
+        """
+        @import "base.css";
+        @import url(theme.css) screen;
+        @IMPORT 'print.css' print;
+        a { background: url(img/a.png) no-repeat, URL( "../font.woff2" ), url('b.png?x=1#y'); }
+        b { background: url(//cdn3.example/x.png); }
+        """.trimIndent(),
+        "a{background:url(data:image/png;base64,AAAA)}", "a{fill:url(#gradient)}", "a{background:url( )}",
+        "/* url(c.png) and @import \"d.css\"; */", "a::before{content:\"url(d.png)\"}", "a{background:myurl(e.png)}",
+        "a{background:url(a\\).png)}", "a{background:url(f.png", "a{background:url(\"unterminated.png", "a{background:url(sp ace.png)}",
+        "a{background:url(  x.png  )}", "@import /* c */ 'y.css';", "plain text without references", "",
+    )
+
+    @Test fun countingPassAgreesWithTheBuildPassOnEveryFixture() {
+        cssFixtures.forEach { css ->
+            val rebased = htmlRenderRebaseCss(css, cssBase)
+            val count = htmlRenderCountRebasedCss(css, cssBase)!!
+            assertEquals(css, rebased.length.toLong(), count.length)
+            assertEquals(css, rebased != css, count.rewritten)
+            // The limit is on the rebased length: exactly that passes, one less refuses.
+            assertNotNull(css, htmlRenderCountRebasedCss(css, cssBase, rebased.length.toLong()))
+            if (rebased.isNotEmpty()) assertNull(css, htmlRenderCountRebasedCss(css, cssBase, rebased.length - 1L))
+        }
+    }
+
+    @Test fun absurdlyLongReferencesAreCopiedAsWritten() {
+        val long = "a".repeat(20_000)
+        listOf("a{background:url($long)}", "a{background:url('$long')}", "@import '$long';").forEach {
+            assertEquals(it, htmlRenderRebaseCss(it, cssBase))
+        }
+    }
+
+    /** `url(a)` many times against a long final URL: the rebased text is vastly larger than the stylesheet. */
+    private val bombCss = "u{background:url(a)}".repeat(3_000)
+    private val bombBase = "https://cdn.example/${"p/".repeat(500)}style.css".toHttpUrl()
+
+    @Test fun expansionBombIsRefusedBeforeAnythingProportionalToTheOutputIsReserved() {
+        val bytes = bombCss.toByteArray()
+        val maxBytes = 100_000L
+        assertTrue(bytes.size < maxBytes)
+        // Rebased, this would be about 3 000 x 1 000 chars.
+        assertTrue(htmlRenderRebaseCss(bombCss, bombBase).length > 1_000_000)
+        var reserved = 0L
+        val result = htmlRenderRebaseCssBytes(bytes, null, bombBase, maxBytes) { reserved += it; true }
+        assertNull(result)
+        // Only the decode stages (a few times the input) were reserved, never a builder or encode buffer.
+        assertTrue("reserved $reserved", reserved <= bytes.size * 5L)
+    }
+
+    @Test fun rebaseReservesEveryStageBeforeAllocatingAndRefusesWhenOverBudget() {
+        val css = "a{background:url(b.png)}".toByteArray()
+        val reservations = mutableListOf<Long>()
+        val rebased = htmlRenderRebaseCssBytes(css, null, cssBase, 1_000) { reservations += it; true }!!
+        assertEquals("a{background:url(https://cdn.example/v2/css/b.png)}", rebased.toString(Charsets.UTF_8))
+        // Decode buffer, decoded string, rebuilt text, encode buffer, and the trimmed copy of it.
+        assertEquals(5, reservations.size)
+        assertTrue(reservations.all { it > 0 })
+        // Refusing any one of them fails the whole rebase, without ever reaching the next stage.
+        reservations.indices.forEach { refused ->
+            var calls = 0
+            assertNull("stage $refused", htmlRenderRebaseCssBytes(css, null, cssBase, 1_000) { calls++ != refused })
+            assertEquals(refused + 1, calls)
+        }
+        // Over the output cap: refused after the counting pass, before the builder is reserved.
+        var calls = 0
+        assertNull(htmlRenderRebaseCssBytes(css, null, cssBase, css.size + 5L) { calls++; true })
+        assertEquals(2, calls)
+    }
+
+    private fun redirectedStylesheet(body: String, target: String = "/v2/p/style.css") = FakeServer { request ->
+        if (request.url.encodedPath.startsWith("/latest")) response(request, 302, location = target)
+        else response(request, 200, body = body, type = "text/css")
+    }
+
+    @Test fun redirectedExpansionBombFailsWith502AndReleasesTheBudget() {
+        val budget = HtmlRenderByteBudget(2L * 1024 * 1024)
+        val longPath = "p/".repeat(500)
+        val server = redirectedStylesheet(bombCss, target = "/${longPath}style.css")
+        val fetcher = HtmlRenderSubresourceFetcher(server.client, maxBytes = 100_000, budget = budget)
+        val result = fetcher.fetch("https://cdn.example/latest.css", emptyMap(), policy::allowsFetch)
+        assertEquals(502, result.status)
+        assertEquals(0, result.body.size)
+        assertEquals(0, budget.inUse)
+        // The same sheet without a redirect is not rebased and fits.
+        assertEquals(200, fetcher.fetch("https://cdn.example/${longPath}style.css", emptyMap(), policy::allowsFetch).status)
+        assertEquals(0, budget.inUse)
+    }
+
+    @Test fun redirectedStylesheetUnderATooSmallBudgetFailsCleanlyAndRebasesWithEnough() {
+        val css = "a{background:url(b.png)}"
+        val expected = "a{background:url(https://cdn.example/v2/p/b.png)}"
+        // Byte-exact sweep around the buffering reservation (one 8 KiB chunk): the rebase needs more than that.
+        val outcomes = (8_000..9_000).map { limit ->
+            val budget = HtmlRenderByteBudget(limit.toLong())
+            val result = HtmlRenderSubresourceFetcher(redirectedStylesheet(css).client, budget = budget)
+                .fetch("https://cdn.example/latest.css", emptyMap(), policy::allowsFetch)
+            assertEquals("limit $limit", 0, budget.inUse)
+            if (result.status == 200) assertEquals(expected, result.body.toString(Charsets.UTF_8))
+            else { assertEquals(502, result.status); assertEquals(0, result.body.size) }
+            limit to result.status
+        }
+        // Monotone: once the budget is big enough it stays big enough.
+        val firstOk = outcomes.first { it.second == 200 }.first
+        assertTrue(outcomes.all { (limit, status) -> (status == 200) == (limit >= firstOk) })
+        assertTrue("first ok $firstOk", firstOk > 8_192 + css.length)
     }
 }

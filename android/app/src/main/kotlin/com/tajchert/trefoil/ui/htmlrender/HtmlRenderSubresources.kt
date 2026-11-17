@@ -87,6 +87,18 @@ internal class PublicOnlyDns(private val delegate: Dns = Dns.SYSTEM) : Dns {
     }
 }
 
+/**
+ * Application interceptor: refuses a non-public host before any socket is opened. OkHttp skips [Dns] for IP
+ * literals, so this is what stops `https://127.0.0.1/` (and every other private, loopback or link-local
+ * literal) from being connected to; names are refused here too and again by [PublicOnlyDns].
+ */
+internal object PublicHostInterceptor : Interceptor {
+    override fun intercept(chain: Interceptor.Chain): Response {
+        if (HtmlRenderPolicy.isNonPublicName(chain.request().url.host)) throw IOException("Blocked host")
+        return chain.proceed(chain.request())
+    }
+}
+
 /** Last line of defence: the socket actually connected must be a public address over TLS. */
 internal object PublicPeerInterceptor : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
@@ -147,6 +159,13 @@ internal class HtmlRenderByteBudget(val limit: Long = DEFAULT_LIMIT) {
             if (!add(total - held)) return false
             held = total
             return true
+        }
+
+        /** Raises the reservation by [extra] bytes; false (nothing changes) when over budget or released. */
+        @Synchronized
+        fun growBy(extra: Long): Boolean {
+            if (extra < 0 || extra > Long.MAX_VALUE - held) return false
+            return growTo(held + extra)
         }
 
         /** Gives every held byte back; safe to call more than once. */
@@ -214,8 +233,8 @@ internal fun htmlRenderPassedResponseHeaders(headers: Headers): Map<String, Stri
 
 /**
  * The production client for agent-page subresources: no proxy, a [PublicOnlyDns] over [systemDns], no
- * redirects, cookies or cache, and the public-peer and hop-gate network interceptors. Only [systemDns] is
- * injectable, so tests can drive the real client's DNS filter without a network.
+ * redirects, cookies or cache, a public-host check before any connect, and the public-peer and hop-gate network
+ * interceptors. Only [systemDns] is injectable, so tests can drive the real client's DNS filter without a network.
  */
 internal fun createHtmlRenderHttpClient(systemDns: Dns = Dns.SYSTEM): OkHttpClient =
     OkHttpClient.Builder()
@@ -225,6 +244,7 @@ internal fun createHtmlRenderHttpClient(systemDns: Dns = Dns.SYSTEM): OkHttpClie
         .followSslRedirects(false)
         .cookieJar(CookieJar.NO_COOKIES)
         .cache(null)
+        .addInterceptor(PublicHostInterceptor)
         .addNetworkInterceptor(PublicPeerInterceptor)
         .addNetworkInterceptor(HtmlRenderGateInterceptor)
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -332,10 +352,10 @@ internal class HtmlRenderSubresourceFetcher(
         if (!reservation.growTo(size * 2)) return HtmlRenderResource.failed()
         var bytes = buffer.readByteArray()
         if (final != requested && mimeType == "text/css") {
-            // The rebased stylesheet is built next to the original.
-            if (!reservation.growTo(size * 3)) return HtmlRenderResource.failed()
-            bytes = htmlRenderRebaseCssBytes(bytes, type?.charset(), final)
-            if (bytes.size > maxBytes) return HtmlRenderResource.failed()
+            // The rebase reserves everything it allocates (decode, count, build, encode) before allocating it, and
+            // refuses to build output past the cap.
+            bytes = htmlRenderRebaseCssBytes(bytes, type?.charset(), final, maxBytes, reservation::growBy)
+                ?: return HtmlRenderResource.failed()
         }
         return HtmlRenderResource(
             status = code,
