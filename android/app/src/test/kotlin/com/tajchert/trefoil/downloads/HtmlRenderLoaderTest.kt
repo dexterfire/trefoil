@@ -63,13 +63,45 @@ class HtmlRenderLoaderTest {
     }
 
     @Test fun lruEvictsBeyondCacheBytes() = runBlocking {
+        // 60 characters cost 120 bytes in memory (UTF-16), so two do not fit in 200.
         val client = ImageClient(ByteArray(60) { 'a'.code.toByte() })
-        val loader = HtmlRenderLoader(client, cacheBytes = 100)
+        val loader = HtmlRenderLoader(client, cacheBytes = 200)
         val other = ref.copy(attachmentId = "fixture-other")
         loader.load(ref, "fixture", "thread")
         loader.load(other, "fixture", "thread")
         assertNull(loader.cached(ref, "fixture", "thread"))
         assertNotNull(loader.cached(other, "fixture", "thread"))
+    }
+
+    @Test fun pageLargerThanTheCacheIsServedButNotCachedAndKeepsOthers() = runBlocking {
+        val client = ImageClient("small".toByteArray())
+        val loader = HtmlRenderLoader(client, cacheBytes = 100)
+        val other = ref.copy(attachmentId = "fixture-other")
+        loader.load(other, "fixture", "thread")
+        client.bytes = ByteArray(51) { 'a'.code.toByte() } // 102 bytes as a string, over the 100 byte cap
+        val big = loader.load(ref, "fixture", "thread")
+        assertEquals(51, (big as HtmlRenderFetch.Ready).html.length)
+        assertNull(loader.cached(ref, "fixture", "thread"))
+        assertEquals("small", loader.cached(other, "fixture", "thread"))
+    }
+
+    @Test fun cacheIsSizedByDecodedStringNotDownloadBytes() = runBlocking {
+        // "✓" is 3 UTF-8 bytes but one char (2 bytes in memory): 40 of them = 120 download bytes, 80 cached bytes.
+        val client = ImageClient("✓".repeat(40).toByteArray())
+        val loader = HtmlRenderLoader(client, cacheBytes = 100)
+        loader.load(ref, "fixture", "thread")
+        assertNotNull(loader.cached(ref, "fixture", "thread"))
+    }
+
+    @Test fun evictEnvironmentDropsOnlyThatEnvironment() = runBlocking {
+        val client = ImageClient(html.toByteArray())
+        val loader = HtmlRenderLoader(client)
+        loader.load(ref, "fixture", "thread")
+        client.state.value = client.state.value.copy(environment = client.environment.copy(id = "second"))
+        loader.load(ref, "second", "thread")
+        loader.evictEnvironment("fixture")
+        assertNull(loader.cached(ref, "fixture", "thread"))
+        assertEquals(html, loader.cached(ref, "second", "thread"))
     }
 
     @Test fun networkAccessReadsLiveClientState() {
