@@ -123,6 +123,43 @@ class TrefoilViewModelLifecycleTest {
         assertTrue(model.connectionAttempt.value.id > 0)
     }
 
+    @Test fun reselectingTheLiveMachineFromTheListReusesTheSession() {
+        armLiveConnection()
+        // Back to the machine list leaves the session alone; tapping the same machine again must not reconnect.
+        model.selectMachine(environment); advance(1_000)
+        assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
+        assertEquals(ConnectionStatus.Connected, model.state.value.connection)
+        assertTrue(model.state.value.canWrite)
+        assertEquals("thread", model.state.value.selectedThreadId)
+        assertNotNull(client.millisSinceLastPong())
+        assertEquals(0, pings())
+    }
+
+    @Test fun reselectingAStaleLiveMachineReconnects() {
+        armLiveConnection()
+        setPongAge(RETAINED_CONNECTION_FRESHNESS_MS + 1)
+        model.selectMachine(environment)
+        assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+    }
+
+    @Test fun selectingADifferentMachineClosesTheCurrentSession() {
+        armLiveConnection()
+        val other = SavedEnvironment("other", "Other", "https://other.invalid", "other")
+        @Suppress("UNCHECKED_CAST")
+        (field("_environments").get(model) as MutableStateFlow<List<SavedEnvironment>>).value = listOf(environment, other)
+        model.selectMachine(other)
+        assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+        val deadline = System.currentTimeMillis() + 5_000
+        while (client.millisSinceLastPong() != null && System.currentTimeMillis() < deadline) { shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(5) }
+        // The previous machine's socket is gone before the new machine is tried.
+        assertNull(client.millisSinceLastPong())
+        assertNotEquals(ConnectionStatus.Connected, model.state.value.connection)
+        // Reselecting the machine being connected joins that attempt instead of starting another.
+        val attempt = model.connectionAttempt.value.id
+        model.selectMachine(other)
+        if (model.connectionAttempt.value.phase == ConnectionPhase.Testing) assertEquals(attempt, model.connectionAttempt.value.id)
+    }
+
     @Test fun userDisconnectNeverAutoReconnects() {
         armLiveConnection()
         model.disconnect(); advance(100)

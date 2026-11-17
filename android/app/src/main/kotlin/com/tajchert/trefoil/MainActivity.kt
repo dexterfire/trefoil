@@ -134,7 +134,7 @@ class MainActivity : ComponentActivity() {
                 state = state.copy(error = notice ?: state.error, busy = working || state.busy),
                 savedEnvironments = environments,
                 onPair = model::pair,
-                onConnect = model::connect,
+                onConnect = model::selectMachine,
                 onSelectThread = model::selectThread,
                 onSend = model::send,
                 onInterrupt = model::interrupt,

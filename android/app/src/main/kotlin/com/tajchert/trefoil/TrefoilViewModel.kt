@@ -118,6 +118,8 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
      * disconnect this view model makes, so a later drop to Error/Disconnected is unexpected and reconnects once.
      */
     private var liveEnvironment: SavedEnvironment? = null
+    /** The saved machine the latest [connect] attempt targets; null for pairing, plain SSH and other attempts. */
+    private var attemptEnvironmentId: String? = null
     private var autoReconnectJob: Job? = null
         // invokeOnCompletion runs on the completing thread; this job lives on viewModelScope (Main), so the posted check
         // and its non-atomic flag stay main-thread confined.
@@ -205,6 +207,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         reconnectWhenOnline = null
         keepAliveLatched = false
         val epoch = ++connectionEpoch
+        attemptEnvironmentId = null
         autoConnectPending = false
         connectionJob?.cancel()
         _sshHostKey.value = null
@@ -299,6 +302,24 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         client.connect(environment)
     } }
 
+    /**
+     * The user picked [environment] from the machine list or rail. Returning to the machine that is already live (fresh
+     * pong) or still connecting reuses that session as is; only a different machine, or a dead or stale session,
+     * connects (and [connectThroughPlan] closes the previous one first).
+     */
+    fun selectMachine(environment: SavedEnvironment) {
+        if (reusableSession(environment.id)) return
+        connect(environment)
+    }
+
+    private fun reusableSession(environmentId: String): Boolean {
+        val current = state.value
+        if (_sshLogin.value != null || _sshHostKey.value != null) return false
+        if (_working.value) return attemptEnvironmentId == environmentId
+        return current.environment?.id == environmentId && current.connection == ConnectionStatus.Connected &&
+            client.millisSinceLastPong()?.let { it <= RETAINED_CONNECTION_FRESHNESS_MS } == true
+    }
+
     fun connect(environment: SavedEnvironment) {
         if (draft.value != null && environment.id != drafts.environmentId) clearDraft()
         val input = environment.ssh?.let { environment.sshInput() }
@@ -308,6 +329,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         }
         if (input != null) connectionAction(SSH_FAILURE, ConnectionKind.Ssh) { connectThroughPlan(environment) }
         else connectionAction("Could not connect. Check the server or pair again if access has expired.") { connectThroughPlan(environment) }
+        attemptEnvironmentId = environment.id
     }
 
     fun connectSsh(input: SshConnectionInput) { connectionAction(SSH_FAILURE, ConnectionKind.Ssh) { openSsh(input) } }
