@@ -149,6 +149,13 @@ internal class HtmlRenderByteBudget(val limit: Long = DEFAULT_LIMIT) {
             return true
         }
 
+        /** Raises the reservation by [extra] bytes; false (nothing changes) when over budget or released. */
+        @Synchronized
+        fun growBy(extra: Long): Boolean {
+            if (extra < 0 || extra > Long.MAX_VALUE - held) return false
+            return growTo(held + extra)
+        }
+
         /** Gives every held byte back; safe to call more than once. */
         @Synchronized
         fun release() {
@@ -332,10 +339,10 @@ internal class HtmlRenderSubresourceFetcher(
         if (!reservation.growTo(size * 2)) return HtmlRenderResource.failed()
         var bytes = buffer.readByteArray()
         if (final != requested && mimeType == "text/css") {
-            // The rebased stylesheet is built next to the original.
-            if (!reservation.growTo(size * 3)) return HtmlRenderResource.failed()
-            bytes = htmlRenderRebaseCssBytes(bytes, type?.charset(), final)
-            if (bytes.size > maxBytes) return HtmlRenderResource.failed()
+            // The rebase reserves everything it allocates (decode, count, build, encode) before allocating it, and
+            // refuses to build output past the cap.
+            bytes = htmlRenderRebaseCssBytes(bytes, type?.charset(), final, maxBytes, reservation::growBy)
+                ?: return HtmlRenderResource.failed()
         }
         return HtmlRenderResource(
             status = code,
