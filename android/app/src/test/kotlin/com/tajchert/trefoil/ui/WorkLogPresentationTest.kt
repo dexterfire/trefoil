@@ -155,6 +155,9 @@ class WorkLogPresentationTest {
         assertTrue(searched.startsWith("Searched first line second line xxx"))
         assertEquals(maxLabelLength, searched.length)
         assertEquals(maxLabelLength, boundedLabel("a ".repeat(500)).length)
+        val webSearch = singleWorkLabel(ToolActivity("w", "first line\nsecond line " + "x".repeat(400), kind = "web_search", status = "completed"))
+        assertEquals(maxLabelLength, webSearch.length)
+        assertTrue(webSearch.startsWith("first line second line xxx"))
         // An emoji straddling the cut is dropped whole, never split into a lone surrogate.
         val emoji = boundedLabel("a".repeat(maxLabelLength - 2) + "\uD83D\uDE00bb")
         assertEquals("a".repeat(maxLabelLength - 2) + "…", emoji)

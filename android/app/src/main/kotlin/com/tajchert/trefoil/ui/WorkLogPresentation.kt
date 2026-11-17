@@ -94,7 +94,7 @@ internal fun singleWorkLabel(activity: ToolActivity): String {
     if (activity.kind == "reasoning") return thoughtPreview(activity.reasoningText).ifBlank { "Thought" }
     if (activity.workAction == WorkAction.Edit) return summarizeWorkGroup(listOf(activity)).label
     t3ToolDisplayName(activity, activity.lifecycle)?.let { return it }
-    if (activity.kind == "web_search") return activity.meaningfulTitle ?: "Web search"
+    if (activity.kind == "web_search") return activity.meaningfulTitle?.let(::boundedLabel) ?: "Web search"
     return workEntryLabel(activity)
 }
 
