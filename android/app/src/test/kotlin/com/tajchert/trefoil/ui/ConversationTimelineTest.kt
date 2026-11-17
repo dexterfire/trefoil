@@ -212,6 +212,14 @@ class ConversationTimelineTest {
         val work = folded.filterIsInstance<ConversationEntry.Work>()
         assertEquals(listOf("run:r:activity:t1", "run:r:activity:t2"), work.map { it.key })
         assertEquals(listOf("Worked for 4s", "Worked for 40s"), work.map { it.label })
+        // A split row whose only entry never recorded an end shows no duration rather than "Worked for 1ms".
+        val openEnded = foldConversationTimeline(conversationTimeline(listOf(
+            ConversationMessage("u", "user", "Draw", runId = "r", ordinal = 0, createdAt = "2026-01-01T12:00:00Z"),
+            ConversationMessage("a", "assistant", "Done", runId = "r", ordinal = 6, createdAt = "2026-01-01T12:10:00Z")), listOf(
+            timed("t1", 1, "2026-01-01T12:00:01Z", "2026-01-01T12:00:05Z"),
+            htmlActivity("h", 2).copy(startedAt = "2026-01-01T12:00:06Z", completedAt = "2026-01-01T12:00:07Z"),
+            timed("t2", 3, "2026-01-01T12:05:00Z", "2026-01-01T12:05:30Z").copy(completedAt = null))), runs = listOf(run))
+        assertEquals(listOf("Worked for 4s", "Worked"), openEnded.filterIsInstance<ConversationEntry.Work>().map { it.label })
         // A run that folds into a single row keeps the authoritative whole-run duration.
         val single = foldConversationTimeline(conversationTimeline(listOf(
             ConversationMessage("u", "user", "Draw", runId = "r", ordinal = 0, createdAt = "2026-01-01T12:00:00Z"),

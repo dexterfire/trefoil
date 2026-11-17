@@ -169,7 +169,12 @@ internal fun foldConversationTimeline(
     val splitRuns = result.filterIsInstance<ConversationEntry.Work>().groupingBy { it.runId }.eachCount().filterValues { it > 1 }.keys
     if (splitRuns.isEmpty()) return result
     return result.map { entry ->
-        if (entry is ConversationEntry.Work && entry.runId in splitRuns) entry.copy(label = workLabel(firstStart(entry.entries), lastEnd(entry.entries))) else entry
+        if (entry is ConversationEntry.Work && entry.runId in splitRuns) {
+            // lastEnd falls back to a start time, so a row with no real end would read "Worked for 1ms": show no duration instead.
+            val start = firstStart(entry.entries)
+            val end = lastEnd(entry.entries)
+            entry.copy(label = if (start != null && end != null && end > start) workLabel(start, end) else "Worked")
+        } else entry
     }
 }
 
