@@ -702,11 +702,66 @@ class HtmlRenderSubresourcesTest {
         )
     }
 
-    @Test fun absurdlyLongReferencesAreCopiedAsWritten() {
-        val long = "a".repeat(20_000)
-        listOf("a{background:url($long)}", "a{background:url('$long')}", "@import '$long';").forEach {
-            assertEquals(it, htmlRenderRebaseCss(it, cssBase))
+    private val longToken = "t".repeat(9_000)
+    private val longCss = "a{background:url(\"sprite.svg?token=$longToken\")}"
+    private val longRebased = "a{background:url(\"https://cdn.example/v2/css/sprite.svg?token=$longToken\")}"
+
+    @Test fun longRelativeTargetsAreRebasedToo() {
+        assertEquals(longRebased, htmlRenderRebaseCss(longCss, cssBase))
+        // Unquoted and @import forms, and a target far over the old copy-as-written limit.
+        val huge = "h".repeat(20_000)
+        assertEquals("a{background:url(https://cdn.example/v2/css/$huge)}", htmlRenderRebaseCss("a{background:url($huge)}", cssBase))
+        assertEquals("@import 'https://cdn.example/v2/css/$huge';", htmlRenderRebaseCss("@import '$huge';", cssBase))
+        // Through the byte path with its reservations, and the counting pass agrees with the build pass.
+        val rebased = htmlRenderRebaseCssBytes(longCss.toByteArray(), null, cssBase, 1L shl 20) { true }!!
+        assertEquals(longRebased, rebased.toString(Charsets.UTF_8))
+        assertEquals(longRebased.length.toLong(), htmlRenderCountRebasedCss(longCss, cssBase)!!.length)
+    }
+
+    @Test fun longTargetReservesExtraScratchBeforeItIsResolvedAndRefusalFailsTheRebase() {
+        val reservations = mutableListOf<Long>()
+        htmlRenderRebaseCssBytes(longCss.toByteArray(), null, cssBase, 1L shl 20) { reservations += it; true }!!
+        // Decode buffer, decoded string, fixed scratch, scratch for the long target, rebuilt text, encode buffer, trim.
+        val extra = 4L * (longToken.length + "sprite.svg?token=".length - 8_192) * 2
+        assertEquals(extra, reservations[3])
+        assertEquals(7, reservations.size)
+        var calls = 0
+        assertNull(htmlRenderRebaseCssBytes(longCss.toByteArray(), null, cssBase, 1L shl 20) { calls++ != 3 })
+        // Refused at the scratch: nothing after it (builder, encode buffer) was reserved.
+        assertEquals(4, calls)
+        // Targets within the limit never ask for extra scratch, however many there are.
+        val shortCss = "a{background:url(b.png)}".repeat(100)
+        var shortCalls = 0
+        assertNotNull(htmlRenderRebaseCssBytes(shortCss.toByteArray(), null, cssBase, 1L shl 20) { shortCalls++; true })
+        assertEquals(6, shortCalls)
+        // Many long targets share one scratch: only growth over the longest so far is reserved.
+        val many = "a{background:url(\"s.svg?t=$longToken\")}".repeat(50)
+        var manyCalls = 0
+        assertNotNull(htmlRenderRebaseCssBytes(many.toByteArray(), null, cssBase, 1L shl 24) { manyCalls++; true })
+        assertEquals(7, manyCalls)
+    }
+
+    @Test fun redirectedStylesheetWithALongTargetIsRebasedAndUnderATooSmallBudgetFailsCleanly() {
+        val server = redirectedStylesheet(longCss)
+        val rebased = HtmlRenderSubresourceFetcher(server.client, budget = HtmlRenderByteBudget(2L * 1024 * 1024))
+            .fetch("https://cdn.example/latest.css", emptyMap(), policy::allowsFetch)
+        assertEquals(200, rebased.status)
+        assertEquals(
+            "a{background:url(\"https://cdn.example/v2/p/sprite.svg?token=$longToken\")}",
+            rebased.body.toString(Charsets.UTF_8),
+        )
+        val outcomes = (10_000..400_000 step 1_000).map { limit ->
+            val budget = HtmlRenderByteBudget(limit.toLong())
+            val result = HtmlRenderSubresourceFetcher(server.client, budget = budget)
+                .fetch("https://cdn.example/latest.css", emptyMap(), policy::allowsFetch)
+            assertEquals("limit $limit", 0, budget.inUse)
+            if (result.status == 200) assertEquals("limit $limit", rebased.body.toString(Charsets.UTF_8), result.body.toString(Charsets.UTF_8))
+            else { assertEquals(502, result.status); assertEquals(0, result.body.size) }
+            limit to result.status
         }
+        val firstOk = outcomes.first { it.second == 200 }.first
+        assertTrue(outcomes.all { (limit, status) -> (status == 200) == (limit >= firstOk) })
+        assertTrue("first ok $firstOk", firstOk > 10_000)
     }
 
     /** `url(a)` many times against a long final URL: the rebased text is vastly larger than the stylesheet. */

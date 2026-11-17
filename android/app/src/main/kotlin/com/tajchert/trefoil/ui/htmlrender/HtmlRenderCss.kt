@@ -26,11 +26,17 @@ internal class HtmlRenderCssRebaseCount(val length: Long, val rewritten: Boolean
 
 /**
  * Counting pass of [htmlRenderRebaseCss]: allocates nothing proportional to the output and gives up (null) as
- * soon as the rebased text would pass [limitChars] chars.
+ * soon as the rebased text would pass [limitChars] chars. A target longer than [MAX_REBASED_TARGET_CHARS] is
+ * announced to [reserveScratch] (extra bytes about to be held for resolving it) first; a refusal gives up too.
  */
-internal fun htmlRenderCountRebasedCss(css: String, base: HttpUrl, limitChars: Long = Long.MAX_VALUE): HtmlRenderCssRebaseCount? {
+internal fun htmlRenderCountRebasedCss(
+    css: String,
+    base: HttpUrl,
+    limitChars: Long = Long.MAX_VALUE,
+    reserveScratch: ((Long) -> Boolean)? = null,
+): HtmlRenderCssRebaseCount? {
     val sink = CountingSink(limitChars)
-    val rebaser = CssRebaser(css, base, sink)
+    val rebaser = CssRebaser(css, base, sink, reserveScratch)
     return try {
         rebaser.run()
         HtmlRenderCssRebaseCount(sink.count, rebaser.rewritten)
@@ -87,7 +93,7 @@ internal fun htmlRenderRebaseCssBytes(
         // in both passes: this one reservation covers them all.
         if (!reserve(SCRATCH_FACTOR * (base.toString().length + MAX_REBASED_TARGET_CHARS) * CHAR_BYTES)) return null
         // Every charset encodes a char to at least one byte, so more than maxBytes chars cannot fit.
-        val count = htmlRenderCountRebasedCss(text, base, maxBytes) ?: return null
+        val count = htmlRenderCountRebasedCss(text, base, maxBytes, reserve) ?: return null
         if (!count.rewritten) return bytes
         if (!reserve(count.length * CHAR_BYTES)) return null
         // An array-backed source: the encoder reads it in place instead of copying it to an array of its own.
@@ -121,7 +127,11 @@ private const val CHAR_BYTES = 2L
  */
 private const val SCRATCH_FACTOR = 4L
 
-/** A rebased URL or string target longer than this is copied as written: nothing near it is a real reference. */
+/**
+ * Targets up to this long are resolved within the fixed scratch reserved up front. Longer ones (a token in a
+ * query string, say) are still rebased, since copying one as written would resolve it against the wrong URL
+ * after a redirect, but the counting pass reserves extra scratch for each before resolving it.
+ */
 private const val MAX_REBASED_TARGET_CHARS = 8_192
 
 private object CssOutputLimitExceeded : RuntimeException() {
@@ -171,9 +181,17 @@ private class CountingSink(private val limit: Long) : CssSink {
 }
 
 /** The scanner behind [htmlRenderRebaseCss]; copies everything to [out] and rewrites relative references. */
-private class CssRebaser(private val css: String, private val base: HttpUrl, private val out: CssSink) {
+private class CssRebaser(
+    private val css: String,
+    private val base: HttpUrl,
+    private val out: CssSink,
+    private val reserveScratch: ((Long) -> Boolean)? = null,
+) {
     var rewritten = false
         private set
+
+    /** The target length the scratch held so far covers; resolutions are one at a time, so it only grows to the longest. */
+    private var scratchChars = MAX_REBASED_TARGET_CHARS
 
     fun run() {
         var i = 0
@@ -263,7 +281,13 @@ private class CssRebaser(private val css: String, private val base: HttpUrl, pri
         var to = end
         while (from < to && css[from].isWhitespace()) from++
         while (to > from && css[to - 1].isWhitespace()) to--
-        if (to == from || to - from > MAX_REBASED_TARGET_CHARS || css[from] == '#' || hasScheme(from, to)) return null
+        if (to == from || css[from] == '#' || hasScheme(from, to)) return null
+        val length = to - from
+        if (length > scratchChars) {
+            val extra = SCRATCH_FACTOR * (length - scratchChars) * CHAR_BYTES
+            if (reserveScratch?.invoke(extra) == false) throw CssOutputLimitExceeded
+            scratchChars = length
+        }
         val absolute = base.resolve(css.substring(from, to))?.toString() ?: return null
         // The result goes back into CSS unescaped: refuse anything that could end the token.
         if (absolute.any { it == '"' || it == '\'' || it == '(' || it == ')' || it == '\\' || it.code <= 0x20 || it.code == 0x7F }) return null
