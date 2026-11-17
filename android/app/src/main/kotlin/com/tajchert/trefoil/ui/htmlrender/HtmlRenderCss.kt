@@ -40,6 +40,21 @@ internal fun htmlRenderCountRebasedCss(css: String, base: HttpUrl, limitChars: L
 }
 
 /**
+ * Build pass: the rebased text in a char array of exactly [length] chars (the counted length), or null when
+ * the pass does not write exactly that many (it always does for the input that was counted).
+ */
+internal fun htmlRenderBuildRebasedCss(css: String, base: HttpUrl, length: Int): CharArray? {
+    val chars = CharArray(length)
+    val sink = ArraySink(chars)
+    return try {
+        CssRebaser(css, base, sink).run()
+        if (sink.written == length) chars else null
+    } catch (_: CssOutputLimitExceeded) {
+        null
+    }
+}
+
+/**
  * Byte-level [htmlRenderRebaseCss]: decodes with the response charset, else a BOM, else a leading `@charset`
  * rule, else UTF-8, and re-encodes with the same charset so the `@charset` rule stays true. Returns [bytes]
  * unchanged when they do not round-trip cleanly (malformed or unmappable input) or nothing needs rewriting.
@@ -72,14 +87,14 @@ internal fun htmlRenderRebaseCssBytes(
         val count = htmlRenderCountRebasedCss(text, base, maxBytes) ?: return null
         if (!count.rewritten) return bytes
         if (!reserve(count.length * CHAR_BYTES)) return null
-        val builder = StringBuilder(count.length.toInt())
-        CssRebaser(text, base, BuilderSink(builder)).run()
+        // An array-backed source: the encoder reads it in place instead of copying it to an array of its own.
+        val rebased = htmlRenderBuildRebasedCss(text, base, count.length.toInt()) ?: return null
         val encoder = charset.newEncoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT)
-        val encodedCapacity = minOf(maxBytes, ceil(builder.length * encoder.maxBytesPerChar().toDouble()).toLong())
+        val encodedCapacity = minOf(maxBytes, ceil(rebased.size * encoder.maxBytesPerChar().toDouble()).toLong())
             .coerceAtMost(Int.MAX_VALUE.toLong())
         if (!reserve(encodedCapacity)) return null
         val encoded = ByteBuffer.allocate(encodedCapacity.toInt())
-        val chars = CharBuffer.wrap(builder)
+        val chars = CharBuffer.wrap(rebased, 0, rebased.size)
         var encodeResult = encoder.encode(chars, encoded, true)
         if (encodeResult.isUnderflow) encodeResult = encoder.flush(encoded)
         if (encodeResult.isOverflow) return null
@@ -115,6 +130,22 @@ private interface CssSink {
 private class BuilderSink(private val out: StringBuilder) : CssSink {
     override fun append(c: Char) { out.append(c) }
     override fun append(text: CharSequence, start: Int, end: Int) { out.append(text, start, end) }
+}
+
+/** Writes into a fixed array sized by the counting pass; writing past its end fails like an over-limit count. */
+private class ArraySink(private val chars: CharArray) : CssSink {
+    var written = 0
+        private set
+
+    override fun append(c: Char) {
+        if (written >= chars.size) throw CssOutputLimitExceeded
+        chars[written++] = c
+    }
+
+    override fun append(text: CharSequence, start: Int, end: Int) {
+        if (end - start > chars.size - written) throw CssOutputLimitExceeded
+        for (k in start until end) chars[written++] = text[k]
+    }
 }
 
 private class CountingSink(private val limit: Long) : CssSink {

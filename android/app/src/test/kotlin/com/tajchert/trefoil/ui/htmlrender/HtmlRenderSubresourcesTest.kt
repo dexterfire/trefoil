@@ -683,6 +683,25 @@ class HtmlRenderSubresourcesTest {
         }
     }
 
+    @Test fun buildPassWritesExactlyTheCountedCharsIntoAnArrayBackedBuffer() {
+        cssFixtures.forEach { css ->
+            val count = htmlRenderCountRebasedCss(css, cssBase)!!
+            val chars = htmlRenderBuildRebasedCss(css, cssBase, count.length.toInt())
+            assertNotNull(css, chars)
+            assertEquals(css, count.length, chars!!.size.toLong())
+            assertEquals(css, htmlRenderRebaseCss(css, cssBase), String(chars))
+            // A length that is off by one either way is refused rather than padded or truncated.
+            assertNull(css, htmlRenderBuildRebasedCss(css, cssBase, count.length.toInt() + 1))
+            if (count.length > 0) assertNull(css, htmlRenderBuildRebasedCss(css, cssBase, count.length.toInt() - 1))
+        }
+        // The encoder is fed from that array, so a rewritten stylesheet round-trips through the byte path.
+        val css = "a{background:url(b.png)}".toByteArray()
+        assertEquals(
+            "a{background:url(https://cdn.example/v2/css/b.png)}",
+            htmlRenderRebaseCssBytes(css, null, cssBase, 1_000) { true }!!.toString(Charsets.UTF_8),
+        )
+    }
+
     @Test fun absurdlyLongReferencesAreCopiedAsWritten() {
         val long = "a".repeat(20_000)
         listOf("a{background:url($long)}", "a{background:url('$long')}", "@import '$long';").forEach {
