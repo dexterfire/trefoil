@@ -84,7 +84,8 @@ echo "Version $CUR_NAME ($CUR_CODE) -> $VERSION ($NEW_CODE)"
 COMMITTED=0
 revert() {
   [ "$COMMITTED" = 0 ] || return 0
-  git -C "$ROOT" checkout -- android/app/build.gradle.kts 2>/dev/null || true
+  # From HEAD, not the index: a failed `git commit` leaves the bump staged.
+  git -C "$ROOT" checkout HEAD -- android/app/build.gradle.kts 2>/dev/null || true
 }
 trap revert EXIT
 trap 'exit 130' INT
