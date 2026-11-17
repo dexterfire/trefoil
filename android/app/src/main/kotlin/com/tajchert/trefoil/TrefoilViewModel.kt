@@ -126,6 +126,8 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     private var autoReconnectEnvironment: SavedEnvironment? = null
     /** The active episode only waits out its backoff: no attempt of it is running. */
     private var autoReconnectWaiting = false
+    /** The [connectionEpoch] the active episode expects; once a user action moves the epoch on, the episode is obsolete. */
+    private var autoReconnectEpoch = 0L
     /** A drop while offline reconnects when a default network appears. */
     private var reconnectWhenOnline: SavedEnvironment? = null
         set(value) { field = value; postKeepAliveCheck() }
@@ -523,9 +525,11 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         val environment = resumeEnvironment
         resumeEnvironment = null
         // A running attempt (of a background reconnect episode or not) goes on; connecting would cancel it. An episode that
-        // only waits out its backoff is replaced by one connect now (offline it keeps waiting for the network).
+        // only waits out its backoff is replaced by one connect now (offline it keeps waiting for the network). An episode
+        // made obsolete by a later connection action (epoch moved on) is never taken over: its machine is no longer wanted.
         val episodeActive = autoReconnectJob?.isActive == true
-        val takeOverEpisode = episodeActive && autoReconnectWaiting && !_working.value && networkAvailable && _sshLogin.value == null
+        val takeOverEpisode = episodeActive && autoReconnectWaiting && autoReconnectEpoch == connectionEpoch &&
+            !_working.value && networkAvailable && _sshLogin.value == null
         val target = environment ?: autoReconnectEnvironment?.takeIf { episode -> takeOverEpisode && _environments.value.any { it.id == episode.id } }
         if (takeOverEpisode && target != null) { autoReconnectJob?.cancel(); autoReconnectJob = null }
         val reconnectInFlight = _working.value || autoReconnectJob?.isActive == true
@@ -660,7 +664,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         reconnectWhenOnline = null
         var epoch = connectionEpoch
         // Only the active episode writes these: a cancelled one stops at its next suspension, before any write.
-        autoReconnectEnvironment = environment; autoReconnectWaiting = true
+        autoReconnectEnvironment = environment; autoReconnectWaiting = true; autoReconnectEpoch = epoch
         autoReconnectJob = viewModelScope.launch {
             for (wait in if (immediate) listOf(0L) + AUTO_RECONNECT_BACKOFF_MS.drop(1) else AUTO_RECONNECT_BACKOFF_MS) {
                 autoReconnectWaiting = true
@@ -671,7 +675,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
                 val attempt = connectionAction("Connection lost. Check the network and server, then reconnect.") {
                     connectThroughPlan(environment, interactive = false)
                 }
-                epoch = connectionEpoch
+                epoch = connectionEpoch; autoReconnectEpoch = epoch
                 attempt.join()
                 if (epoch != connectionEpoch) return@launch
                 if (state.value.connection == ConnectionStatus.Connected && state.value.environment?.id == environment.id) return@launch

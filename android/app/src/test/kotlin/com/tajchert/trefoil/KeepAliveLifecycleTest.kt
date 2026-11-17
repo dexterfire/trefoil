@@ -365,6 +365,17 @@ class KeepAliveLifecycleTest {
         assertNotEquals(ConnectionPhase.Idle, model.connectionAttempt.value.phase)
     }
 
+    @Test fun resumeNeverTakesOverAnEpisodeMadeObsoleteByALaterConnectionAction() {
+        armLiveConnection()
+        enableKeepAlive()
+        dropConnection(); advance(500)
+        // A later connection action that already ended moved the epoch on; the episode only notices when its delay ends.
+        field("connectionEpoch").let { it.setLong(model, it.getLong(model) + 1) }
+        model.pause(); advance(500)
+        model.resume(); advance(0)
+        assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
+    }
+
     @Test fun resumeDuringABackgroundReconnectDelayWhileOfflineKeepsWaiting() {
         model.onDefaultNetwork(1)
         armLiveConnection()
