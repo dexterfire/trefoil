@@ -1,5 +1,11 @@
 # Android releases
 
+Release `0.17.0` (`versionCode = 27`) renders thread work like T3 Code: settled turns fold under a muted
+"Worked for X" row (tool failures no longer block the fold; failed or interrupted runs stay open), a run's
+tool calls and thinking group into flat summary rows ("Ran 1 command and read 2 files") that expand to
+individual calls and then their details, group headers never show a failure mark, and failed calls only
+tint their own icon. Check a long thread with failed commands against a real environment on a device.
+
 Release `0.16.1` (`versionCode = 26`) fixes inline HTML renders, which all showed "Unable to load": the
 WebView reports the page request with its `#t3-theme=` fragment and the document policy compared the URL
 exactly. Covered by the instrumented `HtmlRenderPageTest` (`./gradlew :app:connectedDebugAndroidTest`).
