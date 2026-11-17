@@ -106,6 +106,11 @@ object TfIcons {
     /** Route kinds: local network, public HTTPS and the T3 Connect tunnel. */
     val Wifi by lazy { strokeIcon("wifi", "M3 9.5a14 14 0 0 1 18 0M6 13a9.5 9.5 0 0 1 12 0M9 16.5a5 5 0 0 1 6 0", "M12 20h.01") }
     val Globe by lazy { strokeIcon("globe", circle(12f, 12f, 9f), "M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z") }
+    /** Work-log glyphs: reasoning (bulb), generic tool (wrench), mixed group (hammer), severe failure (alert). */
+    val Reasoning by lazy { strokeIcon("reasoning", "M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z") }
+    val Wrench by lazy { strokeIcon("wrench", "M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z") }
+    val Hammer by lazy { strokeIcon("hammer", "M14 10L4.5 19.5a2.1 2.1 0 0 0 3 3L17 13M13 5l5-2 3 3-2 5-3-1-4-4z") }
+    val Alert by lazy { strokeIcon("alert", "M12 4l9 16H3z", "M12 10v4M12 17h.01") }
     val Cloud by lazy { strokeIcon("cloud", "M7 18a4 4 0 0 1-.6-7.96A5.5 5.5 0 0 1 17 9.5a4.2 4.2 0 0 1 .5 8.5z") }
 }
 

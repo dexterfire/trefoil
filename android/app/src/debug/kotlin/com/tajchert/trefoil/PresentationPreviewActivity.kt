@@ -49,8 +49,8 @@ class PresentationPreviewActivity : ComponentActivity() {
                     Surface(Modifier.fillMaxSize().systemBarsPadding()) {
                         CompositionLocalProvider(LocalFileDownloadUi provides FileDownloadUi("fixture", "fixture", true, imageLoader = loader)) {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                ActivityStack(listOf(ToolActivity("image", "View image", status = "completed", images = listOf(image))))
-                                ActivityStack(listOf(ToolActivity("output", "Inspect image", status = "completed", output = "Synthetic image output", images = listOf(image))))
+                                WorkGroup(listOf(ToolActivity("image", "View image", status = "completed", images = listOf(image))))
+                                WorkGroup(listOf(ToolActivity("output", "Inspect image", status = "completed", output = "Synthetic image output", images = listOf(image))))
                             }
                         }
                     }

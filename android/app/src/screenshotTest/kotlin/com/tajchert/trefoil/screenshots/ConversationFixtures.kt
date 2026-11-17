@@ -68,6 +68,13 @@ object ConversationFixtures {
     val searchActivity = act("a-search", "Searched files", "web_search", "completed", 4, input = "PreviewTest annotation")
     val runningActivity = act("a-run", "Running tests", "command_execution", "running", 5, input = "./gradlew :app:testDebugUnitTest")
     val mixedActivities = listOf(commandActivity, editActivity, searchActivity)
+    val readActivity = act("a-read-1", "Read file", "file_read", "completed", 6, input = "ui/ThreadList.kt")
+    val readActivity2 = act("a-read-2", "Read file", "file_read", "completed", 7, input = "ui/DesignSystem.kt")
+    /** One command plus two file reads: the header reads "Ran 1 command and read 2 files" once the labels land. */
+    val commandReadActivities = listOf(commandActivity, readActivity, readActivity2)
+    val failedCommand = act("a-fail", "Ran command", "command_execution", "completed", 8, input = "./gradlew :app:testDebugUnitTest", output = "3 tests completed, 1 failed", exit = 1)
+    val reasoningActivity = act("a-think", "Reasoning", "reasoning", "completed", 9,
+        output = "**Checking the preview setup**\n\nThe screenshot tests need one `@PreviewTest` per composable, so I will add a fixture for each state.")
 
     fun chatState(): ClientState = fx.connectedState(listOf(thread)).copy(
         selectedThreadId = thread.id, selectedModel = model, selectedRuntimeMode = RuntimeMode.ApprovalRequired, models = listOf(model),
