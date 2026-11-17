@@ -160,6 +160,7 @@ class MainActivity : ComponentActivity() {
                 onCancelDraft = model::cancelDraft,
                 onSetRuntimeMode = model::setRuntimeMode,
                 onSetModel = model::setModel,
+                onSetModelOption = model::setModelOption,
                 onReconnect = model::reconnect,
                 onDisconnect = model::disconnect,
                 onForget = model::forget,

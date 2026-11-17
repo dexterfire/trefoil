@@ -40,7 +40,7 @@ import kotlinx.coroutines.launch
 internal fun Conversation(
     rawState: ClientState, send: (String) -> Unit, interrupt: () -> Unit, respond: (String, String, Map<String, List<String>>) -> Unit,
     onLoadActivity: (String) -> Unit = {}, fileDownloadUi: FileDownloadUi = FileDownloadUi(),
-    draft: ThreadDraft? = null, onSetRuntimeMode: (RuntimeMode) -> Unit = {}, onSetModel: (ModelOption) -> Unit = {},
+    draft: ThreadDraft? = null, onSetRuntimeMode: (RuntimeMode) -> Unit = {}, onSetModel: (ModelOption) -> Unit = {}, onSetModelOption: (String, Any) -> Unit = { _, _ -> },
     sendFailed: Flow<Unit> = emptyFlow(),
     /** Back affordance for the conversation header; null on wide layouts where the list stays visible. */
     onBack: (() -> Unit)? = null,
@@ -207,7 +207,7 @@ internal fun Conversation(
             Column(Modifier.windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))) {
                 QuickReplies(state.requests, canSend, respond)
                 if (thread != null && thread.isProviderNativeSubagentThread()) ReadOnlySubagentBar(thread, clock, onOpenParent)
-                else ConversationComposer(state, draft, text, { text = it }, submitted != null, onSetRuntimeMode, onSetModel, interrupt) { submit(text) }
+                else ConversationComposer(state, draft, text, { text = it }, submitted != null, onSetRuntimeMode, onSetModel, onSetModelOption, interrupt) { submit(text) }
             }
         }
     }
@@ -251,7 +251,7 @@ private fun ConversationHeader(title: String, projectTitle: String?, branch: Str
 @Composable
 private fun ConversationComposer(
     state: ClientState, draft: ThreadDraft?, text: String, onText: (String) -> Unit, waiting: Boolean,
-    onSetRuntimeMode: (RuntimeMode) -> Unit, onSetModel: (ModelOption) -> Unit, interrupt: () -> Unit, onSend: () -> Unit,
+    onSetRuntimeMode: (RuntimeMode) -> Unit, onSetModel: (ModelOption) -> Unit, onSetModelOption: (String, Any) -> Unit, interrupt: () -> Unit, onSend: () -> Unit,
 ) {
     val c = Tf.colors
     val running = state.activeRunId != null
@@ -274,7 +274,7 @@ private fun ConversationComposer(
                     },
                 )
                 Row(Modifier.fillMaxWidth().padding(start = 10.dp, end = 6.dp, top = 4.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    ComposerPickers(state, draft, onSetRuntimeMode, onSetModel, Modifier.weight(1f))
+                    ComposerPickers(state, draft, onSetRuntimeMode, onSetModel, onSetModelOption, Modifier.weight(1f))
                     if (running && text.isBlank()) CircleButton("Stop", TfIcons.Stop, c.text, c.bg, canSend, interrupt)
                     else CircleButton(if (running) "Queue message" else "Send message", TfIcons.Send, c.accent, c.onAccent, canSend && text.isNotBlank() && !waiting, onSend)
                 }
@@ -309,7 +309,7 @@ private fun CircleButton(description: String, icon: ImageVector, container: Colo
 }
 
 @Composable
-private fun ComposerPickers(state: ClientState, draft: ThreadDraft?, onSetRuntimeMode: (RuntimeMode) -> Unit, onSetModel: (ModelOption) -> Unit, modifier: Modifier = Modifier) {
+private fun ComposerPickers(state: ClientState, draft: ThreadDraft?, onSetRuntimeMode: (RuntimeMode) -> Unit, onSetModel: (ModelOption) -> Unit, onSetModelOption: (String, Any) -> Unit, modifier: Modifier = Modifier) {
     val c = Tf.colors
     val mode = if (draft != null) draft.runtimeMode else state.selectedRuntimeMode
     val model = if (draft != null) draft.model else state.selectedModel
@@ -318,15 +318,15 @@ private fun ComposerPickers(state: ClientState, draft: ThreadDraft?, onSetRuntim
     var modelOpen by remember { mutableStateOf(false) }
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         Box(Modifier.weight(1f, fill = false)) {
-            TfPill(model?.label ?: "Model", { modelOpen = true }, icon = TfIcons.Sparkle, enabled = enabled && state.models.isNotEmpty(), contentDescription = "Model: ${model?.label ?: "not set"}")
-            DropdownMenu(modelOpen, { modelOpen = false }) {
-                val choices = if (state.selectedProviderLocked && draft == null && model != null) state.models.filter { it.instanceId == model.instanceId } else state.models
-                choices.forEach { option ->
-                    DropdownMenuItem(text = { Column { Text(option.label); Text(option.instanceId, style = MaterialTheme.typography.labelSmall, color = c.muted) } },
-                        onClick = { modelOpen = false; onSetModel(option) },
-                        trailingIcon = { if (option.sameModelAs(model)) Icon(TfIcons.Check, "Selected", Modifier.size(18.dp)) })
-                }
-            }
+            val shown = catalogModel(model, state.models)
+            val explicit = if (draft != null) draft.modelOptions else state.selectedModelOptions
+            val pillLabel = modelPillLabel(shown, explicit)
+            TfPill(pillLabel, { modelOpen = true }, icon = TfIcons.Sparkle, enabled = enabled && state.models.isNotEmpty(), contentDescription = "Model: ${if (shown == null) "not set" else pillLabel}")
+            if (modelOpen) ModelPickerSheet(
+                models = pickerModels(state.models, model, state.selectedProviderLocked, draft != null), providers = state.providers,
+                current = shown, explicit = explicit, enabled = enabled, dismiss = { modelOpen = false },
+                onSetModel = onSetModel, onSetModelOption = onSetModelOption,
+            )
         }
         Box(Modifier.weight(1f, fill = false)) {
             TfPill(mode?.label ?: "Mode", { modeOpen = true }, icon = TfIcons.Shield, enabled = enabled, contentDescription = "Runtime mode: ${mode?.label ?: "not set"}")
