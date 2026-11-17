@@ -1,10 +1,11 @@
 package com.tajchert.trefoil.ui.htmlrender
 
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.Proxy
+import java.net.ProxySelector
 import java.net.ServerSocket
 import java.net.Socket
-import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
@@ -12,7 +13,14 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import javax.net.SocketFactory
 import kotlin.concurrent.thread
+import okhttp3.Address
+import okhttp3.Authenticator
+import okhttp3.Connection
+import okhttp3.ConnectionSpec
 import okhttp3.Dns
+import okhttp3.Handshake
+import okhttp3.Interceptor
+import okhttp3.Route
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Call
 import okhttp3.Headers.Companion.headersOf
@@ -469,20 +477,6 @@ class HtmlRenderSubresourcesTest {
         assertEquals(0, budget.inUse)
     }
 
-    /** A plain TCP listener on loopback that counts connection attempts; a refused client never reaches it. */
-    private class LoopbackListener : AutoCloseable {
-        private val socket = ServerSocket(0, 50, InetAddress.getLoopbackAddress()).apply { soTimeout = 200 }
-        val port get() = socket.localPort
-        val accepted = AtomicInteger()
-        @Volatile private var open = true
-        private val acceptor = thread {
-            while (open) {
-                try { socket.accept().close(); accepted.incrementAndGet() } catch (_: SocketTimeoutException) {} catch (_: java.io.IOException) { return@thread }
-            }
-        }
-        override fun close() { open = false; socket.close(); acceptor.join(2_000) }
-    }
-
     @Test fun productionClientKeepsItsHardenedConfiguration() {
         val client = createHtmlRenderHttpClient()
         assertSame(Proxy.NO_PROXY, client.proxy)
@@ -577,21 +571,59 @@ class HtmlRenderSubresourcesTest {
         }
     }
 
-    @Test fun publicPeerInterceptorRejectsAConnectionToANonPublicPeerBeforeTheRequestIsSent() {
-        LoopbackListener().use { listener ->
-            // Plain HTTP so the network interceptor runs right after the TCP connect, standing in for the TLS case.
-            val guarded = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).addNetworkInterceptor(PublicPeerInterceptor).build()
-            val blocked = assertThrows(java.io.IOException::class.java) {
-                guarded.newCall(Request.Builder().url("http://127.0.0.1:${listener.port}/").build()).execute()
+    /** A minimal chain: a request, a connection whose peer is [peer] (none when null), and a recorded `proceed`. */
+    private class FakeChain(private val request: Request, peer: String?) : Interceptor.Chain {
+        var proceeded = 0
+        private val connection: Connection? = peer?.let {
+            val address = Address(
+                request.url.host, request.url.port, Dns.SYSTEM, SocketFactory.getDefault(), null, null, null,
+                Authenticator.NONE, null, listOf(Protocol.HTTP_1_1), listOf(ConnectionSpec.MODERN_TLS), ProxySelector.getDefault(),
+            )
+            val route = Route(address, Proxy.NO_PROXY, InetSocketAddress(InetAddress.getByName(it), request.url.port))
+            object : Connection {
+                override fun route() = route
+                override fun socket(): Socket = throw UnsupportedOperationException()
+                override fun handshake(): Handshake? = null
+                override fun protocol() = Protocol.HTTP_1_1
             }
-            assertEquals("Blocked peer", blocked.message)
-            // Control: without the interceptor the same request gets past the connect and only then fails.
-            val unguarded = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).build()
-            val other = assertThrows(java.io.IOException::class.java) {
-                unguarded.newCall(Request.Builder().url("http://127.0.0.1:${listener.port}/").build()).execute()
-            }
-            assertNotEquals("Blocked peer", other.message)
         }
+        override fun request() = request
+        override fun proceed(request: Request): Response {
+            proceeded++
+            return Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK").build()
+        }
+        override fun connection() = connection
+        override fun call(): Call = throw UnsupportedOperationException()
+        override fun connectTimeoutMillis() = 1_000
+        override fun withConnectTimeout(timeout: Int, unit: TimeUnit) = this
+        override fun readTimeoutMillis() = 1_000
+        override fun withReadTimeout(timeout: Int, unit: TimeUnit) = this
+        override fun writeTimeoutMillis() = 1_000
+        override fun withWriteTimeout(timeout: Int, unit: TimeUnit) = this
+    }
+
+    @Test fun publicPeerInterceptorRejectsANonPublicPeerOverHttpsAndLetsAPublicOneThrough() {
+        val https = Request.Builder().url("https://cdn.example/x.js").build()
+        // The connection is already open: a private, loopback, link-local, mapped or ULA peer must not get the request.
+        listOf("192.168.1.10", "10.0.0.1", "127.0.0.1", "169.254.169.254", "::1", "fd00::1", "::ffff:192.168.1.10").forEach { peer ->
+            val chain = FakeChain(https, peer)
+            val blocked = assertThrows(peer, java.io.IOException::class.java) { PublicPeerInterceptor.intercept(chain) }
+            assertEquals(peer, "Blocked peer", blocked.message)
+            assertEquals(peer, 0, chain.proceeded)
+        }
+        // The same HTTPS request with a public peer proceeds, so the rejections above are down to the peer address.
+        listOf("93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946").forEach { peer ->
+            val chain = FakeChain(https, peer)
+            assertEquals(peer, 200, PublicPeerInterceptor.intercept(chain).code)
+            assertEquals(peer, 1, chain.proceeded)
+        }
+        // No connection, or a public peer over plain HTTP, is refused as well.
+        val noConnection = FakeChain(https, null)
+        assertThrows(java.io.IOException::class.java) { PublicPeerInterceptor.intercept(noConnection) }
+        assertEquals(0, noConnection.proceeded)
+        val plain = FakeChain(Request.Builder().url("http://cdn.example/x.js").build(), "93.184.216.34")
+        assertThrows(java.io.IOException::class.java) { PublicPeerInterceptor.intercept(plain) }
+        assertEquals(0, plain.proceeded)
     }
 
     private val cssBase = "https://cdn.example/v2/css/style.css".toHttpUrl()
