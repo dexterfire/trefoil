@@ -81,12 +81,28 @@ class ThreadDraftController(
         if (current != null) _draft.value = current.copy(runtimeMode = mode)
         else mutate("Mode change outcome is uncertain. Reconnect and check the thread.") { client.setRuntimeMode(mode) }
     }
-    /** Draft: updates locally, keeping a mode the model supports. Selected thread: dispatches `thread.model-selection.set`. */
+    /**
+     * Draft: updates locally, keeping a mode the model supports and only the options it offers.
+     * Selected thread: dispatches `thread.model-selection.set`.
+     */
     fun setModel(model: ModelOption) {
         val current = _draft.value
-        if (current != null) _draft.value = current.copy(model = model, runtimeMode = compatibleRuntimeMode(current.runtimeMode, model))
+        if (current != null) _draft.value = current.copy(model = model, runtimeMode = compatibleRuntimeMode(current.runtimeMode, model), modelOptions = catalogEntry(model).validOptions(current.modelOptions))
         else mutate("Model change outcome is uncertain. Reconnect and check the thread.") { client.setModel(model) }
     }
+    /**
+     * Sets provider option [id] ([value] String or Boolean). Draft: updates locally when the model offers
+     * the value, otherwise shows why. Selected thread: dispatches `thread.model-selection.set` with merged options.
+     */
+    fun setModelOption(id: String, value: Any) {
+        val current = _draft.value
+        if (current != null) {
+            val refusal = runCatching { catalogEntry(current.model).requireOptionValue(id, value) }.exceptionOrNull()
+            if (refusal != null) notice(refusal.message) else _draft.value = current.copy(modelOptions = current.modelOptions + (id to value))
+        } else mutate("Model option change outcome is uncertain. Reconnect and check the thread.") { client.setModelOption(id, value) }
+    }
+    /** The server catalog entry for [model] (current descriptors), or [model] itself when the catalog lacks it. */
+    private fun catalogEntry(model: ModelOption): ModelOption = client.state.value.models.firstOrNull { it.sameModelAs(model) } ?: model
     private fun mutate(uncertain: String, block: suspend () -> Unit) {
         scope.launch {
             notice(null)

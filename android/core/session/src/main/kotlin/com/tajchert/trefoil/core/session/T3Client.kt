@@ -270,7 +270,7 @@ class T3Client(
             val threadStop = (config.obj("environment").obj("capabilities")["threadStop"] as? JsonPrimitive)?.booleanOrNull == true
             val models = config.objects("providers").filter { it["enabled"]?.jsonPrimitive?.booleanOrNull != false }.flatMap { provider ->
                 val modes = supportedRuntimeModes(provider)
-                provider.objects("models").map { ModelOption(provider.string("instanceId"), it.string("slug"), it.string("name"), modes) }
+                provider.objects("models").map { ModelOption(provider.string("instanceId"), it.string("slug"), it.string("name"), modes, modelOptionDescriptors(it)) }
             }
             val defaultMode = RuntimeMode.fromWire(config.obj("settings").string("defaultRuntimeMode"))
             synchronized(lifecycleLock) { check(epoch == generation) { "Connection was cancelled" }; directEndpoints = directEndpointHints(config) }
@@ -530,7 +530,7 @@ class T3Client(
         val cached = state.value.environment?.id?.let { threadProjections[it to threadId] }
         if (cached != null) applyProjection(cached, threadId)
         else if (state.value.selectedThreadId == threadId) update { it.copy(canWrite = false, canRead = false) }
-        else update { it.copy(selectedThreadId = threadId, messages = emptyList(), requests = emptyList(), activities = emptyList(), runs = emptyList(), attempts = emptyList(), subagents = emptyList(), activeRunId = null, canWrite = false, selectedRuntimeMode = null, selectedModel = null, selectedProviderLocked = false) }
+        else update { it.copy(selectedThreadId = threadId, messages = emptyList(), requests = emptyList(), activities = emptyList(), runs = emptyList(), attempts = emptyList(), subagents = emptyList(), activeRunId = null, canWrite = false, selectedRuntimeMode = null, selectedModel = null, selectedModelOptions = emptyMap(), selectedProviderLocked = false) }
         val epoch = generation
         refreshSignals?.close(); refreshJob?.cancel()
         val signals = Channel<Unit>(Channel.CONFLATED)
@@ -617,6 +617,7 @@ class T3Client(
             runs = conversationRuns(value), attempts = runAttempts(value), subagents = subagents(value),
             selectedRuntimeMode = RuntimeMode.fromWire(thread.string("runtimeMode")),
             selectedModel = selectedModel(thread["modelSelection"] as? JsonObject, it.models),
+            selectedModelOptions = modelOptionValues(thread.obj("modelSelection")["options"]),
             selectedProviderLocked = providerLocked(value)) }
     }
     /** T3 `thread.modelSelection {instanceId, model}`; prefers the server catalog entry for its label. */
@@ -891,10 +892,15 @@ class T3Client(
             check(state.value.projects.any { it.id == draft.projectId }) { "Choose a project from this environment" }
             val model = state.value.models.firstOrNull { it.instanceId == draft.model.instanceId && it.model == draft.model.model } ?: error("Choose a server-provided model")
             check(model.supportedRuntimeModes.isEmpty() || draft.runtimeMode in model.supportedRuntimeModes) { "${model.label} does not support ${draft.runtimeMode.label}" }
+            // Only values the catalog still offers are sent; the catalog may have changed since the draft picked them.
+            val options = model.validOptions(draft.modelOptions)
             generation to buildJsonObject {
                 put("commandId", draft.commandId); put("threadId", draft.threadId); put("creationSource", CREATION_SOURCE)
                 put("projectId", draft.projectId); put("title", threadTitleSeed(firstMessage)); put("generateTitle", true)
-                put("modelSelection", buildJsonObject { put("instanceId", model.instanceId); put("model", model.model) })
+                put("modelSelection", buildJsonObject {
+                    put("instanceId", model.instanceId); put("model", model.model)
+                    if (options.isNotEmpty()) put("options", modelOptionsJson(options))
+                })
                 put("runtimeMode", draft.runtimeMode.wire); put("interactionMode", "default")
                 put("workspaceStrategy", buildJsonObject { put("type", "root") })
                 put("initialMessage", buildJsonObject {
@@ -939,9 +945,29 @@ class T3Client(
             check(!current.selectedProviderLocked || currentInstance.isBlank() || currentInstance == selected.instanceId) {
                 "This conversation has started and its provider cannot change. Choose a model from the same provider."
             }
-            val options = (selection["options"] as? JsonObject)?.takeIf { selection.string("instanceId") == selected.instanceId && selection.string("model") == selected.model }
+            // Either wire form is passed through unchanged.
+            val options = selection["options"]?.takeIf { (it is JsonObject || it is JsonArray) && selection.string("instanceId") == selected.instanceId && selection.string("model") == selected.model }
             buildJsonObject { put("modelSelection", buildJsonObject {
                 put("instanceId", selected.instanceId); put("model", selected.model); options?.let { put("options", it) }
+            }) }
+        }
+    }
+    /**
+     * Same instance and model with the thread's options merged: [id] gets [value], the others stay.
+     * Sent in the canonical array form; an id or value the model does not offer is refused locally.
+     */
+    override suspend fun setModelOption(id: String, value: Any) {
+        dispatch("thread.model-selection.set", "model option change") {
+            val current = state.value
+            val selection = projection.obj("thread").obj("modelSelection")
+            val instanceId = selection.string("instanceId").ifBlank { current.selectedModel?.instanceId.orEmpty() }
+            val modelId = selection.string("model").ifBlank { current.selectedModel?.model.orEmpty() }
+            check(instanceId.isNotBlank() && modelId.isNotBlank()) { "This conversation has no model yet" }
+            val model = current.models.firstOrNull { it.instanceId == instanceId && it.model == modelId } ?: error("The conversation's model is not offered by this server")
+            model.requireOptionValue(id, value)
+            val options = modelOptionValues(selection["options"]) + (id to value)
+            buildJsonObject { put("modelSelection", buildJsonObject {
+                put("instanceId", model.instanceId); put("model", model.model); put("options", modelOptionsJson(options))
             }) }
         }
     }

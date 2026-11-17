@@ -16,7 +16,7 @@ import java.util.concurrent.ConcurrentHashMap
 class NewThreadFlowTest {
   private val descriptor = """{"environmentId":"env-1","label":"Test","orchestrationProtocolVersion":2,"capabilities":{}}"""
   private fun json(body: String) = MockResponse().setHeader("Content-Type", "application/json").setBody(body)
-  private val config = """{"settings":{"defaultRuntimeMode":"auto-accept-edits"},"providers":[{"instanceId":"codex","driver":"codex","enabled":true,"supportedRuntimeModes":["approval-required","full-access","future-mode"],"models":[{"slug":"gpt-5","name":"GPT-5"},{"slug":"gpt-5-mini","name":"Mini"}]},{"instanceId":"claude","driver":"claudeAgent","enabled":true,"models":[{"slug":"sonnet","name":"Sonnet"}]}]}"""
+  private val config = """{"settings":{"defaultRuntimeMode":"auto-accept-edits"},"providers":[{"instanceId":"codex","driver":"codex","enabled":true,"supportedRuntimeModes":["approval-required","full-access","future-mode"],"models":[{"slug":"gpt-5","name":"GPT-5","capabilities":{"optionDescriptors":[{"id":"reasoningEffort","label":"Reasoning","type":"select","options":[{"id":"low","label":"Low"},{"id":"medium","label":"Medium","isDefault":true},{"id":"high","label":"High"}]},{"id":"fastMode","label":"Fast mode","type":"boolean"},{"id":"future","label":"Future","type":"dial"}]}},{"slug":"gpt-5-mini","name":"Mini","capabilities":null}]},{"instanceId":"claude","driver":"claudeAgent","enabled":true,"models":[{"slug":"sonnet","name":"Sonnet"}]}]}"""
   private val existingThread = """{"thread":{"id":"t","runtimeMode":"full-access","modelSelection":{"instanceId":"codex","model":"gpt-5-mini","options":{"reasoningEffort":"high"}},"futureField":1},"messages":[],"runs":[],"turnItems":[],"runtimeRequests":[]}"""
 
   /** Effect RPC decode failure as T3 v0.1.x sends it for a payload missing a required key. */
@@ -338,6 +338,69 @@ class NewThreadFlowTest {
     assertTrue(model.string("commandId").isNotBlank())
     try { f.client.setModel(ModelOption("codex", "not-offered")); fail("Unknown model must fail") } catch (_: IllegalStateException) { }
     assertEquals(2, f.payloads("orchestration.dispatchCommand").size)
+  }
+
+  private val legacyOptionsThread = """{"thread":{"id":"legacy","runtimeMode":"full-access","modelSelection":{"instanceId":"codex","model":"gpt-5","options":{"reasoningEffort":"low","fastMode":false,"custom":"keep"}}},"messages":[],"runs":[],"turnItems":[],"runtimeRequests":[]}"""
+  private val canonicalOptionsThread = """{"thread":{"id":"canonical","runtimeMode":"full-access","modelSelection":{"instanceId":"codex","model":"gpt-5","options":[{"id":"reasoningEffort","value":"high"},{"id":"fastMode","value":true}]}},"messages":[],"runs":[],"turnItems":[],"runtimeRequests":[]}"""
+  private suspend fun T3Client.open(threadId: String): ClientState {
+    selectThread(threadId); return withTimeout(5_000) { state.first { it.canWrite && it.selectedThreadId == threadId && it.selectedModel != null } }
+  }
+
+  @Test fun configParsesModelOptionDescriptors() = withServer { f ->
+    val models = f.client.state.value.models
+    val gpt5 = models.first { it.model == "gpt-5" }
+    assertEquals(listOf("reasoningEffort", "fastMode"), gpt5.descriptors.map { it.id })
+    assertEquals(listOf("low", "medium", "high"), gpt5.reasoning?.selectableChoices?.map { it.id })
+    assertEquals("fastMode", gpt5.fastMode?.id)
+    assertEquals("medium", gpt5.resolvedOptionValue(gpt5.reasoning!!, emptyMap()))
+    assertTrue(models.first { it.model == "gpt-5-mini" }.descriptors.isEmpty())
+    assertTrue(models.first { it.model == "sonnet" }.descriptors.isEmpty())
+  }
+
+  @Test fun projectionReadsSelectedModelOptionsInBothWireForms() = withServer(projections = mapOf("legacy" to legacyOptionsThread, "canonical" to canonicalOptionsThread)) { f ->
+    assertEquals(mapOf("reasoningEffort" to "low", "fastMode" to false, "custom" to "keep"), f.client.open("legacy").selectedModelOptions)
+    val canonical = f.client.open("canonical")
+    assertEquals(mapOf("reasoningEffort" to "high", "fastMode" to true), canonical.selectedModelOptions)
+    assertEquals("GPT-5", canonical.selectedModel?.label)
+    assertEquals("high", canonical.selectedModel!!.resolvedOptionValue(canonical.selectedModel!!.reasoning!!, canonical.selectedModelOptions))
+  }
+
+  @Test fun setModelOptionSendsCanonicalArrayKeepingOtherOptions() = withServer(projections = mapOf("legacy" to legacyOptionsThread)) { f ->
+    f.client.open("legacy")
+    f.client.setModelOption("reasoningEffort", "high")
+    withTimeout(5_000) { f.client.state.first { it.canWrite } }
+    f.client.setModelOption("fastMode", true)
+    val (effort, fast) = f.payloads("orchestration.dispatchCommand")
+    assertEquals("thread.model-selection.set", effort.string("type"))
+    assertEquals("legacy", effort.string("threadId"))
+    val selection = effort.obj("modelSelection")
+    assertEquals("codex", selection.string("instanceId"))
+    assertEquals("gpt-5", selection.string("model"))
+    assertTrue("Options are sent in the canonical array form", selection["options"] is JsonArray)
+    assertEquals(mapOf("reasoningEffort" to "high", "fastMode" to false, "custom" to "keep"), modelOptionValues(selection["options"]))
+    assertEquals(JsonPrimitive(true), (fast.obj("modelSelection")["options"] as JsonArray).map { it.jsonObject }.first { it.string("id") == "fastMode" }["value"])
+  }
+
+  @Test fun setModelOptionRefusesValuesTheModelDoesNotOffer() = withServer(projections = mapOf("legacy" to legacyOptionsThread)) { f ->
+    f.client.open("legacy")
+    for ((id, value) in listOf<Pair<String, Any>>("reasoningEffort" to "extreme", "reasoningEffort" to true, "fastMode" to "on", "unknown" to "x")) {
+      try { f.client.setModelOption(id, value); fail("$id=$value must be refused") }
+      catch (e: IllegalArgumentException) { assertTrue(e.message.orEmpty().isNotBlank()) }
+    }
+    f.client.open("t")
+    try { f.client.setModelOption("reasoningEffort", "high"); fail("A model without descriptors offers no options") } catch (_: IllegalArgumentException) { }
+    assertTrue("Local refusal sends nothing", f.payloads("orchestration.dispatchCommand").isEmpty())
+    assertTrue(f.client.state.value.canWrite)
+    assertEquals(ConnectionStatus.Connected, f.client.state.value.connection)
+  }
+
+  @Test fun launchThreadCarriesDraftModelOptions() = withServer { f ->
+    val options = mapOf<String, Any>("reasoningEffort" to "high", "fastMode" to true, "dropped" to "x")
+    f.client.launchThread(ThreadDraft("p", ModelOption("codex", "gpt-5"), RuntimeMode.FullAccess, threadId = "t-opts", modelOptions = options), "hello")
+    f.client.launchThread(ThreadDraft("p", ModelOption("codex", "gpt-5"), RuntimeMode.FullAccess, threadId = "t-plain"), "hello")
+    val (withOptions, plain) = f.payloads("orchestration.launchThread").map { it.obj("modelSelection") }
+    assertEquals(Json.parseToJsonElement("""[{"id":"reasoningEffort","value":"high"},{"id":"fastMode","value":true}]"""), withOptions["options"])
+    assertNull("No options key without draft options", plain["options"])
   }
 
   private fun startedThread(handoff: Boolean) = """{"thread":{"id":"started","runtimeMode":"full-access","activeProviderThreadId":"pt","modelSelection":{"instanceId":"codex","model":"gpt-5","options":{"reasoningEffort":"high"}}},

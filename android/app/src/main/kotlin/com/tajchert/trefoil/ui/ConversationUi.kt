@@ -324,7 +324,7 @@ private fun ComposerPickers(state: ClientState, draft: ThreadDraft?, onSetRuntim
                 choices.forEach { option ->
                     DropdownMenuItem(text = { Column { Text(option.label); Text(option.instanceId, style = MaterialTheme.typography.labelSmall, color = c.muted) } },
                         onClick = { modelOpen = false; onSetModel(option) },
-                        trailingIcon = { if (option == model) Icon(TfIcons.Check, "Selected", Modifier.size(18.dp)) })
+                        trailingIcon = { if (option.sameModelAs(model)) Icon(TfIcons.Check, "Selected", Modifier.size(18.dp)) })
                 }
             }
         }

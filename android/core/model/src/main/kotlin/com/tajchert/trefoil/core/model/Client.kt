@@ -93,8 +93,39 @@ data class ProviderInstance(
 )
 data class Question(val id: String, val title: String, val options: List<String> = emptyList(), val multiple: Boolean = false, val required: Boolean = true)
 data class RuntimeRequest(val id: String, val title: String, val detail: String = "", val questions: List<Question> = emptyList(), val canApprove: Boolean = true)
-/** [supportedRuntimeModes] empty means the provider reports none: every mode is allowed. */
-data class ModelOption(val instanceId: String, val model: String, val label: String = model, val supportedRuntimeModes: List<RuntimeMode> = emptyList())
+/**
+ * [supportedRuntimeModes] empty means the provider reports none: every mode is allowed.
+ * [descriptors] are the model's `capabilities.optionDescriptors` (unknown types skipped). Compare models
+ * with [sameModelAs], never `==`: descriptors may change between catalog refreshes.
+ */
+data class ModelOption(
+    val instanceId: String, val model: String, val label: String = model, val supportedRuntimeModes: List<RuntimeMode> = emptyList(),
+    val descriptors: List<ModelOptionDescriptor> = emptyList(),
+) {
+    /** The model's reasoning control (T3 `isReasoningSelect`): the first reasoning select. */
+    val reasoning: ModelOptionDescriptor.Select? get() = descriptors.filterIsInstance<ModelOptionDescriptor.Select>().firstOrNull { it.isReasoning }
+    /** The model's Fast mode switch: the boolean descriptor `fastMode`. */
+    val fastMode: ModelOptionDescriptor.Toggle? get() = descriptors.filterIsInstance<ModelOptionDescriptor.Toggle>().firstOrNull { it.id == FAST_MODE_OPTION_ID }
+    fun descriptor(id: String): ModelOptionDescriptor? = descriptors.firstOrNull { it.id == id }
+    /** Same provider instance and model slug. */
+    fun sameModelAs(other: ModelOption?): Boolean = other != null && instanceId == other.instanceId && model == other.model
+}
+data class ModelOptionChoice(val id: String, val label: String, val description: String? = null, val isDefault: Boolean = false)
+/** T3 `ProviderOptionDescriptor`. */
+sealed interface ModelOptionDescriptor {
+    val id: String; val label: String; val description: String?
+    data class Select(
+        override val id: String, override val label: String, override val description: String? = null,
+        val choices: List<ModelOptionChoice>, val currentValue: String? = null,
+        val promptInjectedValues: List<String> = emptyList(), val isReasoning: Boolean = false,
+    ) : ModelOptionDescriptor {
+        /** Choices a picker offers: prompt-injected values (e.g. Claude "Ultrathink") are hidden. */
+        val selectableChoices: List<ModelOptionChoice> get() = choices.filter { it.id !in promptInjectedValues }
+    }
+    data class Toggle(override val id: String, override val label: String, override val description: String? = null, val currentValue: Boolean? = null) : ModelOptionDescriptor
+}
+/** Option value: String or Boolean. */
+typealias ModelOptionValues = Map<String, Any>
 /** T3 `RuntimeMode` literals; labels mirror T3 web `runtimeModeConfig`. */
 enum class RuntimeMode(val wire: String, val label: String, val description: String) {
     ApprovalRequired("approval-required", "Supervised", "Ask before commands and file changes."),
@@ -113,6 +144,8 @@ data class ThreadDraft(
     val projectId: String, val model: ModelOption, val runtimeMode: RuntimeMode = RuntimeMode.ApprovalRequired,
     val threadId: String = java.util.UUID.randomUUID().toString(),
     val commandId: String = java.util.UUID.randomUUID().toString(),
+    /** Explicit provider options (id to String or Boolean), sent as `modelSelection.options`. */
+    val modelOptions: ModelOptionValues = emptyMap(),
 )
 enum class ConnectionStatus { Disconnected, Connecting, Connected, Reconnecting, Error }
 data class ClientState(
@@ -141,6 +174,8 @@ data class ClientState(
     val selectedRuntimeMode: RuntimeMode? = null,
     /** Selected thread's current model selection, from its projection; null when unknown. */
     val selectedModel: ModelOption? = null,
+    /** Selected thread's explicit `modelSelection.options` (id to String or Boolean); empty when none. */
+    val selectedModelOptions: ModelOptionValues = emptyMap(),
     /** True when the selected thread has started and the server cannot hand it to another provider instance. */
     val selectedProviderLocked: Boolean = false,
     /** Server `settings.defaultRuntimeMode`; null when not reported. */
@@ -205,6 +240,11 @@ interface TrefoilClient {
     suspend fun setRuntimeMode(mode: RuntimeMode) { error("Runtime mode changes are unavailable") }
     /** Dispatches `thread.model-selection.set` for the selected thread. */
     suspend fun setModel(model: ModelOption) { error("Model changes are unavailable") }
+    /**
+     * Sets one provider option ([value] String or Boolean) of the selected thread's model with
+     * `thread.model-selection.set`, keeping its other options. Refuses an id or value the model does not offer.
+     */
+    suspend fun setModelOption(id: String, value: Any) { error("Model option changes are unavailable") }
     /**
      * Reads historical cost/token usage of the connected environment (`server.getUsageSummary`).
      * [awaitRefresh] false asks for a provisional answer (`provisional: true`, served from a 60 s cache); true always

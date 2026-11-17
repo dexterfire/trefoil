@@ -27,6 +27,8 @@ class ThreadDraftControllerTest {
         override suspend fun selectThread(threadId: String) { selected += threadId }
         override suspend fun sendMessage(text: String) { sent += text; send(text) }
         override suspend fun setRuntimeMode(mode: RuntimeMode) { modes += mode; onMode(mode) }
+        val optionChanges = mutableListOf<Pair<String, Any>>()
+        override suspend fun setModelOption(id: String, value: Any) { optionChanges += id to value }
         override suspend fun pair(pairingUrl: String, name: String, allowInsecureHttp: Boolean) = error("unused")
         override suspend fun connect(environment: SavedEnvironment) = error("unused")
         override suspend fun disconnect() = Unit
@@ -180,6 +182,32 @@ class ThreadDraftControllerTest {
         assertEquals(RuntimeMode.ApprovalRequired, updated.runtimeMode)
         assertEquals(draft.threadId, updated.threadId)
         assertEquals(draft.commandId, updated.commandId)
+    }
+
+    @Test fun draftModelOptionsAreLocalAndValidatedAgainstTheCatalog() = runTest {
+        val effort = ModelOptionDescriptor.Select("effort", "Effort", choices = listOf(ModelOptionChoice("low", "Low"), ModelOptionChoice("high", "High")), isReasoning = true)
+        val opus = ModelOption("claude", "opus", "Opus", descriptors = listOf(effort, ModelOptionDescriptor.Toggle("fastMode", "Fast mode")))
+        val sonnet = ModelOption("claude", "sonnet", "Sonnet", descriptors = listOf(effort))
+        val h = harness(connected.copy(models = listOf(opus, sonnet)))
+        // The draft's model may be a bare copy; the catalog entry's descriptors decide.
+        h.controller.start(draft.copy(model = ModelOption("claude", "opus")))
+        h.controller.setModelOption("effort", "high")
+        h.controller.setModelOption("fastMode", true)
+        assertEquals(mapOf("effort" to "high", "fastMode" to true), h.controller.draft.value!!.modelOptions)
+        h.controller.setModelOption("effort", "extreme")
+        assertNotNull("An unoffered value is refused with a message", h.notices.lastOrNull())
+        assertEquals("high", h.controller.draft.value!!.modelOptions["effort"])
+        h.controller.setModel(sonnet)
+        assertEquals("Options the new model does not offer are dropped", mapOf("effort" to "high"), h.controller.draft.value!!.modelOptions)
+        runCurrent()
+        assertTrue("Drafts never mutate the server", h.client.optionChanges.isEmpty())
+    }
+
+    @Test fun threadModelOptionDispatchesToTheClient() = runTest {
+        val h = harness()
+        h.controller.setModelOption("effort", "high")
+        runCurrent()
+        assertEquals(listOf<Pair<String, Any>>("effort" to "high"), h.client.optionChanges)
     }
 
     @Test fun threadSettingRejectionShowsTheServerMessage() = runTest {

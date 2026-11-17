@@ -426,6 +426,8 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     fun setRuntimeMode(mode: RuntimeMode) = drafts.setRuntimeMode(mode)
     /** Draft: updates locally. Selected thread: dispatches `thread.model-selection.set`. */
     fun setModel(model: ModelOption) = drafts.setModel(model)
+    /** Provider option ([value] String or Boolean). Draft: updates locally. Selected thread: dispatches `thread.model-selection.set`. */
+    fun setModelOption(id: String, value: Any) = drafts.setModelOption(id, value)
 
     /** Keeps the draft: reconnecting is the same environment, and an uncertain launch is reconciled after it. */
     fun reconnect() {
@@ -894,6 +896,7 @@ internal class MutationTrackingClient(private val inner: TrefoilClient, private 
     override suspend fun launchThread(draft: ThreadDraft, firstMessage: String) = inFlight.tracked { inner.launchThread(draft, firstMessage) }
     override suspend fun setRuntimeMode(mode: RuntimeMode) = inFlight.tracked { inner.setRuntimeMode(mode) }
     override suspend fun setModel(model: ModelOption) = inFlight.tracked { inner.setModel(model) }
+    override suspend fun setModelOption(id: String, value: Any) = inFlight.tracked { inner.setModelOption(id, value) }
 }
 
 internal inline fun <T> AtomicInteger.tracked(block: () -> T): T {
