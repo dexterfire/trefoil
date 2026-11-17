@@ -10,6 +10,7 @@ import java.util.Collections
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import okhttp3.Call
@@ -113,6 +114,58 @@ internal object HtmlRenderGateInterceptor : Interceptor {
     }
 }
 
+/**
+ * A byte budget shared by every page's fetches (the process-wide [shared] one by default): a fetch holds a
+ * [Reservation] for as long as it buffers a body, and over budget the fetch fails cleanly instead of growing
+ * memory further. Reservations are released when the fetch ends, whatever the outcome.
+ */
+internal class HtmlRenderByteBudget(val limit: Long = DEFAULT_LIMIT) {
+    private val used = AtomicLong()
+
+    /** Bytes currently reserved across all open reservations. */
+    val inUse: Long get() = used.get()
+
+    fun reservation() = Reservation()
+
+    private fun add(bytes: Long): Boolean {
+        while (true) {
+            val current = used.get()
+            if (bytes > limit - current) return false
+            if (used.compareAndSet(current, current + bytes)) return true
+        }
+    }
+
+    inner class Reservation internal constructor() {
+        private var held = 0L
+        private var released = false
+
+        /** Raises the reservation to at least [total] bytes; false (nothing changes) when over budget or released. */
+        @Synchronized
+        fun growTo(total: Long): Boolean {
+            if (released) return false
+            if (total <= held) return true
+            if (!add(total - held)) return false
+            held = total
+            return true
+        }
+
+        /** Gives every held byte back; safe to call more than once. */
+        @Synchronized
+        fun release() {
+            if (released) return
+            released = true
+            used.addAndGet(-held)
+            held = 0
+        }
+    }
+
+    companion object {
+        const val DEFAULT_LIMIT = 32L * 1024 * 1024
+
+        val shared by lazy { HtmlRenderByteBudget() }
+    }
+}
+
 /** A proxied subresource; `toString` never prints the URL or body. [finalUrl] is the last hop actually read. */
 internal class HtmlRenderResource(
     val status: Int,
@@ -171,6 +224,7 @@ internal class HtmlRenderSubresourceFetcher(
     http: OkHttpClient? = null,
     private val maxBytes: Long = MAX_BYTES,
     private val maxRedirects: Int = MAX_REDIRECTS,
+    private val budget: HtmlRenderByteBudget = HtmlRenderByteBudget.shared,
 ) {
     private val client by lazy { http ?: sharedClient }
 
@@ -217,22 +271,48 @@ internal class HtmlRenderSubresourceFetcher(
         return HtmlRenderResource.blocked()
     }
 
+    /** Buffers the body under a [budget] reservation that is released on every path, handed-over bytes included. */
     private fun read(response: Response, requested: HttpUrl, final: HttpUrl): HtmlRenderResource {
+        val reservation = budget.reservation()
+        try {
+            return readBuffered(response, requested, final, reservation)
+        } finally {
+            reservation.release()
+        }
+    }
+
+    private fun readBuffered(
+        response: Response,
+        requested: HttpUrl,
+        final: HttpUrl,
+        reservation: HtmlRenderByteBudget.Reservation,
+    ): HtmlRenderResource {
         val code = response.code
         // No Range was sent, so a partial response cannot be passed on as the whole resource.
         if (code !in 100..599 || code in 300..399 || code == 206) return HtmlRenderResource.failed()
         val body = response.body ?: return HtmlRenderResource.failed()
-        if (body.contentLength() > maxBytes) return HtmlRenderResource.failed()
+        val declared = body.contentLength()
+        if (declared > maxBytes) return HtmlRenderResource.failed()
+        if (declared > 0 && !reservation.growTo(declared)) return HtmlRenderResource.failed()
         val buffer = Buffer()
         val source = body.source()
-        while (source.read(buffer, 8_192) != -1L) {
-            if (buffer.size > maxBytes) return HtmlRenderResource.failed()
+        // Reserved before each chunk is buffered, so the budget is never overshot by more than one chunk.
+        var endOfBody = false
+        while (!endOfBody) {
+            if (!reservation.growTo(buffer.size + CHUNK_BYTES)) return HtmlRenderResource.failed()
+            if (source.read(buffer, CHUNK_BYTES) == -1L) endOfBody = true
+            else if (buffer.size > maxBytes) return HtmlRenderResource.failed()
         }
         val type = body.contentType()
         val reason = response.message.filter { it in ' '..'~' }.take(64).trim().ifEmpty { if (code < 400) "OK" else "Error" }
         val mimeType = type?.let { "${it.type}/${it.subtype}".lowercase() }
+        // The buffer and the copy made from it are both live.
+        val size = buffer.size
+        if (!reservation.growTo(size * 2)) return HtmlRenderResource.failed()
         var bytes = buffer.readByteArray()
         if (final != requested && mimeType == "text/css") {
+            // The rebased stylesheet is built next to the original.
+            if (!reservation.growTo(size * 3)) return HtmlRenderResource.failed()
             bytes = htmlRenderRebaseCssBytes(bytes, type?.charset(), final)
             if (bytes.size > maxBytes) return HtmlRenderResource.failed()
         }
@@ -250,6 +330,7 @@ internal class HtmlRenderSubresourceFetcher(
     companion object {
         const val MAX_BYTES = 10L * 1024 * 1024
         const val MAX_REDIRECTS = 5
+        private const val CHUNK_BYTES = 8_192L
 
         /** Shared for connection reuse; never shares a cookie jar, cache, interceptors, or pool with the T3 client. */
         val shared by lazy { HtmlRenderSubresourceFetcher() }

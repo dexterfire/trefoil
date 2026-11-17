@@ -16,7 +16,13 @@ import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
+import okhttp3.ResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
+import okio.Buffer
+import okio.BufferedSource
+import okio.Source
+import okio.Timeout
+import okio.buffer
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -279,6 +285,183 @@ class HtmlRenderSubresourcesTest {
         val server = FakeServer { request -> response(request, 200, body = "x").also { open = false } }
         val session = HtmlRenderFetchSession(HtmlRenderSubresourceFetcher(server.client))
         assertEquals(403, session.fetch("https://cdn.example/x.js", emptyMap()) { open && policy.allowsFetch(it) }.status)
+    }
+
+    @Test fun budgetReservationsGrowOnlyWithinTheLimitAndReleaseOnce() {
+        val budget = HtmlRenderByteBudget(100)
+        val a = budget.reservation()
+        val b = budget.reservation()
+        assertTrue(a.growTo(60))
+        assertTrue(a.growTo(30))
+        assertEquals(60, budget.inUse)
+        assertFalse(b.growTo(41))
+        assertEquals(60, budget.inUse)
+        assertTrue(b.growTo(40))
+        assertEquals(100, budget.inUse)
+        a.release()
+        a.release()
+        assertEquals(40, budget.inUse)
+        assertFalse(a.growTo(10))
+        assertEquals(40, budget.inUse)
+        b.release()
+        assertEquals(0, budget.inUse)
+    }
+
+    @Test fun processWideBudgetIsThirtyTwoMebibytes() {
+        assertEquals(32L * 1024 * 1024, HtmlRenderByteBudget.shared.limit)
+        assertEquals(HtmlRenderByteBudget.shared.limit, HtmlRenderByteBudget.DEFAULT_LIMIT)
+    }
+
+    @Test fun overBudgetFetchFailsCleanlyAndTheBudgetIsReleased() {
+        val budget = HtmlRenderByteBudget(64 * 1024)
+        val server = FakeServer { response(it, 200, body = "a".repeat(10_000)) }
+        val fetcher = HtmlRenderSubresourceFetcher(server.client, budget = budget)
+        val other = budget.reservation().also { assertTrue(it.growTo(60 * 1024)) }
+        val refused = fetcher.fetch("https://cdn.example/x", emptyMap(), policy::allowsFetch)
+        assertEquals(502, refused.status)
+        assertEquals(0, refused.body.size)
+        assertEquals(60L * 1024, budget.inUse)
+        // Freed budget lets the next page through: a refused fetch starved nobody.
+        other.release()
+        assertEquals(200, fetcher.fetch("https://cdn.example/x", emptyMap(), policy::allowsFetch).status)
+        assertEquals(0, budget.inUse)
+    }
+
+    @Test fun declaredLengthIsReservedBeforeBuffering() {
+        val budget = HtmlRenderByteBudget(1_000)
+        val buffered = AtomicInteger()
+        val server = FakeServer { request ->
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body(object : ResponseBody() {
+                    override fun contentType() = "text/plain".toMediaType()
+                    override fun contentLength() = 5_000L
+                    override fun source(): BufferedSource = object : Source {
+                        override fun read(sink: Buffer, byteCount: Long): Long = buffered.incrementAndGet().let { -1L }
+                        override fun timeout() = Timeout.NONE
+                        override fun close() {}
+                    }.buffer()
+                }).build()
+        }
+        val result = HtmlRenderSubresourceFetcher(server.client, budget = budget).fetch("https://cdn.example/x", emptyMap(), policy::allowsFetch)
+        assertEquals(502, result.status)
+        assertEquals(0, buffered.get())
+        assertEquals(0, budget.inUse)
+    }
+
+    @Test fun budgetIsReleasedOnEveryOutcome() {
+        val budget = HtmlRenderByteBudget(1024 * 1024)
+        fun fetcher(maxBytes: Long = 100_000, respond: (Request) -> Response) =
+            HtmlRenderSubresourceFetcher(FakeServer(respond = respond).client, maxBytes = maxBytes, budget = budget)
+        fun get(f: HtmlRenderSubresourceFetcher) = f.fetch("https://cdn.example/x.css", emptyMap(), policy::allowsFetch)
+
+        // Success, with a held body.
+        assertEquals(200, get(fetcher { response(it, 200, body = "ok") }).status)
+        assertEquals(0, budget.inUse)
+        // Over the per-resource cap.
+        assertEquals(502, get(fetcher(maxBytes = 10) { response(it, 200, body = "a".repeat(11)) }).status)
+        assertEquals(0, budget.inUse)
+        // Server error status and an unusable partial response.
+        assertEquals(500, get(fetcher { response(it, 500, body = "boom") }).status)
+        assertEquals(502, get(fetcher { response(it, 206, body = "x") }).status)
+        assertEquals(0, budget.inUse)
+        // Transport failure while the body is being read.
+        val failing = fetcher { request ->
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK").body(object : ResponseBody() {
+                override fun contentType() = "text/plain".toMediaType()
+                override fun contentLength() = -1L
+                override fun source(): BufferedSource {
+                    var first = true
+                    return object : Source {
+                        override fun read(sink: Buffer, byteCount: Long): Long {
+                            if (!first) throw java.io.IOException("reset")
+                            first = false
+                            sink.write(ByteArray(5_000))
+                            return 5_000
+                        }
+                        override fun timeout() = Timeout.NONE
+                        override fun close() {}
+                    }.buffer()
+                }
+            }).build()
+        }
+        assertEquals(502, get(failing).status)
+        assertEquals(0, budget.inUse)
+        // A redirected stylesheet that is rebased.
+        val css = fetcher { request ->
+            if (request.url.encodedPath == "/x.css") response(request, 302, location = "/v2/x.css")
+            else response(request, 200, body = "a{background:url(b.png)}", type = "text/css")
+        }
+        assertEquals(200, get(css).status)
+        assertEquals(0, budget.inUse)
+        // Blocked hops never reserve.
+        assertEquals(403, fetcher { response(it, 302, location = "https://10.0.0.1/") }.let(::get).status)
+        assertEquals(0, budget.inUse)
+    }
+
+    @Test fun cancellingAndClosingASessionMidBodyReleasesTheBudget() {
+        val budget = HtmlRenderByteBudget(1024 * 1024)
+        val reading = CountDownLatch(1)
+        var fake: FakeServer? = null
+        val server = FakeServer { request ->
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK").body(object : ResponseBody() {
+                override fun contentType() = "text/plain".toMediaType()
+                override fun contentLength() = -1L
+                override fun source(): BufferedSource = object : Source {
+                    override fun read(sink: Buffer, byteCount: Long): Long {
+                        sink.write(ByteArray(1_000))
+                        reading.countDown()
+                        // A stalled upstream: only the call being cancelled ends the read.
+                        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+                        while (fake?.lastCall?.isCanceled() != true) {
+                            if (System.nanoTime() > deadline) return -1L
+                            Thread.sleep(5)
+                        }
+                        throw java.io.IOException("Canceled")
+                    }
+                    override fun timeout() = Timeout.NONE
+                    override fun close() {}
+                }.buffer()
+            }).build()
+        }
+        fake = server
+        val session = HtmlRenderFetchSession(HtmlRenderSubresourceFetcher(server.client, budget = budget))
+        var result: HtmlRenderResource? = null
+        val worker = thread { result = session.fetch("https://cdn.example/x", emptyMap(), policy::allowsFetch) }
+        assertTrue(reading.await(5, TimeUnit.SECONDS))
+        assertTrue(budget.inUse > 0)
+        session.close()
+        worker.join(10_000)
+        assertFalse(worker.isAlive)
+        assertEquals(403, result!!.status)
+        assertEquals(0, budget.inUse)
+        // A closed session never reserves again.
+        assertEquals(403, session.fetch("https://cdn.example/y", emptyMap(), policy::allowsFetch).status)
+        assertEquals(0, budget.inUse)
+    }
+
+    @Test fun parallelPagesShareOneBudgetAndAllReleaseIt() {
+        val budget = HtmlRenderByteBudget(100 * 1024)
+        val entered = CountDownLatch(3)
+        val release = CountDownLatch(1)
+        val server = FakeServer { request ->
+            entered.countDown()
+            release.await(5, TimeUnit.SECONDS)
+            response(request, 200, body = "a".repeat(30 * 1024))
+        }
+        val sessions = List(3) { HtmlRenderFetchSession(HtmlRenderSubresourceFetcher(server.client, budget = budget)) }
+        val statuses = Collections.synchronizedList(mutableListOf<Int>())
+        val threads = sessions.mapIndexed { n, session ->
+            thread { statuses += session.fetch("https://cdn.example/$n", emptyMap(), policy::allowsFetch).status }
+        }
+        assertTrue(entered.await(5, TimeUnit.SECONDS))
+        release.countDown()
+        threads.forEach { it.join(10_000) }
+        // Three 30 KiB bodies (plus copies) may not all fit in 100 KiB at once: each either succeeds or fails cleanly.
+        assertEquals(3, statuses.size)
+        assertTrue(statuses.all { it == 200 || it == 502 })
+        assertEquals(0, budget.inUse)
+        sessions.forEach(HtmlRenderFetchSession::close)
+        assertEquals(0, budget.inUse)
     }
 
     private val cssBase = "https://cdn.example/v2/css/style.css".toHttpUrl()
