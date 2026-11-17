@@ -55,14 +55,17 @@ internal fun conversationTimeline(messages: List<ConversationMessage>, activitie
         } else if (item.activity?.htmlRender != null) {
             result += ConversationEntry.HtmlRender(item.activity)
         } else if (item.activity != null) {
+            // T3 groups consecutive work of one run attempt regardless of kind (reasoning, commands, edits, tools together).
+            // Messages, HTML renders, standalone kinds (incl. `error`) and subagent turn boundaries break a group.
             val previous = result.lastOrNull() as? ConversationEntry.Activities
             val activity = item.activity
-            val separate = (activity.needsAttention && activity.kind != "command_execution") || activity.standalone
             val previousActivity = previous?.activities?.lastOrNull()
-            val previousSeparate = previousActivity?.let { (it.needsAttention && it.kind != "command_execution") || it.standalone } == true
-            if (previous != null && !separate && !previousSeparate && activity.runId != null && previousActivity?.runId == activity.runId && previousActivity?.runAttemptId == activity.runAttemptId && (previousActivity?.kind == "command_execution") == (activity.kind == "command_execution") && (previousActivity?.kind == "subagent") == (activity.kind == "subagent") && (activity.kind != "subagent" || previousActivity?.providerTurnId == activity.providerTurnId)) {
-                result[result.lastIndex] = previous.copy(activities = previous.activities + item.activity)
-            } else result += ConversationEntry.Activities(listOf(item.activity))
+            if (previous != null && previousActivity != null && !activity.standalone && !previousActivity.standalone &&
+                activity.runId != null && previousActivity.runId == activity.runId && previousActivity.runAttemptId == activity.runAttemptId &&
+                (previousActivity.kind == "subagent") == (activity.kind == "subagent") &&
+                (activity.kind != "subagent" || previousActivity.providerTurnId == activity.providerTurnId)) {
+                result[result.lastIndex] = previous.copy(activities = previous.activities + activity)
+            } else result += ConversationEntry.Activities(listOf(activity))
         }
     }
     return result
@@ -70,12 +73,13 @@ internal fun conversationTimeline(messages: List<ConversationMessage>, activitie
 
 internal fun timelineInstant(value: String?): Instant? = value?.let { runCatching { Instant.parse(it) }.getOrNull() }
 
+/** Legacy attention flag (includes interruptions); grouping and folding no longer use it. Prefer [displayFailure]. */
 internal val ToolActivity.needsAttention: Boolean get() =
     status in setOf("error", "failed", "failure", "interrupted", "cancelled", "canceled", "stopped", "declined") ||
         (exitCode != null && exitCode != 0) || outputIndicatesFailure == true || !failure.isNullOrBlank()
 internal val ToolActivity.isRunning: Boolean get() = status in setOf("running", "in_progress", "inProgress", "started", "pending", "waiting", "starting", "preparing")
 private val successStatuses = setOf("completed", "succeeded", "success", "done")
-private val ToolActivity.standalone: Boolean get() = kind in setOf("compaction", "handoff", "notification", "user_input_request", "approval_request", "run_interrupt_result", "error", "proposed_plan", "system_notice", "fork", "thread_created", "secret_request", "link_request")
+internal val ToolActivity.standalone: Boolean get() = kind in setOf("compaction", "handoff", "notification", "user_input_request", "approval_request", "run_interrupt_result", "error", "proposed_plan", "system_notice", "fork", "thread_created", "secret_request", "link_request")
 private val ConversationEntry.runId: String? get() = when (this) {
     is ConversationEntry.Message -> message.runId
     is ConversationEntry.Activities -> activities.first().runId
@@ -83,7 +87,13 @@ private val ConversationEntry.runId: String? get() = when (this) {
     is ConversationEntry.Work -> runId
 }
 
-/** Fold settled successful responses only; unknown or interrupted outcomes remain inspectable. */
+private val interruptKinds = setOf("run_interrupt_request", "run_interrupt_result")
+private val failedToolStatuses = setOf("error", "failed", "failure", "declined")
+
+/**
+ * Fold settled successful responses only (T3 `deriveTurnFolds`); unknown, failed or interrupted runs remain inspectable.
+ * Individual tool failures (non-zero exit, failed preview) do not block folding.
+ */
 internal fun foldConversationTimeline(
     entries: List<ConversationEntry>,
     activeRunId: String? = null,
@@ -98,10 +108,12 @@ internal fun foldConversationTimeline(
         val final = finalByRun[runId]
         runId != activeRunId && final != null &&
             runEntries.filterIsInstance<ConversationEntry.Message>().none { it.message.streaming } &&
-            work.none { it.needsAttention || it.isRunning } &&
-            // Legacy snapshots lack runs. Completed tool work plus a terminal reply is evidence of success.
+            work.none { it.isRunning || it.kind in interruptKinds } &&
+            // Legacy snapshots lack runs. Settled tool work plus a terminal reply is evidence of success, unless a top-level
+            // provider error failed the response.
             (if (run != null) run.status in successStatuses && run.completedAt != null
-             else work.isNotEmpty() && work.all { it.status in successStatuses })
+             else work.isNotEmpty() && work.all { it.status in successStatuses || it.status in failedToolStatuses } &&
+                work.none { it.kind == "error" && it.parentItemId == null })
     }.keys
     fun hidden(entry: ConversationEntry): Boolean = entry.runId in foldable && when (entry) {
         is ConversationEntry.Message -> entry.message.role == "assistant" && entry.message.remoteFiles().isEmpty() && entry.key != finalByRun[entry.runId]?.key

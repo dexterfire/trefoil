@@ -5,14 +5,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ConversationTimelineTest {
-    @Test fun commandsGroupOnlyAcrossConsecutiveCommandsInSameRun() {
+    @Test fun consecutiveWorkOfOneRunGroupsRegardlessOfKindOrFailure() {
         val entries = conversationTimeline(listOf(ConversationMessage("m", "assistant", "Hi", ordinal = 3)), listOf(
             ToolActivity("a", "Command", kind = "command_execution", status = "failed", runId = "r", ordinal = 0),
             ToolActivity("b", "Command", kind = "command_execution", runId = "r", ordinal = 1),
             ToolActivity("c", "Read", kind = "file_read", runId = "r", ordinal = 2),
             ToolActivity("d", "Command", kind = "command_execution", runId = "r", ordinal = 4)))
-        assertEquals(listOf("activity:a", "activity:c", "message:m", "activity:d"), entries.map { it.key })
-        assertEquals(2, (entries.first() as ConversationEntry.Activities).activities.size)
+        assertEquals(listOf("activity:a", "message:m", "activity:d"), entries.map { it.key })
+        assertEquals(listOf("a", "b", "c"), (entries.first() as ConversationEntry.Activities).activities.map { it.id })
     }
     @Test fun emptyAndCompletedCheckpointHaveNoExpandableDetail() {
         assertFalse(ToolActivity("a", "Run command").hasExpandableDetail())
@@ -45,9 +45,22 @@ class ConversationTimelineTest {
         val entries = conversationTimeline(listOf(ConversationMessage("u", "user", "Help", ordinal = 0), ConversationMessage("extra", "assistant", "Extra", createdAt = "2026-01-01T12:00:02Z"), ConversationMessage("a", "assistant", "Done", createdAt = "2026-01-01T12:00:03Z", ordinal = 3)), listOf(ToolActivity("t", "Read", startedAt = "2026-01-01T12:00:01Z", ordinal = 1)))
         assertEquals(listOf("message:u", "activity:t", "message:extra", "message:a"), entries.map { it.key })
     }
-    @Test fun failuresAndUnknownRunsStaySeparate() {
+    @Test fun unknownRunsStaySeparateButFailuresJoinTheirRun() {
         val entries = conversationTimeline(emptyList(), listOf(ToolActivity("t1", "Read", ordinal = 0), ToolActivity("t2", "Edit", ordinal = 1), ToolActivity("t3", "Fail", status = "failed", runId = "r", ordinal = 2), ToolActivity("t4", "Edit", runId = "r", ordinal = 3)))
-        assertEquals(4, entries.size)
+        assertEquals(listOf("activity:t1", "activity:t2", "activity:t3"), entries.map { it.key })
+        assertEquals(listOf("t3", "t4"), (entries.last() as ConversationEntry.Activities).activities.map { it.id })
+    }
+    @Test fun reasoningJoinsCommandsButErrorsAndStandaloneKindsBreakGroups() {
+        val entries = conversationTimeline(emptyList(), listOf(
+            ToolActivity("think", "Reasoning", kind = "reasoning", detail = "Plan", runId = "r", ordinal = 0),
+            ToolActivity("cmd", "Command", kind = "command_execution", runId = "r", ordinal = 1),
+            ToolActivity("edit", "Edit", kind = "file_change", runId = "r", ordinal = 2),
+            ToolActivity("err", "Error", kind = "error", status = "failed", runId = "r", ordinal = 3),
+            ToolActivity("read", "Read /a", kind = "dynamic_tool", runId = "r", ordinal = 4),
+            ToolActivity("ask", "Question", kind = "notification", runId = "r", ordinal = 5),
+            ToolActivity("grep", "Searched x", kind = "dynamic_tool", runId = "r", ordinal = 6)))
+        assertEquals(listOf("activity:think", "activity:err", "activity:read", "activity:ask", "activity:grep"), entries.map { it.key })
+        assertEquals(3, (entries.first() as ConversationEntry.Activities).activities.size)
     }
     @Test fun timestampFallbackInterleavesActivitiesWithoutInventingOrder() {
         val entries = conversationTimeline(listOf(ConversationMessage("u", "user", "Help", createdAt = "2026-01-01T12:00:00Z"), ConversationMessage("a", "assistant", "Done", createdAt = "2026-01-01T12:00:03Z")), listOf(ToolActivity("t", "Read", startedAt = "2026-01-01T12:00:01Z")))
@@ -71,11 +84,15 @@ class ConversationTimelineTest {
         assertEquals(listOf("message:u", "run:r:message:comment", "message:answer"), folded.map { it.key })
         assertEquals(listOf("message:comment", "activity:tool"), (folded[1] as ConversationEntry.Work).entries.map { it.key })
     }
-    @Test fun activeFailedInterruptedAndUnknownWorkNeverFolds() {
-        for (status in listOf("running", "failed", "interrupted", "cancelled", "declined", "")) {
-            val entries = conversationTimeline(listOf(ConversationMessage("a", "assistant", "Commentary", runId = "r", ordinal = 0), ConversationMessage("b", "assistant", "Answer", runId = "r", ordinal = 2)), listOf(ToolActivity("t", "Tool", status = status, runId = "r", ordinal = 1)))
+    @Test fun activeInterruptedAndUnknownWorkNeverFoldsButToolFailuresDo() {
+        fun legacy(status: String) = conversationTimeline(listOf(ConversationMessage("a", "assistant", "Commentary", runId = "r", ordinal = 0), ConversationMessage("b", "assistant", "Answer", runId = "r", ordinal = 2)), listOf(ToolActivity("t", "Tool", status = status, runId = "r", ordinal = 1)))
+        for (status in listOf("running", "interrupted", "cancelled", "stopped", "")) {
+            val entries = legacy(status)
             assertEquals("status=$status", entries, foldConversationTimeline(entries))
         }
+        // A failed or declined tool call is settled work: T3 folds the turn (legacy snapshots have no run status).
+        for (status in listOf("failed", "declined"))
+            assertEquals("status=$status", listOf("run:r:message:a", "message:b"), foldConversationTimeline(legacy(status)).map { it.key })
         val completed = conversationTimeline(listOf(ConversationMessage("a", "assistant", "Answer", runId = "r", ordinal = 1)), listOf(ToolActivity("t", "Tool", status = "completed", runId = "r", ordinal = 0)))
         assertEquals(completed, foldConversationTimeline(completed, activeRunId = "r"))
     }
@@ -110,16 +127,28 @@ class ConversationTimelineTest {
         val work = foldConversationTimeline(entries, runs = listOf(ConversationRun("r", "completed", startedAt = "2026-01-01T12:00:00Z", completedAt = "2026-01-01T12:01:00Z"))).first() as ConversationEntry.Work
         assertEquals("Worked for 1m", work.label)
     }
-    @Test fun successfulExitStatusCannotHideToolFailureOrOngoingChild() {
+    @Test fun toolFailuresFoldInSuccessfulRunButOngoingChildOrInterruptDoesNot() {
         val messages = listOf(ConversationMessage("a", "assistant", "Answer", runId = "r", ordinal = 2))
         val run = listOf(ConversationRun("r", "completed", completedAt = "2026-01-01T12:01:00Z"))
         for (tool in listOf(
-            ToolActivity("t", "Command", status = "completed", exitCode = 1, runId = "r", ordinal = 0),
-            ToolActivity("t", "Command", status = "completed", outputIndicatesFailure = true, runId = "r", ordinal = 0),
-            ToolActivity("t", "Child", status = "running", kind = "subagent", runId = "r", ordinal = 0))) {
+            ToolActivity("t", "Command", kind = "command_execution", status = "completed", exitCode = 1, runId = "r", ordinal = 0),
+            ToolActivity("t", "Command", kind = "command_execution", status = "completed", outputIndicatesFailure = true, runId = "r", ordinal = 0),
+            ToolActivity("t", "mcp__t3-code__html_preview", kind = "dynamic_tool", status = "failed", runId = "r", ordinal = 0))) {
+            val entries = conversationTimeline(messages, listOf(tool))
+            assertEquals(listOf("run:r:activity:t", "message:a"), foldConversationTimeline(entries, runs = run).map { it.key })
+        }
+        for (tool in listOf(
+            ToolActivity("t", "Child", status = "running", kind = "subagent", runId = "r", ordinal = 0),
+            ToolActivity("t", "Interrupted", status = "completed", kind = "run_interrupt_result", runId = "r", ordinal = 0))) {
             val entries = conversationTimeline(messages, listOf(tool))
             assertEquals(entries, foldConversationTimeline(entries, runs = run))
         }
+    }
+    @Test fun legacyRunWithTopLevelProviderErrorDoesNotFold() {
+        val entries = conversationTimeline(listOf(ConversationMessage("a", "assistant", "Answer", runId = "r", ordinal = 2)), listOf(
+            ToolActivity("t", "Command", kind = "command_execution", status = "completed", runId = "r", ordinal = 0),
+            ToolActivity("e", "Error", kind = "error", status = "failed", failure = "Provider crashed", runId = "r", ordinal = 1)))
+        assertEquals(entries, foldConversationTimeline(entries))
     }
     @Test fun fencedMarkdownKeepsShorterFenceAsCodeAndSupportsTildes() {
         assertEquals(listOf(MarkdownBlock("```\ninside", true, "markdown")), markdownBlocks("````markdown\n```\ninside\n````"))
