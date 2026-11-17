@@ -3,12 +3,14 @@ package com.tajchert.trefoil.ui.htmlrender
 import java.net.InetAddress
 import java.net.Proxy
 import java.net.ServerSocket
+import java.net.Socket
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import javax.net.SocketFactory
 import kotlin.concurrent.thread
 import okhttp3.Dns
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -497,54 +499,81 @@ class HtmlRenderSubresourcesTest {
         assertEquals(30_000, client.callTimeoutMillis)
     }
 
-    @Test fun productionClientRefusesANameThatResolvesToLoopback() {
-        LoopbackListener().use { listener ->
-            val loopback = object : Dns { override fun lookup(hostname: String) = listOf(InetAddress.getLoopbackAddress()) }
-            val client = createHtmlRenderHttpClient(loopback)
-            val fetcher = HtmlRenderSubresourceFetcher(client, budget = HtmlRenderByteBudget(1024 * 1024))
-            // A public-looking name that rebinds to 127.0.0.1, and one that resolves to a private LAN host.
-            assertEquals(502, fetcher.fetch("https://rebind.example:${listener.port}/x.js", emptyMap()) { true }.status)
-            val lan = createHtmlRenderHttpClient(object : Dns { override fun lookup(hostname: String) = listOf(InetAddress.getByName("192.168.1.10")) })
-            assertEquals(502, HtmlRenderSubresourceFetcher(lan).fetch("https://rebind.example/x.js", emptyMap()) { true }.status)
-            // Private-looking names are refused even if the resolver answers with a public address.
-            val publicAnswer = createHtmlRenderHttpClient(object : Dns { override fun lookup(hostname: String) = listOf(InetAddress.getByName("93.184.216.34")) })
-            assertEquals(502, HtmlRenderSubresourceFetcher(publicAnswer).fetch("https://localhost:${listener.port}/x.js", emptyMap()) { true }.status)
-            // A request outside the fetcher carries no hop gate and DNS still stops it before any connection.
-            assertThrows(java.io.IOException::class.java) { client.newCall(Request.Builder().url("https://rebind.example:${listener.port}/").build()).execute() }
-            Thread.sleep(300)
-            assertEquals(0, listener.accepted.get())
-        }
+    /** Counts every socket the client under test asks for: a refused request must never open one. */
+    private class RecordingSocketFactory : SocketFactory() {
+        private val delegate: SocketFactory = getDefault()
+        val created = AtomicInteger()
+        private fun <T> counted(create: () -> T): T { created.incrementAndGet(); return create() }
+        override fun createSocket(): Socket = counted { delegate.createSocket() }
+        override fun createSocket(host: String?, port: Int): Socket = counted { delegate.createSocket(host, port) }
+        override fun createSocket(host: String?, port: Int, localHost: InetAddress?, localPort: Int): Socket =
+            counted { delegate.createSocket(host, port, localHost, localPort) }
+        override fun createSocket(host: InetAddress?, port: Int): Socket = counted { delegate.createSocket(host, port) }
+        override fun createSocket(address: InetAddress?, port: Int, localAddress: InetAddress?, localPort: Int): Socket =
+            counted { delegate.createSocket(address, port, localAddress, localPort) }
     }
 
-    @Test fun productionClientNeverConnectsToANonPublicIpLiteral() {
-        LoopbackListener().use { listener ->
-            val client = createHtmlRenderHttpClient()
-            val fetcher = HtmlRenderSubresourceFetcher(client, budget = HtmlRenderByteBudget(1024 * 1024))
-            // An IP literal skips DNS entirely, so even a permissive hop gate must not get a socket opened.
-            listOf("127.0.0.1", "[::1]", "[::ffff:127.0.0.1]", "[::127.0.0.1]").forEach { host ->
-                val result = fetcher.fetch("https://$host:${listener.port}/x.js", emptyMap()) { true }
-                assertEquals(host, 502, result.status)
-                assertEquals(host, 0, result.body.size)
-            }
-            // Outside the fetcher, and for a private LAN literal, too.
-            assertThrows(java.io.IOException::class.java) { client.newCall(Request.Builder().url("https://127.0.0.1:${listener.port}/").build()).execute() }
-            assertEquals(502, fetcher.fetch("https://192.168.1.10/x.js", emptyMap()) { true }.status)
-            Thread.sleep(300)
-            assertEquals(0, listener.accepted.get())
+    /** The production client with a recording socket factory; every interceptor and the DNS filter stay in place. */
+    private fun recordingProductionClient(systemDns: Dns = Dns.SYSTEM): Pair<OkHttpClient, RecordingSocketFactory> {
+        val sockets = RecordingSocketFactory()
+        return createHtmlRenderHttpClient(systemDns).newBuilder().socketFactory(sockets).build() to sockets
+    }
+
+    private fun dnsAnswering(literal: String) = object : Dns { override fun lookup(hostname: String) = listOf(InetAddress.getByName(literal)) }
+
+    @Test fun recordingSocketFactoryCountsSocketsAnUnguardedClientOpens() {
+        // Control for the tests below: a client without the guards does ask for a socket (the connect is refused).
+        val sockets = RecordingSocketFactory()
+        val port = ServerSocket(0, 1, InetAddress.getLoopbackAddress()).use { it.localPort }
+        val unguarded = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).socketFactory(sockets).build()
+        assertThrows(java.io.IOException::class.java) { unguarded.newCall(Request.Builder().url("http://127.0.0.1:$port/").build()).execute() }
+        assertTrue(sockets.created.get() >= 1)
+    }
+
+    @Test fun productionClientRefusesANameThatResolvesToLoopback() {
+        val (client, sockets) = recordingProductionClient(dnsAnswering("127.0.0.1"))
+        val fetcher = HtmlRenderSubresourceFetcher(client, budget = HtmlRenderByteBudget(1024 * 1024))
+        // A public-looking name that rebinds to 127.0.0.1, and one that resolves to a private LAN host.
+        assertEquals(502, fetcher.fetch("https://rebind.example:8443/x.js", emptyMap()) { true }.status)
+        val (lan, lanSockets) = recordingProductionClient(dnsAnswering("192.168.1.10"))
+        assertEquals(502, HtmlRenderSubresourceFetcher(lan).fetch("https://rebind.example/x.js", emptyMap()) { true }.status)
+        // Private-looking names are refused even if the resolver answers with a public address.
+        val (publicAnswer, publicSockets) = recordingProductionClient(dnsAnswering("93.184.216.34"))
+        assertEquals(502, HtmlRenderSubresourceFetcher(publicAnswer).fetch("https://localhost:8443/x.js", emptyMap()) { true }.status)
+        // A request outside the fetcher carries no hop gate and DNS still stops it before any connection.
+        assertThrows(java.io.IOException::class.java) { client.newCall(Request.Builder().url("https://rebind.example:8443/").build()).execute() }
+        assertEquals(0, sockets.created.get())
+        assertEquals(0, lanSockets.created.get())
+        assertEquals(0, publicSockets.created.get())
+    }
+
+    @Test fun productionClientNeverOpensASocketToANonPublicIpLiteral() {
+        val (client, sockets) = recordingProductionClient()
+        val fetcher = HtmlRenderSubresourceFetcher(client, budget = HtmlRenderByteBudget(1024 * 1024))
+        // An IP literal skips DNS entirely, so even a permissive hop gate must not get a socket opened.
+        listOf(
+            "127.0.0.1", "[::1]", "192.168.1.10", "10.0.0.1", "169.254.169.254", "[::ffff:127.0.0.1]", "[::127.0.0.1]",
+            "[fd00::1]", "[fe80::1]",
+        ).forEach { host ->
+            val result = fetcher.fetch("https://$host:8443/x.js", emptyMap()) { true }
+            assertEquals(host, 502, result.status)
+            assertEquals(host, 0, result.body.size)
+            assertEquals(host, 0, sockets.created.get())
+            // Outside the fetcher, too.
+            assertThrows(java.io.IOException::class.java) { client.newCall(Request.Builder().url("https://$host:8443/").build()).execute() }
+            assertEquals(host, 0, sockets.created.get())
         }
     }
 
     @Test fun urlPolicyGateRejectsNonPublicLiteralsBeforeAnyConnection() {
-        LoopbackListener().use { listener ->
-            val fetcher = HtmlRenderSubresourceFetcher(createHtmlRenderHttpClient(), budget = HtmlRenderByteBudget(1024 * 1024))
-            // The same policy the WebView passes as the hop gate, for the literal and for redirects to it.
-            listOf("127.0.0.1", "[::1]", "10.0.0.1", "169.254.169.254", "[::ffff:127.0.0.1]").forEach { host ->
-                val result = fetcher.fetch("https://$host:${listener.port}/x.js", emptyMap(), policy::allowsFetch)
-                assertEquals(host, 403, result.status)
-                assertEquals(host, 0, result.body.size)
-            }
-            Thread.sleep(300)
-            assertEquals(0, listener.accepted.get())
+        val (client, sockets) = recordingProductionClient()
+        val fetcher = HtmlRenderSubresourceFetcher(client, budget = HtmlRenderByteBudget(1024 * 1024))
+        // The same policy the WebView passes as the hop gate, for the literal and for redirects to it.
+        listOf("127.0.0.1", "[::1]", "10.0.0.1", "169.254.169.254", "[::ffff:127.0.0.1]", "192.168.1.10", "[fd00::1]").forEach { host ->
+            val result = fetcher.fetch("https://$host:8443/x.js", emptyMap(), policy::allowsFetch)
+            assertEquals(host, 403, result.status)
+            assertEquals(host, 0, result.body.size)
+            assertEquals(host, 0, sockets.created.get())
         }
     }
 
