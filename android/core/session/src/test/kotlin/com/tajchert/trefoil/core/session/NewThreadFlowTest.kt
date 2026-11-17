@@ -377,8 +377,40 @@ class NewThreadFlowTest {
     assertEquals("codex", selection.string("instanceId"))
     assertEquals("gpt-5", selection.string("model"))
     assertTrue("Options are sent in the canonical array form", selection["options"] is JsonArray)
-    assertEquals(mapOf("reasoningEffort" to "high", "fastMode" to false, "custom" to "keep"), modelOptionValues(selection["options"]))
+    assertEquals("Options the catalog no longer offers are dropped", mapOf("reasoningEffort" to "high", "fastMode" to false), modelOptionValues(selection["options"]))
     assertEquals(JsonPrimitive(true), (fast.obj("modelSelection")["options"] as JsonArray).map { it.jsonObject }.first { it.string("id") == "fastMode" }["value"])
+  }
+
+  /** Regression: overlapping changes each built on the stale projection, so the second dropped the first. */
+  @Test fun overlappingModelOptionChangesKeepEachOther() = withServer(projections = mapOf("legacy" to legacyOptionsThread)) { f ->
+    f.client.open("legacy")
+    listOf(async { f.client.setModelOption("reasoningEffort", "high") }, async { f.client.setModelOption("fastMode", true) }).awaitAll()
+    val sent = f.payloads("orchestration.dispatchCommand").map { modelOptionValues(it.obj("modelSelection")["options"]) }
+    assertEquals(2, sent.size)
+    assertEquals("The second change carries the first", mapOf("reasoningEffort" to "high", "fastMode" to true), sent.last())
+    // A model change on the same model keeps the pending options too.
+    f.client.setModel(ModelOption("codex", "gpt-5"))
+    assertEquals(mapOf("reasoningEffort" to "high", "fastMode" to true), modelOptionValues(f.payloads("orchestration.dispatchCommand").last().obj("modelSelection")["options"]))
+  }
+
+  @Test fun pendingModelOptionsAreDroppedOnThreadSwitchAndRejection() {
+    val reject = java.util.concurrent.atomic.AtomicBoolean(false)
+    withServer(projections = mapOf("legacy" to legacyOptionsThread), custom = { ws, id, tag, _ ->
+      if (tag == "orchestration.dispatchCommand" && reject.get()) { ws.send(typedFailure(id)); true } else false
+    }) { f ->
+      f.client.open("legacy")
+      f.client.setModelOption("reasoningEffort", "high")
+      f.client.open("t"); f.client.open("legacy")
+      f.client.setModelOption("fastMode", true)
+      assertEquals("A thread switch starts again from the projection", mapOf("reasoningEffort" to "low", "fastMode" to true),
+        modelOptionValues(f.payloads("orchestration.dispatchCommand").last().obj("modelSelection")["options"]))
+      reject.set(true)
+      try { f.client.setModelOption("reasoningEffort", "medium"); fail("Rejected change must fail") } catch (_: IllegalStateException) { }
+      reject.set(false)
+      f.client.setModelOption("reasoningEffort", "high")
+      assertEquals("A rejection starts again from the projection", mapOf("reasoningEffort" to "high", "fastMode" to false),
+        modelOptionValues(f.payloads("orchestration.dispatchCommand").last().obj("modelSelection")["options"]))
+    }
   }
 
   @Test fun setModelOptionRefusesValuesTheModelDoesNotOffer() = withServer(projections = mapOf("legacy" to legacyOptionsThread)) { f ->

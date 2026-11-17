@@ -25,9 +25,18 @@ class ModelOptionsTest {
         assertEquals("high", model.resolvedOptionValue(effort, emptyMap()))
         assertEquals("A value of the wrong type is ignored", "high", model.resolvedOptionValue(effort, mapOf("effort" to true)))
         assertNull(model.resolvedOptionValue(effort.copy(choices = listOf(ModelOptionChoice("low", "Low"))), emptyMap()))
-        assertEquals(false, model.resolvedOptionValue(fast, emptyMap()))
+        assertNull("An unset toggle is unknown, not off", model.resolvedOptionValue(fast, emptyMap()))
         assertEquals(true, model.resolvedOptionValue(fast.copy(currentValue = true), emptyMap()))
         assertEquals(false, model.resolvedOptionValue(fast.copy(currentValue = true), mapOf("fastMode" to false)))
+    }
+
+    @Test fun threadVariantWithoutExplicitValueIsUnknown() {
+        val variant = ModelOptionDescriptor.Select("variant", "Variant", choices = listOf(ModelOptionChoice("fast", "Fast", isDefault = true), ModelOptionChoice("deep", "Deep")), currentValue = "deep")
+        val m = ModelOption("opencode", "x", descriptors = listOf(variant))
+        assertNull(m.resolvedOptionValue(variant, emptyMap(), threadSelection = true))
+        assertEquals("fast", m.resolvedOptionValue(variant, mapOf("variant" to "fast"), threadSelection = true))
+        assertEquals("Drafts keep the default resolution", "deep", m.resolvedOptionValue(variant, emptyMap()))
+        assertEquals("deep", m.resolvedOptionValue(variant.copy(id = "effort"), emptyMap(), threadSelection = true))
     }
 
     @Test fun offeredValuesAreValidated() {
@@ -37,6 +46,8 @@ class ModelOptionsTest {
         assertTrue(model.offersOptionValue("fastMode", true))
         assertFalse(model.offersOptionValue("fastMode", "true"))
         assertFalse(model.offersOptionValue("missing", "x"))
+        assertFalse("Prompt-injected values are not options", model.offersOptionValue("effort", "ultrathink"))
+        assertEquals(emptyMap<String, Any>(), model.validOptions(mapOf("effort" to "ultrathink")))
         assertThrows(IllegalArgumentException::class.java) { model.requireOptionValue("effort", "extreme") }
         assertThrows(IllegalArgumentException::class.java) { model.requireOptionValue("missing", "x") }
         assertEquals(mapOf("effort" to "low"), model.validOptions(mapOf("effort" to "low", "fastMode" to "yes", "gone" to "x")))
