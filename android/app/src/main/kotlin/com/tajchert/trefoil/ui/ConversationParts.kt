@@ -27,6 +27,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -95,7 +96,10 @@ private fun WorkRow(
     val c = Tf.colors
     Row(Modifier.fillMaxWidth().heightIn(min = 32.dp)
         .then(if (onClick != null) Modifier.clickable(role = Role.Button, onClickLabel = onClickLabel, onClick = onClick) else Modifier)
-        .then(if (description != null) Modifier.semantics(mergeDescendants = true) { contentDescription = description } else Modifier)
+        .then(if (description != null || (expanded != null && onClick != null)) Modifier.semantics(mergeDescendants = true) {
+            description?.let { contentDescription = it }
+            if (expanded != null && onClick != null) stateDescription = if (expanded) "Expanded" else "Collapsed"
+        } else Modifier)
         .padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         if (spinner) WorkingSpinner(size = 16.dp) else Icon(icon, null, Modifier.size(16.dp), tint = iconTint)
         Text(label, Modifier.weight(1f, fill = false), style = WorkRowText, color = labelColor, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -110,7 +114,8 @@ internal fun CompletedWork(work: ConversationEntry.Work, canLoadActivity: Boolea
     var expanded by rememberSaveable(work.key) { mutableStateOf(initiallyExpanded) }
     val c = Tf.colors
     Column(Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth().heightIn(min = 32.dp).clickable(role = Role.Button, onClickLabel = if (expanded) "Collapse completed work" else "Expand completed work") { expanded = !expanded }.padding(vertical = 4.dp),
+        Row(Modifier.fillMaxWidth().heightIn(min = 32.dp).clickable(role = Role.Button, onClickLabel = if (expanded) "Collapse completed work" else "Expand completed work") { expanded = !expanded }
+            .semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" }.padding(vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(work.label, Modifier.weight(1f, fill = false), style = WorkRowText, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Icon(if (expanded) TfIcons.ChevronDown else TfIcons.ChevronRight, if (expanded) "Collapse completed work" else "Expand completed work", Modifier.size(14.dp), tint = c.muted)
@@ -182,7 +187,7 @@ private fun WorkEntry(activity: ToolActivity, single: Boolean, live: Boolean, ca
             if (severe) c.red else if (failed) c.red.copy(alpha = .4f) else c.muted.copy(alpha = if (stale) .45f else .7f),
             label, if (severe) c.red else c.muted, if (hasDetail) expanded else null, if (hasDetail) ({ expanded = !expanded }) else null,
             if (expanded) "Collapse details" else "Expand details", spinner = running,
-            description = if (failed) "$label, tool call failed" else if (stale) "$label, outcome unknown" else null) {
+            description = entryDescription(label, failed, stale, stats)) {
             if (stale) Text("· outcome unknown", style = WorkRowText, color = c.muted.copy(alpha = .7f), maxLines = 1)
             stats?.let { (added, removed) ->
                 Text("+$added", style = TrefoilType.mono, color = c.green)
@@ -191,6 +196,12 @@ private fun WorkEntry(activity: ToolActivity, single: Boolean, live: Boolean, ca
         }
         if (expanded && hasDetail) WorkEntryDetail(activity, canLoadActivity, onLoadActivity)
     }
+}
+
+/** Announced text for a row whose visual extras (failure tint, stale caption, diff counts) would otherwise be replaced by a bare label. */
+internal fun entryDescription(label: String, failed: Boolean, stale: Boolean, stats: Pair<Int, Int>?): String? {
+    val parts = listOfNotNull(if (failed) "tool call failed" else null, if (stale) "outcome unknown" else null, stats?.let { (added, removed) -> "+$added −$removed" })
+    return if (parts.isEmpty()) null else (listOf(label) + parts).joinToString(", ")
 }
 
 /** Detail worth expanding an entry for. Images are not part of it: they render once under the group. */

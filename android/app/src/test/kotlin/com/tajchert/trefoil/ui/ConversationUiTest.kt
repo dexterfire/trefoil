@@ -81,6 +81,41 @@ class ConversationUiTest {
         compose.onNodeWithText("· outcome unknown").assertExists()
     }
 
+    @Test fun expandableRowsAnnounceStateAndKeepDiffStatsInTheirDescription() {
+        val edit = ToolActivity("edit", "File change", kind = "file_change", status = "completed", fileName = "a.kt", diffStr = "--- a\n+++ b\n+one\n+two\n-three")
+        compose.setContent { MaterialTheme { WorkGroup(listOf(edit)) } }
+        val row = hasContentDescription("Changed 1 file, +2 −1")
+        compose.onNode(row).assertExists()
+        compose.onNode(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Collapsed")).assertExists()
+        compose.onNode(clickLabeled("Expand details")).performClick()
+        compose.onNode(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Expanded")).assertExists()
+        compose.onNode(row).assertExists()
+    }
+
+    @Test fun groupHeaderAnnouncesExpandedState() {
+        val first = ToolActivity("one", "Run", kind = "command_execution", status = "completed", input = "first", exitCode = 0)
+        val second = ToolActivity("two", "Run", kind = "command_execution", status = "completed", input = "second", exitCode = 0)
+        compose.setContent { MaterialTheme { WorkGroup(listOf(first, second)) } }
+        compose.onNode(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Collapsed")).assertExists()
+        compose.onNode(clickLabeled("Expand work details")).performClick()
+        compose.onAllNodes(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Collapsed")).assertCountEquals(2)
+        compose.onNode(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Expanded")).assertExists()
+    }
+
+    @Test fun rowsWithoutDetailAnnounceNoState() {
+        val plain = ToolActivity("plain", "Run", kind = "command_execution", status = "completed", exitCode = 0)
+        compose.setContent { MaterialTheme { WorkGroup(listOf(plain)) } }
+        compose.onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsProperties.StateDescription)).assertCountEquals(0)
+    }
+
+    @Test fun entryDescriptionCombinesFailureStaleAndStats() {
+        assertNull(entryDescription("Ran a", false, false, null))
+        assertEquals("Ran a, tool call failed", entryDescription("Ran a", true, false, null))
+        assertEquals("Ran a, outcome unknown", entryDescription("Ran a", false, true, null))
+        assertEquals("a.kt, +3 −1", entryDescription("a.kt", false, false, 3 to 1))
+        assertEquals("a.kt, tool call failed, outcome unknown, +3 −1", entryDescription("a.kt", true, true, 3 to 1))
+    }
+
     @Test fun subagentFooterTracksLiveAgentsAndOpensSheet() {
         val agent = Subagent("a", "fixture", status = "running", driver = "codex")
         val state = mutableStateOf(ClientState(selectedThreadId = "fixture", subagents = listOf(agent)))
