@@ -106,6 +106,14 @@ private fun machineSubtitle(environment: SavedEnvironment): String =
         ?: runCatching { java.net.URI(environment.baseUrl).let { uri -> uri.host?.let { host -> if (uri.port > 0) "$host:${uri.port}" else host } } }.getOrNull()
         ?: environment.baseUrl
 
+/** Threads with a turn actively running now; unknown/idle/archived/awaiting-user statuses never count. */
+internal fun machineWorkingCount(threads: List<ThreadSummary>): Int = threads.count { thread ->
+    if (thread.archived || thread.archivedAt != null) return@count false
+    if (thread.pendingRequestKind != null && thread.pendingRequestKind != "auth_refresh" || thread.pendingChildRequestKind != null) return@count false
+    if (thread.completionHeldBackgroundWork && thread.status != "failed") return@count false
+    (thread.activityRunStatus ?: thread.status) in setOf("preparing", "queued", "starting", "running", "waiting", "working", "streaming")
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MachineCard(
@@ -119,7 +127,7 @@ private fun MachineCard(
     val icon = if (environment.ssh != null) TfIcons.Server else TfIcons.Desktop
     val live = current && state.connection == ConnectionStatus.Connected
     val shape = RoundedCornerShape(20.dp)
-    val working = if (live) state.threads.count { !it.archived && threadIsWorking(it) } else 0
+    val working = if (live) machineWorkingCount(state.threads) else 0
     val needsYou = if (live) state.threads.count { !it.archived && threadIndicator(it).kind in setOf("attention", "input") } else 0
     val activeRoute = if (live) state.activeRoute else null
     val routeCount = routeRows(environment, activeRoute).size
