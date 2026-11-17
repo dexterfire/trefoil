@@ -189,9 +189,11 @@ class HtmlRenderPolicyTest {
 
     @Test fun cspBlocksFramesAndWorkers() {
         assertEquals(
-            "connect-src https: data: blob:; form-action 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'",
+            "connect-src https: data: blob:; form-action 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; sandbox allow-scripts",
             HTML_RENDER_CSP,
         )
+        // Opaque origins for the page and its frames: never weaken the sandbox with allow-same-origin.
+        assertFalse(HTML_RENDER_CSP.contains("allow-same-origin"))
         // img-src/script-src stay unrestricted, so data:/blob: images and scripts keep working.
         assertFalse(HTML_RENDER_CSP.contains("img-src"))
         assertFalse(HTML_RENDER_CSP.contains("script-src"))

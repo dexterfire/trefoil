@@ -68,9 +68,14 @@ internal const val HTML_RENDER_HEIGHT_SCRIPT = "<script>(function(){var p=window
  * replace the in-memory main frame, no plugins, and no frames or workers, which would bring their own policy
  * (or none) and whose WebSockets and fetches the request interceptor cannot see. Images and scripts from
  * `data:`/`blob:` keep working. Everything else is filtered per request by [HtmlRenderPolicy].
+ *
+ * `sandbox allow-scripts` gives the document an opaque origin, and every child frame another one. `frame-src`
+ * does not stop `about:blank` and `srcdoc` frames, and a fresh frame's window, read by index before any script
+ * can be injected into it, still has `RTCPeerConnection` and `WebTransport`; cross-origin, the page cannot
+ * reach it. An opaque origin also has no IndexedDB, Cache Storage or cookies, so a page stores nothing.
  */
 internal const val HTML_RENDER_CSP = "connect-src https: data: blob:; form-action 'none'; object-src 'none'; " +
-    "frame-src 'none'; child-src 'none'; worker-src 'none'"
+    "frame-src 'none'; child-src 'none'; worker-src 'none'; sandbox allow-scripts"
 
 /**
  * Removes WebRTC and WebTransport before any page script runs: ICE sends STUN/TURN to arbitrary (LAN) hosts and
@@ -107,7 +112,9 @@ internal fun htmlRenderRunsScript(supportsDocumentStart: Boolean, install: () ->
 internal object HtmlRenderDocumentStart {
     val platform: (WebView, String) -> Boolean = { webView, origin ->
         htmlRenderRunsScript(htmlRenderSupportsDocumentStart()) {
-            WebViewCompat.addDocumentStartJavaScript(webView, HTML_RENDER_NO_RTC_SCRIPT, setOf(origin))
+            // The sandboxed page and its `srcdoc` frames have opaque origins, which only `*` matches; this
+            // WebView never shows anything but the page.
+            WebViewCompat.addDocumentStartJavaScript(webView, HTML_RENDER_NO_RTC_SCRIPT, setOf("*"))
         }
     }
     @VisibleForTesting @Volatile var install: (WebView, String) -> Boolean = platform
@@ -421,8 +428,9 @@ internal class HtmlRenderPage(
         }
         if (scripted && !fullScreen) runCatching {
             if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
-                WebViewCompat.addWebMessageListener(webView, HTML_RENDER_BRIDGE, setOf(policy.origin)) { _, message, sourceOrigin, isMainFrame, _ ->
-                    if (active && isMainFrame && sourceOrigin.toString().trimEnd('/') == policy.origin) htmlRenderReportedHeight(message.data)?.let { onHeight(it) }
+                // The sandboxed main frame reports an opaque origin, so the rule is `*` and only the main frame counts.
+                WebViewCompat.addWebMessageListener(webView, HTML_RENDER_BRIDGE, setOf("*")) { _, message, _, isMainFrame, _ ->
+                    if (active && isMainFrame) htmlRenderReportedHeight(message.data)?.let { onHeight(it) }
                 }
             }
         }

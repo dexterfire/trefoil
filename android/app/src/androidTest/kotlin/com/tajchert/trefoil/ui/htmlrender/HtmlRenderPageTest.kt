@@ -44,21 +44,15 @@ class HtmlRenderPageTest {
         assertEquals("\"${page.policy.origin}\"", evaluate(page, "location.origin"))
     }
 
-    @Test fun sessionsNeverShareStorage() {
-        val writer = open(fixture)
-        // The same page opened again (another session, such as full screen or after a restart) starts empty.
-        val reader = open(fixture)
-        val probePage = open(probe)
-        assertNotEquals(writer.policy.origin, reader.policy.origin)
-        assertNotEquals(writer.policy.origin, probePage.policy.origin)
-        evaluate(writer, "caches.open('fixture').then(function(c){return c.put('/k',new Response('fixture'))}).then(function(){window.__r='ok'},function(e){window.__r='error:'+e.name});1")
-        assertEquals("\"ok\"", poll(writer, "window.__r"))
-        evaluate(writer, "caches.keys().then(function(k){window.__k=JSON.stringify(k)});1")
-        assertEquals("\"[\\\"fixture\\\"]\"", poll(writer, "window.__k"))
-        listOf(reader, probePage).forEach { page ->
-            evaluate(page, "caches.keys().then(function(k){window.__k=JSON.stringify(k)});1")
-            assertEquals("\"[]\"", poll(page, "window.__k"))
-        }
+    @Test fun pagesHaveAnOpaqueOriginAndNoStorage() {
+        val first = open(fixture)
+        val second = open(fixture)
+        assertNotEquals(first.policy.origin, second.policy.origin)
+        // The CSP sandbox makes the origin opaque: nothing can be stored, so nothing is shared or left on disk.
+        assertEquals("\"null\"", evaluate(first, "self.origin"))
+        assertEquals("\"undefined\"", evaluate(first, "typeof caches"))
+        assertEquals("\"SecurityError\"", evaluate(first, "(function(){try{indexedDB.open('fixture');return 'opened'}catch(e){return e.name}})()"))
+        assertEquals("\"SecurityError\"", evaluate(first, "(function(){try{return typeof document.cookie}catch(e){return e.name}})()"))
     }
 
     @Test fun peerConnectionsAndWebTransportAreGone() {
@@ -72,10 +66,24 @@ class HtmlRenderPageTest {
         }
         assertEquals("\"threw\"", evaluate(page, "(function(){try{new RTCPeerConnection({iceServers:[{urls:'stun:192.168.1.1:3478'}]});return 'created'}catch(e){return 'threw'}})()"))
         assertEquals("\"undefined\"", evaluate(page, "typeof window.__pageSawRtc"))
-        // A same-origin child window has no peer connection either, however it is reached.
-        assertEquals("\"undefined\"", evaluate(page, "(function(){var f=document.createElement('iframe');document.body.appendChild(f);return typeof f.contentWindow.RTCPeerConnection})()"))
-        assertEquals("\"undefined\"", evaluate(page, "(function(){var f=document.createElement('iframe');document.body.appendChild(f);return typeof window[window.length-1].RTCPeerConnection})()"))
-        assertEquals("\"threw\"", evaluate(page, "(function(){document.body.appendChild(document.createElement('iframe'));try{new window.frames[window.frames.length-1].RTCPeerConnection({iceServers:[{urls:'stun:192.168.1.1:3478'}]});return 'created'}catch(e){return 'threw'}})()"))
+        // A fresh child frame still has its own untouched globals, but under the sandbox it is cross-origin:
+        // the page cannot read them, however it reaches the window.
+        assertEquals("\"SecurityError\"", evaluate(page, "(function(){var f=document.createElement('iframe');document.body.appendChild(f);try{return typeof f.contentWindow.RTCPeerConnection}catch(e){return e.name}})()"))
+        assertEquals("\"SecurityError\"", evaluate(page, "(function(){document.body.appendChild(document.createElement('iframe'));try{return typeof window[window.length-1].RTCPeerConnection}catch(e){return e.name}})()"))
+        assertEquals("\"SecurityError\"", evaluate(page, "(function(){document.body.appendChild(document.createElement('iframe'));try{new window.frames[window.frames.length-1].RTCPeerConnection({iceServers:[{urls:'stun:192.168.1.1:3478'}]});return 'created'}catch(e){return e.name}})()"))
+    }
+
+    @Test fun scriptInChildFramesNeverSeesPeerConnections() {
+        val page = open(probe)
+        // `srcdoc` frames run script in their own realm, where the document-start lockdown runs first; a
+        // `javascript:` frame is cross-origin to the page that names it and runs nothing.
+        evaluate(page, "window.__m=[];window.addEventListener('message',function(e){window.__m.push(String(e.data))});var p='[typeof RTCPeerConnection,typeof WebTransport,typeof caches].join()';var s=document.createElement('iframe');s.srcdoc='<script>parent.postMessage(\\'srcdoc:\\'+'+p+',\\'*\\')<\\/script>';document.body.appendChild(s);var j=document.createElement('iframe');j.src='javascript:parent.postMessage(\\'jsurl:\\'+'+p+',\\'*\\')';document.body.appendChild(j);var d=document.createElement('div');d.innerHTML='<iframe srcdoc=\"&lt;script&gt;parent.postMessage(\\'parsed:\\'+'+p+',\\'*\\')&lt;/script&gt;\"></iframe>';document.body.appendChild(d);1")
+        poll(page, "window.__m.length>=2?window.__m.length:null")
+        SystemClock.sleep(1_000)
+        assertEquals(
+            "\"parsed:undefined,undefined,undefined|srcdoc:undefined,undefined,undefined\"",
+            evaluate(page, "window.__m.slice().sort().join('|')"),
+        )
     }
 
     @Test fun scriptBeforeAParserClosedCommentNeverSeesPeerConnections() {
@@ -124,8 +132,10 @@ class HtmlRenderPageTest {
         val page = open(probe)
         val origin = "\"${page.policy.origin}\""
         evaluate(page, "var f=document.createElement('form');f.method='post';f.action='https://cdn.example/collect';document.body.appendChild(f);f.submit();1")
-        assertViolation(page, "form-action")
-        // The in-memory document is still the one in the frame.
+        // The sandbox (no allow-forms) drops the submit before `form-action` is consulted, so there is no CSP
+        // violation to wait for. The in-memory document is still the one in the frame.
+        SystemClock.sleep(1_000)
+        assertEquals("\"[]\"", evaluate(page, "JSON.stringify(window.__violations)"))
         assertEquals(origin, evaluate(page, "location.origin"))
         assertEquals("\"fixture\"", evaluate(page, "document.getElementById('probe').textContent"))
     }
