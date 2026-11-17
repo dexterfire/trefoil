@@ -7,6 +7,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.*
 import android.widget.FrameLayout
+import androidx.annotation.VisibleForTesting
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
@@ -78,9 +79,10 @@ internal const val HTML_RENDER_CSP = "connect-src https: data: blob:; form-actio
 
 /**
  * Removes WebRTC and WebTransport before any page script runs: ICE sends STUN/TURN to arbitrary (LAN) hosts and
- * WebTransport speaks QUIC, and neither passes `shouldInterceptRequest` or the CSP. The globals become undefined
- * and non-configurable, and same-origin iframe windows reached through `contentWindow`/`contentDocument` are
- * locked the same way (document-start injection also runs in frames by itself).
+ * WebTransport speaks QUIC, and neither passes `shouldInterceptRequest` or the CSP. Installed only through
+ * document-start injection, which also runs in frames by itself. The globals become undefined and
+ * non-configurable, and same-origin iframe windows reached through `contentWindow`/`contentDocument` are locked
+ * the same way as a second layer.
  */
 internal const val HTML_RENDER_NO_RTC_SCRIPT = "(function(){var n=['RTCPeerConnection','webkitRTCPeerConnection','WebTransport'];" +
     "function l(w){if(w)for(var i=0;i<n.length;i++){try{Object.defineProperty(w,n[i],{value:undefined,writable:false,enumerable:false,configurable:false});}catch(e){}}return w;}" +
@@ -89,20 +91,53 @@ internal const val HTML_RENDER_NO_RTC_SCRIPT = "(function(){var n=['RTCPeerConne
     "if(w&&w.get&&w.configurable)Object.defineProperty(p,'contentWindow',{get:function(){return l(w.get.call(this));},enumerable:w.enumerable,configurable:false});" +
     "if(d&&d.get&&d.configurable)Object.defineProperty(p,'contentDocument',{get:function(){var x=d.get.call(this);if(x)l(x.defaultView);return x;},enumerable:d.enumerable,configurable:false});})();"
 
-private val HTML_RENDER_DOCTYPE = Regex("^\\uFEFF?\\s*(?:<!--.*?-->\\s*)*<!doctype[^>]*>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+/** Whether this WebView can inject scripts at document start ([HTML_RENDER_NO_RTC_SCRIPT]). */
+internal fun htmlRenderSupportsDocumentStart(): Boolean =
+    runCatching { WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT) }.getOrDefault(false)
 
 /**
- * The served bytes: the agent's (already bootstrapped) document plus the appended height script. Without
- * document-start injection ([rtcLockdown]), [HTML_RENDER_NO_RTC_SCRIPT] goes first as an inline script, after
- * any doctype so the page keeps standards mode.
+ * Whether page script may run: only when [install] put [HTML_RENDER_NO_RTC_SCRIPT] in place at document start.
+ * An in-document copy of the lockdown can be outrun (a parser-closed comment before it, or a fresh frame realm
+ * reached by index), so without document-start support the page is rendered with JavaScript off instead.
  */
-internal fun htmlRenderDocument(html: String, rtcLockdown: Boolean): ByteArray {
-    val body = if (!rtcLockdown) html else {
-        val doctypeEnd = HTML_RENDER_DOCTYPE.find(html)?.range?.last?.plus(1) ?: 0
-        html.substring(0, doctypeEnd) + "<script>$HTML_RENDER_NO_RTC_SCRIPT</script>" + html.substring(doctypeEnd)
+internal fun htmlRenderRunsScript(supportsDocumentStart: Boolean, install: () -> Unit): Boolean =
+    supportsDocumentStart && runCatching(install).isSuccess
+
+/**
+ * Installs [HTML_RENDER_NO_RTC_SCRIPT] at document start for a page origin; false when this WebView cannot, and
+ * that page is then static. Robolectric has no WebView features, so JVM tests swap [install] to reach the
+ * scripted path.
+ */
+internal object HtmlRenderDocumentStart {
+    val platform: (WebView, String) -> Boolean = { webView, origin ->
+        htmlRenderRunsScript(htmlRenderSupportsDocumentStart()) {
+            WebViewCompat.addDocumentStartJavaScript(webView, HTML_RENDER_NO_RTC_SCRIPT, setOf(origin))
+        }
     }
-    return (body + HTML_RENDER_HEIGHT_SCRIPT).toByteArray(Charsets.UTF_8)
+    @VisibleForTesting @Volatile var install: (WebView, String) -> Boolean = platform
 }
+
+private val CSS_CUSTOM_PROPERTY = Regex("--[A-Za-z0-9_-]+")
+
+/**
+ * The theme for a page without script, where T3's bootstrap cannot read the URL fragment: the variables as a
+ * `:root` rule, appended so it wins over the page's own `:root` defaults. Values that could leave the rule are
+ * dropped.
+ */
+internal fun htmlRenderStaticThemeStyle(theme: HtmlRenderTheme): String = buildString {
+    append("<style>:root{color-scheme:").append(theme.appearance).append(';')
+    theme.variables.forEach { (name, value) ->
+        if (name.matches(CSS_CUSTOM_PROPERTY) && value.none { it in "<>{};\\\n\r" }) append(name).append(':').append(value).append(';')
+    }
+    append("}</style>")
+}
+
+/**
+ * The served bytes: the agent's (already bootstrapped) document plus, when [scripted], the appended height
+ * script, else the static theme rule. Nothing is ever inserted ahead of the page's own markup.
+ */
+internal fun htmlRenderDocument(html: String, scripted: Boolean, theme: HtmlRenderTheme): ByteArray =
+    (html + if (scripted) HTML_RENDER_HEIGHT_SCRIPT else htmlRenderStaticThemeStyle(theme)).toByteArray(Charsets.UTF_8)
 
 /** Parses a height message from the page; anything else is ignored. */
 internal fun htmlRenderReportedHeight(data: String?): Float? =
@@ -280,6 +315,8 @@ internal class HtmlRenderPage(
     initialTheme: HtmlRenderTheme,
     private val network: HtmlRenderNetworkAccess,
     val fullScreen: Boolean,
+    /** False forces a static render, as on a WebView without document-start injection. */
+    allowScript: Boolean = true,
 ) {
     val webView = WebView(context)
     val root: View
@@ -287,13 +324,9 @@ internal class HtmlRenderPage(
     var onHeight: (Float) -> Unit = {}
     var onOpenLink: (String) -> Unit = {}
     var onFailure: () -> Unit = {}
-    /** True when [HTML_RENDER_NO_RTC_SCRIPT] runs at document start; otherwise it is inlined into the document. */
-    private val rtcLockedAtDocumentStart = runCatching {
-        WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT).also { supported ->
-            if (supported) WebViewCompat.addDocumentStartJavaScript(webView, HTML_RENDER_NO_RTC_SCRIPT, setOf(policy.origin))
-        }
-    }.getOrDefault(false)
-    @Volatile private var documentBytes = htmlRenderDocument(html, rtcLockdown = !rtcLockedAtDocumentStart)
+    /** JavaScript runs only behind the document-start lockdown; otherwise the page is a static render. */
+    val scripted = allowScript && HtmlRenderDocumentStart.install(webView, policy.origin)
+    @Volatile private var documentBytes = htmlRenderDocument(html, scripted, initialTheme)
     @Volatile private var active = true
     /** This WebView's remote fetches: bounded, tracked, and cancelled on release or loss of context. */
     private val fetches = network.fetcher?.let(::HtmlRenderFetchSession)
@@ -310,7 +343,7 @@ internal class HtmlRenderPage(
             webView.overScrollMode = View.OVER_SCROLL_NEVER
         }
         with(webView.settings) {
-            javaScriptEnabled = true
+            javaScriptEnabled = scripted
             domStorageEnabled = false
             @Suppress("DEPRECATION")
             databaseEnabled = false
@@ -374,7 +407,7 @@ internal class HtmlRenderPage(
                 return if (active) resource.toWebResponse() else deniedResource()
             }
             override fun onPageFinished(view: WebView?, url: String?) {
-                if (!active || url?.startsWith(policy.documentUrl) != true) return
+                if (!active || !scripted || url?.startsWith(policy.documentUrl) != true) return
                 themes.documentFinished()?.let { webView.evaluateJavascript(htmlRenderThemeScript(it), null) }
             }
             override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: android.net.http.SslError?) { handler?.cancel() }
@@ -393,7 +426,7 @@ internal class HtmlRenderPage(
                 return true
             }
         }
-        if (!fullScreen) runCatching {
+        if (scripted && !fullScreen) runCatching {
             if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
                 WebViewCompat.addWebMessageListener(webView, HTML_RENDER_BRIDGE, setOf(policy.origin)) { _, message, sourceOrigin, isMainFrame, _ ->
                     if (active && isMainFrame && sourceOrigin.toString().trimEnd('/') == policy.origin) htmlRenderReportedHeight(message.data)?.let { onHeight(it) }
@@ -416,7 +449,7 @@ internal class HtmlRenderPage(
     fun applyTheme(next: HtmlRenderTheme) {
         if (!active || next == themes.latest) return
         webView.setBackgroundColor(next.backgroundArgb)
-        if (themes.update(next)) webView.evaluateJavascript(htmlRenderThemeScript(next), null)
+        if (themes.update(next) && scripted) webView.evaluateJavascript(htmlRenderThemeScript(next), null)
     }
 
     /** The card's environment or thread is no longer the connected selection: drop in-flight fetches. */

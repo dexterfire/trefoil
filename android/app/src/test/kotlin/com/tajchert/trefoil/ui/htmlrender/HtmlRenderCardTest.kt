@@ -37,6 +37,8 @@ class HtmlRenderCardTest {
     @get:Rule val compose = createComposeRule()
     private val reference = HtmlRenderReference("fixture-attachment", "Fixture chart", 240)
     private val html = "<!doctype html><html><head></head><body><p>Fixture page</p></body></html>"
+    @org.junit.Before fun scriptedWebView() { HtmlRenderDocumentStart.install = { _, _ -> true } }
+    @org.junit.After fun platformWebView() { HtmlRenderDocumentStart.install = HtmlRenderDocumentStart.platform }
 
     private fun content(state: HtmlRenderState, canRetry: Boolean = false, onRetry: () -> Unit = {}, inspection: Boolean = false) {
         compose.setContent {

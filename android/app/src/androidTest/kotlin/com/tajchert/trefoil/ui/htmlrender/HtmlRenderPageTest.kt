@@ -17,7 +17,6 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
-import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -33,11 +32,6 @@ class HtmlRenderPageTest {
 </body></html>"""
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val pages = mutableListOf<HtmlRenderPage>()
-
-    @Before fun needsMessageListener() {
-        // Page readiness is observed through the height bridge.
-        assumeTrue(WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER))
-    }
 
     @After fun releasePages() {
         instrumentation.runOnMainSync { pages.forEach { it.release() } }
@@ -76,11 +70,33 @@ class HtmlRenderPageTest {
         }
         assertEquals("\"threw\"", evaluate(page, "(function(){try{new RTCPeerConnection({iceServers:[{urls:'stun:192.168.1.1:3478'}]});return 'created'}catch(e){return 'threw'}})()"))
         assertEquals("\"undefined\"", evaluate(page, "typeof window.__pageSawRtc"))
-        // A same-origin child window has no peer connection either.
+        // A same-origin child window has no peer connection either, however it is reached.
         assertEquals("\"undefined\"", evaluate(page, "(function(){var f=document.createElement('iframe');document.body.appendChild(f);return typeof f.contentWindow.RTCPeerConnection})()"))
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
-            assertEquals("\"undefined\"", evaluate(page, "(function(){var f=document.createElement('iframe');document.body.appendChild(f);return typeof window[window.length-1].RTCPeerConnection})()"))
+        assertEquals("\"undefined\"", evaluate(page, "(function(){var f=document.createElement('iframe');document.body.appendChild(f);return typeof window[window.length-1].RTCPeerConnection})()"))
+        assertEquals("\"threw\"", evaluate(page, "(function(){document.body.appendChild(document.createElement('iframe'));try{new window.frames[window.frames.length-1].RTCPeerConnection({iceServers:[{urls:'stun:192.168.1.1:3478'}]});return 'created'}catch(e){return 'threw'}})()"))
+    }
+
+    @Test fun scriptBeforeAParserClosedCommentNeverSeesPeerConnections() {
+        // `<!-->` closes the comment for the HTML parser, so this script is the first thing that runs.
+        val page = open("<!--><script>window.savedRTC=typeof RTCPeerConnection;window.savedTransport=typeof WebTransport</script><!-- --><!doctype html><p>x</p>", "fixture-attachment-comment")
+        assertEquals("\"undefined\"", evaluate(page, "window.savedRTC"))
+        assertEquals("\"undefined\"", evaluate(page, "window.savedTransport"))
+    }
+
+    @Test fun withoutDocumentStartThePageRunsNoScript() {
+        val html = "<!--><script>document.title='ran'</script><!-- --><!doctype html><html><head><title>static</title>" +
+            "<script>document.title='ran';new RTCPeerConnection({iceServers:[{urls:'stun:192.168.1.1:3478'}]})</script></head><body><p>x</p></body></html>"
+        val page = open(html, "fixture-attachment-static", allowScript = false)
+        val deadline = SystemClock.uptimeMillis() + 20_000
+        var title: String? = null
+        while (SystemClock.uptimeMillis() < deadline) {
+            instrumentation.runOnMainSync { title = page.webView.title.takeIf { page.webView.progress == 100 } }
+            if (title == "static" || title == "ran") break
+            SystemClock.sleep(100)
         }
+        assertFalse(page.scripted)
+        instrumentation.runOnMainSync { assertFalse(page.webView.settings.javaScriptEnabled) }
+        assertEquals("static", title)
     }
 
     @Test fun webSocketIsBlocked() {
@@ -127,26 +143,36 @@ if(typeof RTCPeerConnection!=='undefined')window.__pageSawRtc=true;</script></he
         assertTrue("no $directive violation in $violations", violations?.contains(directive) == true)
     }
 
-    /** Opens [html] as a page and waits until it reports its height. */
+    /**
+     * Opens [html] as a page. A scripted page (the default; skipped where the WebView lacks document-start
+     * injection or the message listener) is ready once it reports its height; a static one is returned at once.
+     */
     private fun open(
         html: String,
         attachmentId: String,
         environmentId: String = "fixture-env",
         threadId: String = "fixture-thread",
+        allowScript: Boolean = true,
         configure: (HtmlRenderPage) -> Unit = {},
     ): HtmlRenderPage {
+        if (allowScript) {
+            assumeTrue(WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT))
+            assumeTrue(WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER))
+        }
         val reported = CountDownLatch(1)
         val height = AtomicReference<Float?>(null)
         lateinit var page: HtmlRenderPage
         instrumentation.runOnMainSync {
-            page = HtmlRenderPage(instrumentation.targetContext, html, environmentId, threadId, attachmentId, htmlRenderTheme(TrefoilDark), HtmlRenderNetworkAccess.Offline, fullScreen = false)
+            page = HtmlRenderPage(instrumentation.targetContext, html, environmentId, threadId, attachmentId, htmlRenderTheme(TrefoilDark), HtmlRenderNetworkAccess.Offline, fullScreen = false, allowScript = allowScript)
             pages += page
             configure(page)
             page.onHeight = { height.set(it); reported.countDown() }
             page.root.measure(MeasureSpec.makeMeasureSpec(1080, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(900, MeasureSpec.EXACTLY))
             page.root.layout(0, 0, 1080, 900)
         }
+        if (!allowScript) return page
         reported.await(20, TimeUnit.SECONDS)
+        assertTrue(page.scripted)
         assertNotNull("page never reported its height (main document refused?)", height.get())
         return page
     }
