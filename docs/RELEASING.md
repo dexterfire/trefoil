@@ -167,9 +167,13 @@ APK on a device as described above.
 Recovery after a failed publish:
 
 - If the gate or signature check failed, the bump was reverted; fix the cause and re-run.
-- If the push failed (the push is atomic, so neither `main` nor the tag moved on the remote), delete the local tag
-  (`git tag -d vX.Y.Z`), undo the release commit (`git reset --hard HEAD~1`; it only touches
-  `android/app/build.gradle.kts`), fix the cause (for example `git pull --rebase`), and run the script again.
+- If the push failed, first check what reached the remote: `git ls-remote origin refs/heads/main refs/tags/vX.Y.Z`.
+  A dropped connection can report a failure after the push was accepted.
+  - Both refs point at the release commit: the push landed. Do not roll back; publish with `gh release create`
+    as in the next item.
+  - Neither moved (the push is atomic, so it is both or neither): delete the local tag (`git tag -d vX.Y.Z`), undo
+    the release commit (`git reset --hard HEAD~1`; it only touches `android/app/build.gradle.kts`), fix the cause
+    (for example `git pull --rebase`), and run the script again.
 - If only `gh release create` failed, `main` and the tag are already pushed. Re-run the exact `gh release create`
   command the script prints; the APK and checksum are in `android/app/build/outputs/apk/release/`.
 
