@@ -60,6 +60,16 @@ git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && die "tag $TAG already e
 CUR_CODE="$(sed -n 's/.*versionCode = \([0-9]*\).*/\1/p' "$GRADLE_FILE")"
 CUR_NAME="$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' "$GRADLE_FILE")"
 [ -n "$CUR_CODE" ] && [ -n "$CUR_NAME" ] || die "cannot parse version from $GRADLE_FILE"
+[[ "$CUR_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "current versionName '$CUR_NAME' is not x.y.z"
+# The new version must be strictly greater than the current one (numeric, per component).
+IFS=. read -r NEW_MAJOR NEW_MINOR NEW_PATCH <<<"$VERSION"
+IFS=. read -r CUR_MAJOR CUR_MINOR CUR_PATCH <<<"$CUR_NAME"
+version_newer() {
+  [ "$((10#$NEW_MAJOR))" -ne "$((10#$CUR_MAJOR))" ] && { [ "$((10#$NEW_MAJOR))" -gt "$((10#$CUR_MAJOR))" ]; return; }
+  [ "$((10#$NEW_MINOR))" -ne "$((10#$CUR_MINOR))" ] && { [ "$((10#$NEW_MINOR))" -gt "$((10#$CUR_MINOR))" ]; return; }
+  [ "$((10#$NEW_PATCH))" -gt "$((10#$CUR_PATCH))" ]
+}
+version_newer || die "version $VERSION must be greater than the current $CUR_NAME"
 NEW_CODE=$((CUR_CODE + 1))
 echo "Version $CUR_NAME ($CUR_CODE) -> $VERSION ($NEW_CODE)"
 
@@ -76,7 +86,8 @@ trap 'exit 143' TERM
 # Version bump
 sed -i.bak "s/versionCode = $CUR_CODE;/versionCode = $NEW_CODE;/; s/versionName = \"$CUR_NAME\"/versionName = \"$VERSION\"/" "$GRADLE_FILE"
 rm -f "$GRADLE_FILE.bak"
-grep -q "versionName = \"$VERSION\"" "$GRADLE_FILE" || die "version bump failed"
+grep -q "versionName = \"$VERSION\"" "$GRADLE_FILE" || die "version bump failed: versionName"
+grep -q "versionCode = $NEW_CODE;" "$GRADLE_FILE" || die "version bump failed: versionCode"
 
 # Gate (run from android/)
 cd "$ANDROID"
