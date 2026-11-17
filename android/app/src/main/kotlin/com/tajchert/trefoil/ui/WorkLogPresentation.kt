@@ -182,10 +182,18 @@ internal fun commandProgramName(command: String): String? {
 
 /** T3 `commandDisplayText`: drops a single-script shell wrapper and shows control characters as Unicode control pictures. */
 internal fun commandDisplayText(command: String): String =
-    withoutShellWrapper(command).replace(controlCharacters) { match ->
+    boundedLabel(withoutShellWrapper(command).replace(controlCharacters) { match ->
         val char = match.value[0]
         if (char == '\u007f') "␡" else (0x2400 + char.code).toChar().toString()
-    }
+    })
+
+/** Row labels are single-line: whitespace (newlines included) collapses to one space and the text is capped at [maxLabelLength] characters. */
+internal const val maxLabelLength = 200
+
+internal fun boundedLabel(text: String): String {
+    val collapsed = text.replace(whitespace, " ").trim()
+    return if (collapsed.length > maxLabelLength) collapsed.take(maxLabelLength - 1).trimEnd() + "…" else collapsed
+}
 
 // region T3 tool classification
 
@@ -335,9 +343,9 @@ private val ToolActivity.meaningfulTitle: String? get() =
     title.trim().takeIf { it.isNotEmpty() && it.replace(' ', '_') != kind }
 
 private fun searchLabel(activity: ToolActivity): String? {
-    activity.meaningfulTitle?.takeIf { !searchToolTitle.matches(it) }?.let { return it }
+    activity.meaningfulTitle?.takeIf { !searchToolTitle.matches(it) }?.let { return boundedLabel(it) }
     val query = activity.input?.let { input -> jsonStrings(input, listOf("pattern", "query", "glob")) ?: input.trim().takeIf { it.isNotEmpty() && !it.startsWith("{") } }
-    return query?.let { "Searched ${it.lineSequence().first()}" }
+    return query?.let { boundedLabel("Searched $it") }
 }
 
 /** Read target: the server's `Read <path>` title, a `file_path`/`path` input field, or the viewed image path. */

@@ -137,6 +137,23 @@ class WorkLogPresentationTest {
         assertEquals(WorkIcon.Other, workEntryIcon(tool()))
     }
 
+    @Test fun commandAndSearchLabelsAreSingleLineAndCapped() {
+        val multiline = command(input = "git commit -m \"one\n\n  two\"\t&& echo   done")
+        assertEquals("git commit -m \"one two\" && echo done", workEntryLabel(multiline))
+        val long = command(input = "echo " + "word ".repeat(100))
+        val label = workEntryLabel(long)
+        assertEquals(maxLabelLength, label.length)
+        assertTrue(label.endsWith("…"))
+        assertFalse(label.contains('\n'))
+        assertEquals(label, singleWorkLabel(long))
+        val query = ToolActivity("s", "file search", kind = "file_search", status = "completed", input = "first line\n   second\tline " + "x".repeat(400))
+        val searched = workEntryLabel(query)
+        assertTrue(searched.startsWith("Searched first line second line xxx"))
+        assertEquals(maxLabelLength, searched.length)
+        assertEquals(maxLabelLength, boundedLabel("a ".repeat(500)).length)
+        assertEquals("short label", boundedLabel("  short \n label ".replace("short \n label", "short   label")))
+    }
+
     @Test fun liveLabelForReasoningUsesThoughtLineOrThinking() {
         assertEquals("Thinking", liveWorkLabel(ToolActivity("t", "reasoning", kind = "reasoning", status = "running")))
         assertEquals("Planning", liveWorkLabel(ToolActivity("t", "reasoning", kind = "reasoning", status = "running", detail = "**Planning**\nLong text.")))
