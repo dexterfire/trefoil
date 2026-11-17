@@ -10,6 +10,7 @@ import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -42,6 +43,7 @@ internal sealed interface HtmlRenderState {
 
 internal const val HTML_RENDER_PLACEHOLDER_TAG = "html-render-placeholder"
 internal const val HTML_RENDER_WEBVIEW_TAG = "html-render-webview"
+private const val MAX_NOT_CURRENT_RETRIES = 2
 
 /**
  * Inline thread row for an agent `html_render` page. Reads environment/thread/loader from LocalFileDownloadUi.
@@ -61,6 +63,9 @@ internal fun HtmlRenderCard(reference: HtmlRenderReference, modifier: Modifier =
     }
     var attempt by remember(reference, environment, thread, loader) { mutableIntStateOf(0) }
     var failedAttempt by remember(reference, environment, thread, loader) { mutableIntStateOf(-1) }
+    // A connection blink shorter than a recomposition can make load() answer NotCurrent while canDownload never changed.
+    val canDownloadNow by rememberUpdatedState(ui.canDownload)
+    var notCurrentRetries by remember(reference, environment, thread, loader) { mutableIntStateOf(0) }
     // Leaving the thread disposes this effect, which cancels the transfer. Failures wait for an explicit Retry.
     LaunchedEffect(reference, environment, thread, loader, ui.canDownload, attempt) {
         if (loader == null || environment == null || thread == null) return@LaunchedEffect
@@ -71,7 +76,11 @@ internal fun HtmlRenderCard(reference: HtmlRenderReference, modifier: Modifier =
         state = HtmlRenderState.Loading
         state = when (val result = loader.load(reference, environment, thread)) {
             is HtmlRenderFetch.Ready -> HtmlRenderState.Ready(result.html)
-            HtmlRenderFetch.NotCurrent -> HtmlRenderState.Offline
+            HtmlRenderFetch.NotCurrent -> {
+                // Rerun once or twice (bounded) if the connection is back; otherwise Offline offers Retry.
+                if (canDownloadNow && notCurrentRetries < MAX_NOT_CURRENT_RETRIES) { notCurrentRetries++; attempt++ }
+                HtmlRenderState.Offline
+            }
             HtmlRenderFetch.TooLarge -> HtmlRenderState.TooLarge
             HtmlRenderFetch.Failed -> HtmlRenderState.Failed.also { failedAttempt = attempt }
         }
@@ -99,6 +108,14 @@ internal fun HtmlRenderCard(reference: HtmlRenderReference, modifier: Modifier =
 }
 
 /**
+ * The measured page height, kept across a lazy-list row leaving and re-entering composition so the list does not
+ * jump while the page reports its height again. A new page (different reference or html) starts unmeasured.
+ */
+@Composable
+internal fun rememberHtmlRenderContentHeight(reference: HtmlRenderReference, html: String?): MutableState<Float?> =
+    rememberSaveable(reference, html) { mutableStateOf<Float?>(null) }
+
+/**
  * Stateless card: header with title and full-screen button, then the page or a state message. In
  * LocalInspectionMode (previews, screenshot tests) the Ready state shows a placeholder instead of a WebView.
  */
@@ -115,8 +132,9 @@ internal fun HtmlRenderCardContent(
     val c = Tf.colors
     val shape = RoundedCornerShape(14.dp)
     val theme = remember(c) { htmlRenderTheme(c) }
-    var fullScreen by remember(reference) { mutableStateOf(false) }
-    var contentHeight by remember(reference, (state as? HtmlRenderState.Ready)?.html) { mutableStateOf<Float?>(null) }
+    // Saveable so a rotation does not close the full-screen page.
+    var fullScreen by rememberSaveable(reference) { mutableStateOf(false) }
+    var contentHeight by rememberHtmlRenderContentHeight(reference, (state as? HtmlRenderState.Ready)?.html)
     val ready = state as? HtmlRenderState.Ready
     Surface(modifier.fillMaxWidth(), shape = shape, color = c.s1, contentColor = c.text, border = BorderStroke(1.dp, c.line)) {
         Column {
@@ -165,7 +183,9 @@ internal fun HtmlRenderCardContent(
                     HtmlRenderState.Loading -> Box(Modifier.fillMaxWidth().height(fallback.dp), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator(Modifier.size(20.dp), color = c.muted, strokeWidth = 2.dp)
                     }
-                    HtmlRenderState.Offline -> StateMessage("Reconnect to load “${reference.title}”")
+                    HtmlRenderState.Offline -> StateMessage("Reconnect to load “${reference.title}”") {
+                        if (canRetry) TextButton(onClick = onRetry) { Text("Retry", style = TrefoilType.meta) }
+                    }
                     HtmlRenderState.TooLarge -> StateMessage("“${reference.title}” is too large to preview")
                     HtmlRenderState.Failed -> StateMessage("Unable to load “${reference.title}”") {
                         if (canRetry) TextButton(onClick = onRetry) { Text("Retry", style = TrefoilType.meta) }

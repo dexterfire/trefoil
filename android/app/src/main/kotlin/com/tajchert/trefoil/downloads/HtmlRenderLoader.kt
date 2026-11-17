@@ -12,10 +12,13 @@ import java.io.IOException
 import java.io.OutputStream
 import java.net.URI
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 
 /** Result of fetching an `html_render` page. Never carries a URL, title, or attachment id in `toString`. */
 sealed interface HtmlRenderFetch {
@@ -37,13 +40,15 @@ sealed interface HtmlRenderFetch {
 class HtmlRenderLoader internal constructor(
     private val client: TrefoilClient,
     private val maxSourceBytes: Long,
-    cacheBytes: Int,
+    private val cacheBytes: Int,
     private val subresources: HtmlRenderSubresourceFetcher?,
+    private val decodeDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) {
     constructor(client: TrefoilClient, maxSourceBytes: Long = MAX_SOURCE_BYTES, cacheBytes: Int = CACHE_BYTES) :
         this(client, maxSourceBytes, cacheBytes, null)
 
     private data class Key(val environmentId: String, val threadId: String, val referenceId: String)
+    /** [bytes] is the in-memory size of the decoded string (UTF-16), not the download size. */
     private class Page(val html: String, val bytes: Int)
     private val cache = object : LruCache<Key, Page>(cacheBytes) {
         override fun sizeOf(key: Key, value: Page) = value.bytes.coerceAtLeast(1)
@@ -63,6 +68,11 @@ class HtmlRenderLoader internal constructor(
     fun cached(reference: HtmlRenderReference, environmentId: String, threadId: String): String? =
         synchronized(cache) { cache.get(key(reference, environmentId, threadId))?.html }
 
+    /** Drops every cached page of [environmentId], e.g. when that machine is forgotten. */
+    fun evictEnvironment(environmentId: String) {
+        synchronized(cache) { cache.snapshot().keys.filter { it.environmentId == environmentId }.forEach { cache.remove(it) } }
+    }
+
     suspend fun load(reference: HtmlRenderReference, environmentId: String, threadId: String): HtmlRenderFetch {
         cached(reference, environmentId, threadId)?.let { return HtmlRenderFetch.Ready(it) }
         if (!isCurrent(environmentId, threadId)) return HtmlRenderFetch.NotCurrent
@@ -71,9 +81,12 @@ class HtmlRenderLoader internal constructor(
             client.downloadFile(reference.file, sink, environmentId, threadId)
             currentCoroutineContext().ensureActive()
             if (!isCurrent(environmentId, threadId)) return HtmlRenderFetch.NotCurrent
-            val bytes = sink.bytes()
-            val html = bytes.toString(Charsets.UTF_8)
-            synchronized(cache) { cache.put(key(reference, environmentId, threadId), Page(html, bytes.size)) }
+            // Copying up to 10 MiB and decoding it must not run on the main thread this is usually collected on.
+            val html = withContext(decodeDispatcher) { sink.bytes().toString(Charsets.UTF_8) }
+            if (!isCurrent(environmentId, threadId)) return HtmlRenderFetch.NotCurrent
+            val cost = html.length.toLong() * 2
+            // A page over the cap is shown but not cached: LruCache would evict everything else to make room.
+            if (cost <= cacheBytes) synchronized(cache) { cache.put(key(reference, environmentId, threadId), Page(html, cost.toInt())) }
             return HtmlRenderFetch.Ready(html)
         } catch (cancelled: CancellationException) {
             if (sink.contextChanged) return HtmlRenderFetch.NotCurrent

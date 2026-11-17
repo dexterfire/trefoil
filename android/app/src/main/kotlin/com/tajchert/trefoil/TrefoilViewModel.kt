@@ -477,6 +477,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
             }
             if (reconnectWhenOnline?.id == environment.id) reconnectWhenOnline = null
             client.forgetEnvironment(environment.id)
+            fileDownloads.htmlRenders.evictEnvironment(environment.id)
         }
         initialized.await()
         vaultMutex.withLock { save(_environments.value.filterNot { it.id == environment.id }) }

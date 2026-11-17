@@ -63,13 +63,91 @@ class HtmlRenderLoaderTest {
     }
 
     @Test fun lruEvictsBeyondCacheBytes() = runBlocking {
+        // 60 characters cost 120 bytes in memory (UTF-16), so two do not fit in 200.
         val client = ImageClient(ByteArray(60) { 'a'.code.toByte() })
-        val loader = HtmlRenderLoader(client, cacheBytes = 100)
+        val loader = HtmlRenderLoader(client, cacheBytes = 200)
         val other = ref.copy(attachmentId = "fixture-other")
         loader.load(ref, "fixture", "thread")
         loader.load(other, "fixture", "thread")
         assertNull(loader.cached(ref, "fixture", "thread"))
         assertNotNull(loader.cached(other, "fixture", "thread"))
+    }
+
+    @Test fun pageLargerThanTheCacheIsServedButNotCachedAndKeepsOthers() = runBlocking {
+        val client = ImageClient("small".toByteArray())
+        val loader = HtmlRenderLoader(client, cacheBytes = 100)
+        val other = ref.copy(attachmentId = "fixture-other")
+        loader.load(other, "fixture", "thread")
+        client.bytes = ByteArray(51) { 'a'.code.toByte() } // 102 bytes as a string, over the 100 byte cap
+        val big = loader.load(ref, "fixture", "thread")
+        assertEquals(51, (big as HtmlRenderFetch.Ready).html.length)
+        assertNull(loader.cached(ref, "fixture", "thread"))
+        assertEquals("small", loader.cached(other, "fixture", "thread"))
+    }
+
+    @Test fun cacheIsSizedByDecodedStringNotDownloadBytes() = runBlocking {
+        // "✓" is 3 UTF-8 bytes but one char (2 bytes in memory): 40 of them = 120 download bytes, 80 cached bytes.
+        val client = ImageClient("✓".repeat(40).toByteArray())
+        val loader = HtmlRenderLoader(client, cacheBytes = 100)
+        loader.load(ref, "fixture", "thread")
+        assertNotNull(loader.cached(ref, "fixture", "thread"))
+    }
+
+    @Test fun evictEnvironmentDropsOnlyThatEnvironment() = runBlocking {
+        val client = ImageClient(html.toByteArray())
+        val loader = HtmlRenderLoader(client)
+        loader.load(ref, "fixture", "thread")
+        client.state.value = client.state.value.copy(environment = client.environment.copy(id = "second"))
+        loader.load(ref, "second", "thread")
+        loader.evictEnvironment("fixture")
+        assertNull(loader.cached(ref, "fixture", "thread"))
+        assertEquals(html, loader.cached(ref, "second", "thread"))
+    }
+
+    @Test fun decodesOffTheCallingThread() = runBlocking {
+        val callingThread = Thread.currentThread()
+        var decodeThread: Thread? = null
+        val dispatcher = object : kotlinx.coroutines.CoroutineDispatcher() {
+            override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
+                Thread { decodeThread = Thread.currentThread(); block.run() }.start()
+            }
+        }
+        val loader = HtmlRenderLoader(ImageClient(html.toByteArray()), HtmlRenderLoader.MAX_SOURCE_BYTES, HtmlRenderLoader.CACHE_BYTES, null, dispatcher)
+        assertEquals(html, (loader.load(ref, "fixture", "thread") as HtmlRenderFetch.Ready).html)
+        assertNotNull(decodeThread)
+        assertNotSame(callingThread, decodeThread)
+    }
+
+    @Test fun contextChangeMidDownloadIsNotCurrentAndNotCached() = runBlocking {
+        val inner = ImageClient(html.toByteArray())
+        // The user leaves the thread after the transfer started but before the bytes arrive.
+        val client = object : TrefoilClient by inner {
+            override suspend fun downloadFile(reference: RemoteFileReference, output: java.io.OutputStream, environmentId: String, threadId: String, onProgress: (FileDownloadProgress) -> Unit): DownloadedFile {
+                inner.state.value = inner.state.value.copy(selectedThreadId = "other-thread")
+                return inner.downloadFile(reference, output, environmentId, threadId, onProgress)
+            }
+        }
+        val loader = HtmlRenderLoader(client)
+        assertEquals(HtmlRenderFetch.NotCurrent, loader.load(ref, "fixture", "thread"))
+        assertNull(loader.cached(ref, "fixture", "thread"))
+        assertEquals(1, inner.requests)
+    }
+
+    @Test fun cacheIsIsolatedPerEnvironmentAndThread() = runBlocking {
+        val client = ImageClient("first".toByteArray())
+        val loader = HtmlRenderLoader(client)
+        loader.load(ref, "fixture", "thread")
+        client.bytes = "second".toByteArray()
+        client.state.value = client.state.value.copy(selectedThreadId = "other-thread")
+        assertEquals("second", (loader.load(ref, "fixture", "other-thread") as HtmlRenderFetch.Ready).html)
+        client.bytes = "third".toByteArray()
+        client.state.value = client.state.value.copy(environment = client.environment.copy(id = "other-env"), selectedThreadId = "thread")
+        assertEquals("third", (loader.load(ref, "other-env", "thread") as HtmlRenderFetch.Ready).html)
+        assertEquals(3, client.requests)
+        assertEquals("first", loader.cached(ref, "fixture", "thread"))
+        assertEquals("second", loader.cached(ref, "fixture", "other-thread"))
+        assertEquals("third", loader.cached(ref, "other-env", "thread"))
+        assertNull(loader.cached(ref, "other-env", "other-thread"))
     }
 
     @Test fun networkAccessReadsLiveClientState() {
