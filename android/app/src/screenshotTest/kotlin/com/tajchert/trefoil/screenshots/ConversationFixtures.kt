@@ -91,7 +91,7 @@ object ConversationFixtures {
             msg("m1", "user", "Now run the unit tests too.", 1),
             msg("m2", "assistant", "Starting the test run. I will check the **unit** tests first and then", 3, streaming = true),
         ),
-        activities = listOf(runningActivity.copy(ordinal = 2)),
+        activities = listOf(runningActivity.copy(ordinal = 2, runId = "run-2")),
     )
 
     fun disconnectedState(): ClientState = chatState().copy(connection = ConnectionStatus.Disconnected, canWrite = false, canWriteThreads = false)

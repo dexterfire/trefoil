@@ -138,11 +138,14 @@ class WorkLogPresentationTest {
     }
 
     @Test fun visibilityAndImages() {
-        assertFalse(thought("  ").visibleInGroup(live = true))
-        assertTrue(thought().visibleInGroup(live = false))
-        val running = command(status = "running", exitCode = null)
-        assertTrue(running.visibleInGroup(live = true))
-        assertFalse(running.visibleInGroup(live = false))
+        assertFalse(thought("  ").visibleInGroup())
+        assertTrue(thought().visibleInGroup())
+        assertTrue(command(status = "running", exitCode = null).visibleInGroup())
+        assertTrue(command(status = "inProgress", exitCode = null).visibleInGroup())
+        assertTrue(ToolActivity("a", "Approve", kind = "approval_request", status = "pending").visibleInGroup())
+        assertTrue(ToolActivity("u", "Question", kind = "user_input_request", status = "pending").visibleInGroup())
+        assertTrue(thought("  ").copy(outputOmitted = true).visibleInGroup())
+        assertTrue(thought("  ").copy(detailsOmitted = true).visibleInGroup())
         val image = RemoteFileReference(path = "/tmp/a.png", fileName = "a.png")
         val viewed = ToolActivity("v", "Read /tmp/a.png", kind = "dynamic_tool", images = listOf(image))
         assertEquals(listOf(image), viewedImages(listOf(viewed, viewed.copy(id = "v2"), command())))

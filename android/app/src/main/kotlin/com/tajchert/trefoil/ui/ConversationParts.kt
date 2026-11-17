@@ -137,14 +137,14 @@ internal fun CompletedWork(work: ConversationEntry.Work, canLoadActivity: Boolea
  */
 @Composable
 internal fun WorkGroup(activities: List<ToolActivity>, live: Boolean = false, canLoadActivity: Boolean = false, onLoadActivity: (String) -> Unit = {}, initiallyExpanded: Boolean = false) {
-    val visible = activities.filter { it.visibleInGroup(live) }
+    val visible = activities.filter { it.visibleInGroup() }
     if (visible.isEmpty()) return
     val c = Tf.colors
     val images = remember(activities) { viewedImages(activities) }
     Column(Modifier.fillMaxWidth()) {
         if (visible.size == 1) WorkEntry(visible.single(), single = true, live = live, canLoadActivity = canLoadActivity, onLoadActivity = onLoadActivity, initiallyExpanded = initiallyExpanded)
         else {
-            val summary = remember(visible) { summarizeWorkGroup(visible) }
+            val summary = remember(activities) { summarizeWorkGroup(visible) }
             var expanded by rememberSaveable(activities.first().id) { mutableStateOf(initiallyExpanded) }
             val running = if (live) visible.lastOrNull { it.isRunning } else null
             val label = running?.let(::liveWorkLabel) ?: summary.label
@@ -166,15 +166,20 @@ private fun WorkEntry(activity: ToolActivity, single: Boolean, live: Boolean, ca
     val c = Tf.colors
     val severe = activity.severeFailure
     val running = live && activity.isRunning
+    val stale = !live && activity.isRunning
     val hasDetail = activity.hasExpandableDetail()
     var expanded by rememberSaveable(activity.id) { mutableStateOf(initiallyExpanded) }
-    val label = if (running && single) liveWorkLabel(activity) else if (single) singleWorkLabel(activity) else workEntryLabel(activity)
-    val stats = if (activity.kind == "file_change") diffStats(activity.diffStr) else null
+    val label = remember(activity, running, single) { if (running && single) liveWorkLabel(activity) else if (single) singleWorkLabel(activity) else workEntryLabel(activity) }
+    val failed = remember(activity) { activity.displayFailure }
+    val icon = remember(activity) { workEntryIcon(activity) }
+    val stats = remember(activity.diffStr) { if (activity.kind == "file_change") diffStats(activity.diffStr) else null }
     Column(Modifier.fillMaxWidth()) {
-        WorkRow(if (severe) TfIcons.Alert else workEntryIcon(activity).vector,
-            if (severe) c.red else if (activity.displayFailure) c.red.copy(alpha = .4f) else c.muted.copy(alpha = .7f),
+        WorkRow(if (severe) TfIcons.Alert else icon.vector,
+            if (severe) c.red else if (failed) c.red.copy(alpha = .4f) else c.muted.copy(alpha = if (stale) .45f else .7f),
             label, if (severe) c.red else c.muted, if (hasDetail) expanded else null, if (hasDetail) ({ expanded = !expanded }) else null,
-            if (expanded) "Collapse details" else "Expand details", spinner = running) {
+            if (expanded) "Collapse details" else "Expand details", spinner = running,
+            description = if (failed) "$label, tool call failed" else if (stale) "$label, outcome unknown" else null) {
+            if (stale) Text("· outcome unknown", style = WorkRowText, color = c.muted.copy(alpha = .7f), maxLines = 1)
             stats?.let { (added, removed) ->
                 Text("+$added", style = TrefoilType.mono, color = c.green)
                 Text("−$removed", style = TrefoilType.mono, color = c.red)

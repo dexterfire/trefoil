@@ -52,9 +52,12 @@ internal val ToolActivity.displayFailure: Boolean get() {
 /** Provider error items (kind `error`) and other severe failures render prominently (destructive colour); everything else stays subtle. */
 internal val ToolActivity.severeFailure: Boolean get() = kind == "error"
 
-/** Activities shown inside a group: reasoning only with non-blank text; neutral in-progress entries only while their run is live. */
-internal fun ToolActivity.visibleInGroup(live: Boolean): Boolean =
-    if (kind == "reasoning") reasoningText.isNotBlank() else live || !isRunning
+/**
+ * Activities shown inside a group: reasoning only with non-blank text (or omitted output the user can load). Everything else stays
+ * visible, including running entries outside the live run (their outcome is unknown and must remain inspectable).
+ */
+internal fun ToolActivity.visibleInGroup(): Boolean =
+    if (kind == "reasoning") reasoningText.isNotBlank() || outputOmitted || detailsOmitted else true
 
 /** Reasoning body text (output, falling back to detail). */
 internal val ToolActivity.reasoningText: String get() = output?.takeIf { it.isNotBlank() } ?: detail
@@ -251,6 +254,8 @@ private val t3Tools: Map<String, T3Tool> = buildMap {
 
 private val t3ServerAliases = setOf("t3-code", "t3_code", "t3code", "t3-code-direct", "t3_code_direct")
 private val mcpToolName = Regex("""^mcp__(.+?)__(.+)$""", RegexOption.IGNORE_CASE)
+private val toolNameSeparators = Regex("""[\s-]+""")
+private val compactToolLabelSuffix = Regex("""\s+(?:complete|completed)\s*$""", RegexOption.IGNORE_CASE)
 private val namespacedToolName = Regex("""^(?:t3[-_]code[-_]direct|t3-code|t3_code|t3code)(?:[.:/]|\s*·\s*)(.+)$""", RegexOption.IGNORE_CASE)
 
 /** T3 `parseT3McpToolName` on the title (Trefoil keeps the raw tool name there when the item has no title). */
@@ -259,7 +264,7 @@ private val ToolActivity.t3Tool: T3Tool? get() {
     val label = normalizeCompactToolLabel(title)
     val name = mcpToolName.find(label)?.let { match -> match.groupValues[2].takeIf { match.groupValues[1].lowercase() in t3ServerAliases } }
         ?: namespacedToolName.find(label)?.groupValues?.get(1)
-        ?: label.lowercase().replace(Regex("""[\s-]+"""), "_")
+        ?: label.lowercase().replace(toolNameSeparators, "_")
     return t3Tools[name]
 }
 
@@ -351,7 +356,7 @@ private fun jsonStrings(text: String, keys: List<String>): String? {
     }
 }
 
-private fun normalizeCompactToolLabel(value: String): String = value.replace(Regex("""\s+(?:complete|completed)\s*$""", RegexOption.IGNORE_CASE), "").trim()
+private fun normalizeCompactToolLabel(value: String): String = value.replace(compactToolLabelSuffix, "").trim()
 
 // endregion
 
@@ -379,7 +384,7 @@ private val errorTag = Regex("""(?:Error|Failure)$""")
 
 /** Port of T3 `t3ToolResultIndicatesFailure`: MCP errors can be returned as data even when the call completed. */
 private fun t3ResultIndicatesFailure(output: String?): Boolean =
-    output?.trim()?.takeIf { it.isNotEmpty() }?.let { runCatching { Json.parseToJsonElement(it) }.getOrNull() }?.let { t3ResultFailed(it, 1) } == true
+    output?.take(maxScannedOutput)?.trim()?.takeIf { it.isNotEmpty() }?.let { runCatching { Json.parseToJsonElement(it) }.getOrNull() }?.let { t3ResultFailed(it, 1) } == true
 
 private fun t3ResultFailed(value: JsonElement?, depth: Int): Boolean {
     if (value == null || depth > 4) return false
