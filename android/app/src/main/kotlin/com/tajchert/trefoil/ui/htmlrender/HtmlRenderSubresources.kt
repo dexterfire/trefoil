@@ -53,7 +53,11 @@ internal object HtmlRenderAddresses {
                 address.isMulticastAddress || (bytes[0] and 0xFE) == 0xFC ||
                 // IPv4-compatible/mapped (::/96, ::ffff:0:0/96) and NAT64 (64:ff9b::/96) carry an IPv4 address.
                 (bytes.take(10).all { it == 0 } && (bytes[10] == bytes[11] && (bytes[10] == 0 || bytes[10] == 0xFF)) && isNonPublicIpv4(embedded)) ||
-                (bytes.take(12) == NAT64_PREFIX && isNonPublicIpv4(embedded))
+                (bytes.take(12) == NAT64_PREFIX && isNonPublicIpv4(embedded)) ||
+                // NAT64 local-use (64:ff9b:1::/48, RFC 8215) is never globally routable and can translate to any
+                // address, so all of it is refused. 6to4 (2002::/16) carries its IPv4 address in bytes 2..5.
+                bytes.take(6) == NAT64_LOCAL_USE_PREFIX ||
+                (bytes[0] == 0x20 && bytes[1] == 0x02 && isNonPublicIpv4(bytes.subList(2, 6)))
         }
         else -> true
     }
@@ -66,6 +70,7 @@ internal object HtmlRenderAddresses {
     }
 
     private val NAT64_PREFIX = listOf(0x00, 0x64, 0xFF, 0x9B, 0, 0, 0, 0, 0, 0, 0, 0)
+    private val NAT64_LOCAL_USE_PREFIX = listOf(0x00, 0x64, 0xFF, 0x9B, 0x00, 0x01)
 }
 
 /**

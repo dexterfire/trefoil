@@ -42,6 +42,25 @@ class HtmlRenderSubresourcesTest {
         assertThrows(UnknownHostException::class.java) { dnsReturning().lookup("empty.example") }
     }
 
+    @Test fun dnsRejectsNat64LocalUseAndSixToFourWithPrivateEmbeddedAddress() {
+        listOf(
+            // 64:ff9b:1::/48 (RFC 8215) is local-use: refused whatever it embeds, including a public-looking IPv4.
+            "64:ff9b:1::", "64:ff9b:1::a00:1", "64:ff9b:1:0:0:c0a8:101:0", "64:ff9b:1:ffff:ffff:ffff:ffff:ffff", "64:ff9b:1::5db8:d822",
+            // 6to4 (2002::/16) with the embedded IPv4 in bits 16..47: loopback, RFC1918, link-local, CGNAT, this-network.
+            "2002:7f00:1::1", "2002:a00:1::", "2002:c0a8:101::1", "2002:ac10:1::1", "2002:a9fe:a9fe::1", "2002:6440:1::1", "2002:0:0::1",
+        ).forEach { literal ->
+            assertTrue(literal, HtmlRenderAddresses.isNonPublic(InetAddress.getByName(literal)))
+            assertThrows(literal, UnknownHostException::class.java) { dnsReturning(literal).lookup("rebind.example") }
+            assertThrows(literal, UnknownHostException::class.java) { dnsReturning("93.184.216.34", literal).lookup("rebind.example") }
+        }
+    }
+
+    @Test fun addressFilterStillAllowsPublicIpv6() {
+        listOf(
+            "2606:4700::1111", "2001:4860:4860::8888", "64:ff9b::5db8:d822", "64:ff9b:2::1", "2002:5db8:d822::1", "2003::1",
+        ).forEach { literal -> assertFalse(literal, HtmlRenderAddresses.isNonPublic(InetAddress.getByName(literal))) }
+    }
+
     @Test fun dnsRefusesPrivateNamesWithoutResolving() {
         val dns = PublicOnlyDns(object : Dns {
             override fun lookup(hostname: String): List<InetAddress> = fail("resolved $hostname").let { emptyList() }
