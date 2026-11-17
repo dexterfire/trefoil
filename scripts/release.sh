@@ -42,6 +42,19 @@ if [ "$CHECK" = 0 ]; then
   [ "$(git rev-parse --abbrev-ref HEAD)" = main ] || die "real releases run from branch main"
 fi
 [ -z "$(git status --porcelain --untracked-files=no)" ] || die "working tree has tracked changes; commit or stash them first"
+
+# Remote state: a real release must start from exactly origin/main with a free tag.
+# A dry run only warns when the remote is unreachable and may run on any branch.
+if git fetch origin main --tags; then
+  if [ "$CHECK" = 0 ]; then
+    [ "$(git rev-parse HEAD)" = "$(git rev-parse refs/remotes/origin/main)" ] || die "HEAD is not origin/main; pull or push first"
+    git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1 && die "tag $TAG already exists on origin"
+  fi
+elif [ "$CHECK" = 0 ]; then
+  die "git fetch origin failed; cannot verify the remote state"
+else
+  echo "warning: git fetch origin failed; remote checks skipped in --check mode" >&2
+fi
 git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && die "tag $TAG already exists"
 
 CUR_CODE="$(sed -n 's/.*versionCode = \([0-9]*\).*/\1/p' "$GRADLE_FILE")"
@@ -92,8 +105,12 @@ git add android/app/build.gradle.kts
 git commit -m "chore(release): $VERSION" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 COMMITTED=1
 git tag "$TAG"
-git push origin main
-git push origin "$TAG"
-gh release create "$TAG" "$OUT/trefoil-$VERSION.apk" "$OUT/trefoil-$VERSION.apk.sha256" \
-  --repo "$REPO" --verify-tag --title "Trefoil $VERSION" --notes-file "$NOTES"
+git push --atomic origin main "$TAG"
+RELEASE_CMD=(gh release create "$TAG" "$OUT/trefoil-$VERSION.apk" "$OUT/trefoil-$VERSION.apk.sha256"
+  --repo "$REPO" --verify-tag --title "Trefoil $VERSION" --notes-file "$NOTES")
+if ! "${RELEASE_CMD[@]}"; then
+  echo "release.sh: main and $TAG are pushed but the GitHub release failed. Re-run:" >&2
+  printf ' %q' "${RELEASE_CMD[@]}" >&2; echo >&2
+  exit 1
+fi
 echo "Released $TAG"
