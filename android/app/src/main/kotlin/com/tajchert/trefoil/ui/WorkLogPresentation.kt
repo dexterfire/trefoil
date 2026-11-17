@@ -182,10 +182,18 @@ internal fun commandProgramName(command: String): String? {
 
 /** T3 `commandDisplayText`: drops a single-script shell wrapper and shows control characters as Unicode control pictures. */
 internal fun commandDisplayText(command: String): String =
-    withoutShellWrapper(command).replace(controlCharacters) { match ->
+    boundedLabel(withoutShellWrapper(command).replace(controlCharacters) { match ->
         val char = match.value[0]
         if (char == '\u007f') "␡" else (0x2400 + char.code).toChar().toString()
-    }
+    })
+
+/** Row labels are single-line: whitespace (newlines included) collapses to one space and the text is capped at [maxLabelLength] characters. */
+internal const val maxLabelLength = 200
+
+internal fun boundedLabel(text: String): String {
+    val collapsed = text.replace(whitespace, " ").trim()
+    return if (collapsed.length > maxLabelLength) collapsed.take(maxLabelLength - 1).trimEnd() + "…" else collapsed
+}
 
 // region T3 tool classification
 
@@ -335,9 +343,9 @@ private val ToolActivity.meaningfulTitle: String? get() =
     title.trim().takeIf { it.isNotEmpty() && it.replace(' ', '_') != kind }
 
 private fun searchLabel(activity: ToolActivity): String? {
-    activity.meaningfulTitle?.takeIf { !searchToolTitle.matches(it) }?.let { return it }
+    activity.meaningfulTitle?.takeIf { !searchToolTitle.matches(it) }?.let { return boundedLabel(it) }
     val query = activity.input?.let { input -> jsonStrings(input, listOf("pattern", "query", "glob")) ?: input.trim().takeIf { it.isNotEmpty() && !it.startsWith("{") } }
-    return query?.let { "Searched ${it.lineSequence().first()}" }
+    return query?.let { boundedLabel("Searched $it") }
 }
 
 /** Read target: the server's `Read <path>` title, a `file_path`/`path` input field, or the viewed image path. */
@@ -383,8 +391,16 @@ internal fun toolOutputIndicatesFailure(text: String): Boolean =
 private val errorTag = Regex("""(?:Error|Failure)$""")
 
 /** Port of T3 `t3ToolResultIndicatesFailure`: MCP errors can be returned as data even when the call completed. */
-private fun t3ResultIndicatesFailure(output: String?): Boolean =
-    output?.take(maxScannedOutput)?.trim()?.takeIf { it.isNotEmpty() }?.let { runCatching { Json.parseToJsonElement(it) }.getOrNull() }?.let { t3ResultFailed(it, 1) } == true
+private fun t3ResultIndicatesFailure(output: String?): Boolean {
+    if (output == null) return false
+    // Truncated JSON never parses, so an oversized result is checked for the failure markers in its head and tail instead
+    // (MCP puts `isError`/`_tag` at the edges of the envelope). Cost stays bounded by 2 * maxScannedOutput.
+    if (output.length > maxScannedOutput) return t3FailureMarker.containsMatchIn(output.take(maxScannedOutput)) || t3FailureMarker.containsMatchIn(output.takeLast(maxScannedOutput))
+    return output.trim().takeIf { it.isNotEmpty() }?.let { runCatching { Json.parseToJsonElement(it) }.getOrNull() }?.let { t3ResultFailed(it, 1) } == true
+}
+
+/** A failure flag in raw (possibly string-escaped) JSON text: `"isError":true`, `\"is_error\":true` or an `…Error`/`…Failure` `_tag`. */
+private val t3FailureMarker = Regex("""\\*"(?:isError|is_error)\\*"\s*:\s*true\b|\\*"_tag\\*"\s*:\s*\\*"[A-Za-z]*(?:Error|Failure)\\*"""")
 
 private fun t3ResultFailed(value: JsonElement?, depth: Int): Boolean {
     if (value == null || depth > 4) return false

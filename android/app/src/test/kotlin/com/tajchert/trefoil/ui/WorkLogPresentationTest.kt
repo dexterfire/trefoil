@@ -83,6 +83,19 @@ class WorkLogPresentationTest {
         assertFalse(preview(output = """{"content":[{"type":"text","text":"ok"}]}""").displayFailure)
     }
 
+    @Test fun oversizedT3FailureResultsAreStillDetected() {
+        val filler = "x".repeat(60_000)
+        // Trailing flag (typical MCP envelope), leading flag, string-escaped flag, and an error `_tag`.
+        assertTrue(preview(output = """{"content":[{"type":"text","text":"$filler"}],"isError":true}""").displayFailure)
+        assertTrue(preview(output = """{"isError":true,"content":[{"type":"text","text":"$filler"}]}""").displayFailure)
+        assertTrue(preview(output = """[{"type":"text","text":"{\"is_error\":true,\"pad\":\"$filler\"}"}]""").displayFailure)
+        assertTrue(preview(output = """{"pad":"$filler","_tag":"PreviewError"}""").displayFailure)
+        assertTrue(preview(status = "completed", output = """{"pad":"$filler","isError":true}""").let { singleWorkLabel(it) } == "Failed to preview an HTML page")
+        // Large successful results stay successful.
+        assertFalse(preview(output = """{"content":[{"type":"text","text":"$filler"}],"isError":false}""").displayFailure)
+        assertFalse(preview(output = """{"content":[{"type":"text","text":"$filler"}]}""").displayFailure)
+    }
+
     @Test fun commandProgramNameSkipsNavigationEnvAndWrappers() {
         assertEquals("gradlew", commandProgramName("cd /x; FOO=1 ./gradlew test"))
         assertEquals("npm", commandProgramName("cd app && npm test"))
@@ -122,6 +135,37 @@ class WorkLogPresentationTest {
         assertEquals(WorkIcon.Error, workEntryIcon(ToolActivity("x", "Error", kind = "error")))
         assertEquals(WorkIcon.Agent, workEntryIcon(ToolActivity("a", "Agent", kind = "subagent")))
         assertEquals(WorkIcon.Other, workEntryIcon(tool()))
+    }
+
+    @Test fun commandAndSearchLabelsAreSingleLineAndCapped() {
+        val multiline = command(input = "git commit -m \"one\n\n  two\"\t&& echo   done")
+        assertEquals("git commit -m \"one two\" && echo done", workEntryLabel(multiline))
+        val long = command(input = "echo " + "word ".repeat(100))
+        val label = workEntryLabel(long)
+        assertEquals(maxLabelLength, label.length)
+        assertTrue(label.endsWith("…"))
+        assertFalse(label.contains('\n'))
+        assertEquals(label, singleWorkLabel(long))
+        val query = ToolActivity("s", "file search", kind = "file_search", status = "completed", input = "first line\n   second\tline " + "x".repeat(400))
+        val searched = workEntryLabel(query)
+        assertTrue(searched.startsWith("Searched first line second line xxx"))
+        assertEquals(maxLabelLength, searched.length)
+        assertEquals(maxLabelLength, boundedLabel("a ".repeat(500)).length)
+        assertEquals("short label", boundedLabel("  short \n label ".replace("short \n label", "short   label")))
+    }
+
+    @Test fun aRunningItemThatCompletesChangesItsLabelAndIcon() {
+        val running = ToolActivity("d", "Run", kind = "dynamic_tool", status = "running")
+        val done = running.copy(title = "Read /repo/a.kt", status = "completed")
+        assertNotEquals(workEntryLabel(running), workEntryLabel(done))
+        assertEquals("Read /repo/a.kt", workEntryLabel(done))
+        assertNotEquals(workEntryIcon(running), workEntryIcon(done))
+        assertEquals(WorkIcon.Read, workEntryIcon(done))
+        // The live label hands over to the settled one for a T3 tool, and a failed result flips it again.
+        val previewing = preview("running")
+        assertEquals("Previewing an HTML page", liveWorkLabel(previewing))
+        assertEquals("Previewed an HTML page", singleWorkLabel(previewing.copy(status = "completed")))
+        assertEquals("Failed to preview an HTML page", singleWorkLabel(previewing.copy(status = "completed", output = """{"isError":true}""")))
     }
 
     @Test fun liveLabelForReasoningUsesThoughtLineOrThinking() {
