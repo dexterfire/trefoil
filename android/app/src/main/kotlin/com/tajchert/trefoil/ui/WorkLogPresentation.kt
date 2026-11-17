@@ -192,7 +192,10 @@ internal const val maxLabelLength = 200
 
 internal fun boundedLabel(text: String): String {
     val collapsed = text.replace(whitespace, " ").trim()
-    return if (collapsed.length > maxLabelLength) collapsed.take(maxLabelLength - 1).trimEnd() + "…" else collapsed
+    if (collapsed.length <= maxLabelLength) return collapsed
+    // Never cut between the two halves of a surrogate pair (an emoji at the boundary).
+    val cut = if (collapsed[maxLabelLength - 2].isHighSurrogate()) maxLabelLength - 2 else maxLabelLength - 1
+    return collapsed.take(cut).trimEnd() + "…"
 }
 
 // region T3 tool classification

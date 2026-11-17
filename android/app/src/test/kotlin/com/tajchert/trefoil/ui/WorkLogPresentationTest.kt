@@ -155,6 +155,10 @@ class WorkLogPresentationTest {
         assertTrue(searched.startsWith("Searched first line second line xxx"))
         assertEquals(maxLabelLength, searched.length)
         assertEquals(maxLabelLength, boundedLabel("a ".repeat(500)).length)
+        // An emoji straddling the cut is dropped whole, never split into a lone surrogate.
+        val emoji = boundedLabel("a".repeat(maxLabelLength - 2) + "\uD83D\uDE00bb")
+        assertEquals("a".repeat(maxLabelLength - 2) + "…", emoji)
+        assertTrue(emoji.none { it.isSurrogate() })
         assertEquals("short label", boundedLabel("  short \n label ".replace("short \n label", "short   label")))
     }
 
