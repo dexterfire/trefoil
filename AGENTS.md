@@ -14,6 +14,8 @@ Relevant existing checks:
 
 Screenshot tests: `./gradlew :app:testDebugScreenshotTestDefaultTestSuite` validates, `:app:updateDebugScreenshotTestDefaultTestSuite` re-records; narrow either with `--tests '*AreaScreenshotsKt'` and commit changed reference PNGs. See `docs/SCREENSHOT_TESTING.md`.
 
+Baseline profile: `:baselineprofile` generates `app/src/release/generated/baselineProfiles/` with `./gradlew :app:generateBaselineProfile` on one running API 33+ or rooted emulator; see `docs/BASELINE_PROFILE.md`.
+
 Instrumented tests (`app/src/androidTest`, currently the HTML render WebView) need a running emulator: `./gradlew :app:connectedDebugAndroidTest`.
 
 Focused thread image coverage belongs in `:core:model:test`, `:core:session:test`, and `:app:testDebugUnitTest`; use fixtures or an isolated T3 instance, never real user threads. This repository has no configured formatter or code generator. Follow neighboring Kotlin formatting and run `git diff --check`. Debug builds do not normally run R8.

@@ -1,6 +1,6 @@
 import java.util.Properties
 
-plugins { alias(libs.plugins.android.application); alias(libs.plugins.compose.compiler); alias(libs.plugins.kotlin.serialization) }
+plugins { alias(libs.plugins.android.application); alias(libs.plugins.compose.compiler); alias(libs.plugins.kotlin.serialization); alias(libs.plugins.baselineprofile) }
 
 // Adapted from Flocket's release signing setup (Apache-2.0). See docs/RELEASING.md.
 val keystoreProperties = Properties().apply {
@@ -71,6 +71,8 @@ dependencies {
     implementation(libs.work.runtime)
     implementation(libs.webkit)
     implementation(libs.okhttp)
+    implementation(libs.profileinstaller)
+    baselineProfile(project(":baselineprofile"))
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.ext.junit)
