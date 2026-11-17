@@ -83,6 +83,19 @@ class WorkLogPresentationTest {
         assertFalse(preview(output = """{"content":[{"type":"text","text":"ok"}]}""").displayFailure)
     }
 
+    @Test fun oversizedT3FailureResultsAreStillDetected() {
+        val filler = "x".repeat(60_000)
+        // Trailing flag (typical MCP envelope), leading flag, string-escaped flag, and an error `_tag`.
+        assertTrue(preview(output = """{"content":[{"type":"text","text":"$filler"}],"isError":true}""").displayFailure)
+        assertTrue(preview(output = """{"isError":true,"content":[{"type":"text","text":"$filler"}]}""").displayFailure)
+        assertTrue(preview(output = """[{"type":"text","text":"{\"is_error\":true,\"pad\":\"$filler\"}"}]""").displayFailure)
+        assertTrue(preview(output = """{"pad":"$filler","_tag":"PreviewError"}""").displayFailure)
+        assertTrue(preview(status = "completed", output = """{"pad":"$filler","isError":true}""").let { singleWorkLabel(it) } == "Failed to preview an HTML page")
+        // Large successful results stay successful.
+        assertFalse(preview(output = """{"content":[{"type":"text","text":"$filler"}],"isError":false}""").displayFailure)
+        assertFalse(preview(output = """{"content":[{"type":"text","text":"$filler"}]}""").displayFailure)
+    }
+
     @Test fun commandProgramNameSkipsNavigationEnvAndWrappers() {
         assertEquals("gradlew", commandProgramName("cd /x; FOO=1 ./gradlew test"))
         assertEquals("npm", commandProgramName("cd app && npm test"))

@@ -383,8 +383,16 @@ internal fun toolOutputIndicatesFailure(text: String): Boolean =
 private val errorTag = Regex("""(?:Error|Failure)$""")
 
 /** Port of T3 `t3ToolResultIndicatesFailure`: MCP errors can be returned as data even when the call completed. */
-private fun t3ResultIndicatesFailure(output: String?): Boolean =
-    output?.take(maxScannedOutput)?.trim()?.takeIf { it.isNotEmpty() }?.let { runCatching { Json.parseToJsonElement(it) }.getOrNull() }?.let { t3ResultFailed(it, 1) } == true
+private fun t3ResultIndicatesFailure(output: String?): Boolean {
+    if (output == null) return false
+    // Truncated JSON never parses, so an oversized result is checked for the failure markers in its head and tail instead
+    // (MCP puts `isError`/`_tag` at the edges of the envelope). Cost stays bounded by 2 * maxScannedOutput.
+    if (output.length > maxScannedOutput) return t3FailureMarker.containsMatchIn(output.take(maxScannedOutput)) || t3FailureMarker.containsMatchIn(output.takeLast(maxScannedOutput))
+    return output.trim().takeIf { it.isNotEmpty() }?.let { runCatching { Json.parseToJsonElement(it) }.getOrNull() }?.let { t3ResultFailed(it, 1) } == true
+}
+
+/** A failure flag in raw (possibly string-escaped) JSON text: `"isError":true`, `\"is_error\":true` or an `…Error`/`…Failure` `_tag`. */
+private val t3FailureMarker = Regex("""\\*"(?:isError|is_error)\\*"\s*:\s*true\b|\\*"_tag\\*"\s*:\s*\\*"[A-Za-z]*(?:Error|Failure)\\*"""")
 
 private fun t3ResultFailed(value: JsonElement?, depth: Int): Boolean {
     if (value == null || depth > 4) return false
