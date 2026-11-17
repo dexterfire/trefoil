@@ -154,6 +154,20 @@ class WorkLogPresentationTest {
         assertEquals("short label", boundedLabel("  short \n label ".replace("short \n label", "short   label")))
     }
 
+    @Test fun aRunningItemThatCompletesChangesItsLabelAndIcon() {
+        val running = ToolActivity("d", "Run", kind = "dynamic_tool", status = "running")
+        val done = running.copy(title = "Read /repo/a.kt", status = "completed")
+        assertNotEquals(workEntryLabel(running), workEntryLabel(done))
+        assertEquals("Read /repo/a.kt", workEntryLabel(done))
+        assertNotEquals(workEntryIcon(running), workEntryIcon(done))
+        assertEquals(WorkIcon.Read, workEntryIcon(done))
+        // The live label hands over to the settled one for a T3 tool, and a failed result flips it again.
+        val previewing = preview("running")
+        assertEquals("Previewing an HTML page", liveWorkLabel(previewing))
+        assertEquals("Previewed an HTML page", singleWorkLabel(previewing.copy(status = "completed")))
+        assertEquals("Failed to preview an HTML page", singleWorkLabel(previewing.copy(status = "completed", output = """{"isError":true}""")))
+    }
+
     @Test fun liveLabelForReasoningUsesThoughtLineOrThinking() {
         assertEquals("Thinking", liveWorkLabel(ToolActivity("t", "reasoning", kind = "reasoning", status = "running")))
         assertEquals("Planning", liveWorkLabel(ToolActivity("t", "reasoning", kind = "reasoning", status = "running", detail = "**Planning**\nLong text.")))

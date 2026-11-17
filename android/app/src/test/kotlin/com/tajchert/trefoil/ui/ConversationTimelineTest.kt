@@ -220,6 +220,37 @@ class ConversationTimelineTest {
         assertEquals("Worked for 10m", single.filterIsInstance<ConversationEntry.Work>().single().label)
     }
 
+    @Test fun htmlRenderWithoutOrdinalFallsBackToTimestampPosition() {
+        val unordered = htmlActivity("h", 0).copy(ordinal = null, startedAt = "2026-01-01T12:00:02Z")
+        val mixed = conversationTimeline(listOf(
+            ConversationMessage("u", "user", "Draw", runId = "r", ordinal = 0, createdAt = "2026-01-01T12:00:00Z"),
+            ConversationMessage("a", "assistant", "Done", runId = "r", ordinal = 4, createdAt = "2026-01-01T12:00:09Z")), listOf(
+            ToolActivity("t1", "Read", kind = "file_read", runId = "r", ordinal = 1, startedAt = "2026-01-01T12:00:01Z"),
+            unordered,
+            ToolActivity("t2", "Read", kind = "file_read", runId = "r", ordinal = 3, startedAt = "2026-01-01T12:00:03Z")))
+        assertEquals(listOf("message:u", "activity:t1", "html-render:h", "activity:t2", "message:a"), mixed.map { it.key })
+        // With no ordinals at all, timestamps order everything.
+        val allTimed = conversationTimeline(listOf(
+            ConversationMessage("u", "user", "Draw", createdAt = "2026-01-01T12:00:00Z"),
+            ConversationMessage("a", "assistant", "Done", createdAt = "2026-01-01T12:00:09Z")), listOf(
+            ToolActivity("t1", "Read", kind = "file_read", startedAt = "2026-01-01T12:00:01Z"),
+            unordered,
+            ToolActivity("t2", "Read", kind = "file_read", startedAt = "2026-01-01T12:00:03Z")))
+        assertEquals(listOf("message:u", "activity:t1", "html-render:h", "activity:t2", "message:a"), allTimed.map { it.key })
+    }
+
+    @Test fun runSplitByAnHtmlRenderKeepsDistinctWorkKeys() {
+        val entries = conversationTimeline(listOf(ConversationMessage("a", "assistant", "Done", runId = "r", ordinal = 6)), listOf(
+            ToolActivity("t1", "Edit", kind = "file_change", status = "completed", runId = "r", ordinal = 1),
+            htmlActivity("h", 2),
+            ToolActivity("t2", "Edit", kind = "file_change", status = "completed", runId = "r", ordinal = 3)))
+        val folded = foldConversationTimeline(entries, runs = listOf(ConversationRun("r", "completed", completedAt = "2026-01-01T12:00:00Z")))
+        val keys = folded.filterIsInstance<ConversationEntry.Work>().map { it.key }
+        assertEquals(2, keys.size)
+        assertEquals(keys.size, keys.toSet().size)
+        assertEquals(listOf("run:r:activity:t1", "html-render:h", "run:r:activity:t2", "message:a"), folded.map { it.key })
+    }
+
     @Test fun htmlRenderOnlyRunKeepsRenderVisibleAndNonHtmlDynamicToolsStayActivities() {
         val entries = conversationTimeline(listOf(ConversationMessage("a", "assistant", "Done", runId = "r", ordinal = 2)), listOf(
             htmlActivity("h", 1),

@@ -116,6 +116,19 @@ class ConversationUiTest {
         assertEquals("a.kt, tool call failed, outcome unknown, +3 −1", entryDescription("a.kt", true, true, 3 to 1))
     }
 
+    @Test fun runningEntryThatCompletesReplacesItsCachedLabel() {
+        val activity = mutableStateOf(ToolActivity("p", "mcp__t3-code__html_preview", kind = "dynamic_tool", status = "running"))
+        compose.setContent { MaterialTheme { WorkGroup(listOf(activity.value), live = true) } }
+        compose.onNodeWithText("Previewing an HTML page").assertExists()
+        compose.runOnIdle { activity.value = activity.value.copy(status = "completed") }
+        compose.onNodeWithText("Previewing an HTML page").assertDoesNotExist()
+        compose.onNodeWithText("Previewed an HTML page").assertExists()
+        compose.runOnIdle { activity.value = activity.value.copy(output = """{"isError":true}""") }
+        compose.onNodeWithText("Previewed an HTML page").assertDoesNotExist()
+        compose.onNodeWithText("Failed to preview an HTML page").assertExists()
+        compose.onNode(hasContentDescription("Failed to preview an HTML page, tool call failed")).assertExists()
+    }
+
     @Test fun subagentFooterTracksLiveAgentsAndOpensSheet() {
         val agent = Subagent("a", "fixture", status = "running", driver = "codex")
         val state = mutableStateOf(ClientState(selectedThreadId = "fixture", subagents = listOf(agent)))
