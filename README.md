@@ -37,6 +37,8 @@ HTTPS endpoints must be reachable from your phone with a trusted certificate. Ve
 
 Tokens are encrypted with Android Keystore and excluded from backups. Forgetting an environment removes its local credentials; revoke the session in T3 to revoke server access. Remote work continues when Trefoil closes. Uncertain writes are never automatically replayed—check the conversation before retrying.
 
+**Keep connected in background (0.16.0+):** this overflow-menu toggle is off by default. When it is on, Trefoil keeps a live connection, and any automatic reconnect, going while you use other apps, instead of disconnecting after 60 seconds. It runs a foreground service with an ongoing notification that shows the machine name and a Disconnect action. See [keep connected in background](docs/IMPLEMENTATION_STATUS.md#keep-connected-in-background-0160).
+
 ## Remote screens
 
 Choose a conversation, then tap **Screen sessions** in the toolbar. Open one of its existing browser tabs or attached devices. Tap **Enter full screen** to hide app/system chrome; the floating exit button restores it without restarting the stream. Browser controls include explicit takeover/release, back/forward/reload and text; devices provide supported home/back/app-switcher/rotation/text controls.
