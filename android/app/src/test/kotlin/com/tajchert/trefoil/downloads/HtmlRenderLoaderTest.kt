@@ -118,6 +118,38 @@ class HtmlRenderLoaderTest {
         assertNotSame(callingThread, decodeThread)
     }
 
+    @Test fun contextChangeMidDownloadIsNotCurrentAndNotCached() = runBlocking {
+        val inner = ImageClient(html.toByteArray())
+        // The user leaves the thread after the transfer started but before the bytes arrive.
+        val client = object : TrefoilClient by inner {
+            override suspend fun downloadFile(reference: RemoteFileReference, output: java.io.OutputStream, environmentId: String, threadId: String, onProgress: (FileDownloadProgress) -> Unit): DownloadedFile {
+                inner.state.value = inner.state.value.copy(selectedThreadId = "other-thread")
+                return inner.downloadFile(reference, output, environmentId, threadId, onProgress)
+            }
+        }
+        val loader = HtmlRenderLoader(client)
+        assertEquals(HtmlRenderFetch.NotCurrent, loader.load(ref, "fixture", "thread"))
+        assertNull(loader.cached(ref, "fixture", "thread"))
+        assertEquals(1, inner.requests)
+    }
+
+    @Test fun cacheIsIsolatedPerEnvironmentAndThread() = runBlocking {
+        val client = ImageClient("first".toByteArray())
+        val loader = HtmlRenderLoader(client)
+        loader.load(ref, "fixture", "thread")
+        client.bytes = "second".toByteArray()
+        client.state.value = client.state.value.copy(selectedThreadId = "other-thread")
+        assertEquals("second", (loader.load(ref, "fixture", "other-thread") as HtmlRenderFetch.Ready).html)
+        client.bytes = "third".toByteArray()
+        client.state.value = client.state.value.copy(environment = client.environment.copy(id = "other-env"), selectedThreadId = "thread")
+        assertEquals("third", (loader.load(ref, "other-env", "thread") as HtmlRenderFetch.Ready).html)
+        assertEquals(3, client.requests)
+        assertEquals("first", loader.cached(ref, "fixture", "thread"))
+        assertEquals("second", loader.cached(ref, "fixture", "other-thread"))
+        assertEquals("third", loader.cached(ref, "other-env", "thread"))
+        assertNull(loader.cached(ref, "other-env", "other-thread"))
+    }
+
     @Test fun networkAccessReadsLiveClientState() {
         val client = ImageClient(ByteArray(0))
         val access = HtmlRenderLoader(client).networkAccess("fixture", "thread")
