@@ -38,6 +38,9 @@ import com.tajchert.trefoil.core.model.*
 internal fun allowedRuntimeModes(model: ModelOption?): List<RuntimeMode> =
     model?.supportedRuntimeModes?.takeIf { it.isNotEmpty() }?.let { supported -> RuntimeMode.entries.filter { it in supported } }?.takeIf { it.isNotEmpty() } ?: RuntimeMode.entries.toList()
 
+/** Filled bars (1..4) for choice [index] of [count] selectable choices. */
+internal fun effortBarCount(index: Int, count: Int): Int = if (count <= 1 || index < 0) 4 else 1 + Math.round(index * 3f / (count - 1))
+
 /** Keeps [preferred] when allowed, otherwise falls back to the first allowed mode. */
 internal fun resolveRuntimeMode(preferred: RuntimeMode?, allowed: List<RuntimeMode>): RuntimeMode =
     preferred?.takeIf { it in allowed } ?: allowed.first()
@@ -81,7 +84,11 @@ internal fun NewThreadSheetContent(state: ClientState, dismiss: () -> Unit, star
         if (state.projects.size == 1 && !userExpanded && initiallyCollapsed == null) pickerCollapsed = true
     }
     fun collapsePicker() { pickerCollapsed = true; searching = false; query = "" }
+    var chosenEffort by rememberSaveable { mutableStateOf<String?>(null) }
     val model = state.models.getOrNull(modelIndex)
+    val reasoning = model?.reasoning?.takeIf { it.selectableChoices.isNotEmpty() }
+    val explicitOptions: ModelOptionValues = if (reasoning != null && chosenEffort != null) model.validOptions(mapOf(reasoning.id to chosenEffort!!)) else emptyMap()
+    LaunchedEffect(model, reasoning) { if (chosenEffort != null && explicitOptions.isEmpty()) chosenEffort = null }
     val allowedModes = allowedRuntimeModes(model)
     val mode = resolveRuntimeMode(RuntimeMode.fromWire(chosenMode), allowedModes)
     val canStart = state.canLaunchThreads && !state.busy && selectedProject != null && model != null
@@ -145,7 +152,7 @@ internal fun NewThreadSheetContent(state: ClientState, dismiss: () -> Unit, star
             Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp, top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                 Spacer(Modifier.weight(1f))
                 FilledIconButton(
-                    onClick = { model?.let { start(ThreadDraft(projectId, it, mode), prompt) } }, enabled = canStart, modifier = Modifier.size(48.dp),
+                    onClick = { model?.let { start(ThreadDraft(projectId, it, mode, modelOptions = it.validOptions(explicitOptions)), prompt) } }, enabled = canStart, modifier = Modifier.size(48.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(containerColor = c.accent, contentColor = c.onAccent, disabledContainerColor = c.accent.copy(alpha = .35f), disabledContentColor = c.onAccent.copy(alpha = .7f)),
                 ) { Icon(TfIcons.Send, "Start") }
             }
@@ -153,6 +160,7 @@ internal fun NewThreadSheetContent(state: ClientState, dismiss: () -> Unit, star
 
         FlowRow(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             var modelMenu by remember { mutableStateOf(false) }
+            var effortMenu by remember { mutableStateOf(false) }
             var modeMenu by remember { mutableStateOf(false) }
             Box {
                 SheetPill(model?.label ?: "No models", TfIcons.Sparkle, "Model: ${model?.label ?: "not set"}", enabled = state.models.isNotEmpty()) { modelMenu = true }
@@ -162,6 +170,24 @@ internal fun NewThreadSheetContent(state: ClientState, dismiss: () -> Unit, star
                             text = { Column { Text(option.label); Text(option.instanceId, style = TrefoilType.mono, color = c.muted) } },
                             trailingIcon = { if (index == modelIndex) Icon(TfIcons.Check, null, Modifier.size(18.dp), tint = c.accent) },
                             onClick = { modelIndex = index; modelMenu = false })
+                    }
+                }
+            }
+            if (model != null && reasoning != null) {
+                val choices = reasoning.selectableChoices
+                val current = reasoningChoice(model, explicitOptions)
+                val currentIndex = choices.indexOfFirst { it.id == current?.id }
+                val currentLabel = current?.label ?: "Default"
+                Box {
+                    SheetPill(currentLabel, TfIcons.effort(effortBarCount(currentIndex, choices.size)), "${reasoning.label.ifBlank { "Reasoning" }}: $currentLabel") { effortMenu = true }
+                    DropdownMenu(effortMenu, { effortMenu = false }, containerColor = c.sheet, shape = RoundedCornerShape(16.dp)) {
+                        choices.forEachIndexed { index, option ->
+                            DropdownMenuItem(
+                                text = { Column { Text(option.label); option.description?.let { Text(it, style = TrefoilType.meta, color = c.muted) } } },
+                                leadingIcon = { Icon(TfIcons.effort(effortBarCount(index, choices.size)), null, Modifier.size(18.dp), tint = c.muted) },
+                                trailingIcon = { if (option.id == current?.id) Icon(TfIcons.Check, null, Modifier.size(18.dp), tint = c.accent) },
+                                onClick = { chosenEffort = option.id; effortMenu = false })
+                        }
                     }
                 }
             }

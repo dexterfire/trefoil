@@ -121,10 +121,10 @@ private fun Machines(saved: List<SavedEnvironment>, state: ClientState, dark: Bo
 // Sheet and tablet
 
 @PreviewTest @Preview(showBackground = true, widthDp = 400, heightDp = 800)
-@Composable fun NewThreadSheet_Light() = Phone { Column(Modifier.fillMaxWidth()) { NewThreadSheetContent(ScreenshotFixtures.connectedState(), dismiss = {}, start = { _, _ -> }) } }
+@Composable fun NewThreadSheet_Light() = Phone { Column(Modifier.fillMaxWidth()) { NewThreadSheetContent(ScreenshotFixtures.connectedState().copy(models = ScreenshotFixtures.reasoningModels), dismiss = {}, start = { _, _ -> }) } }
 
 @PreviewTest @Preview(showBackground = true, widthDp = 400, heightDp = 800)
-@Composable fun NewThreadSheet_Collapsed_Light() = Phone { Column(Modifier.fillMaxWidth()) { NewThreadSheetContent(ScreenshotFixtures.connectedState(), dismiss = {}, start = { _, _ -> }, initiallyCollapsed = true) } }
+@Composable fun NewThreadSheet_Collapsed_Light() = Phone { Column(Modifier.fillMaxWidth()) { NewThreadSheetContent(ScreenshotFixtures.connectedState().copy(models = ScreenshotFixtures.reasoningModels), dismiss = {}, start = { _, _ -> }, initiallyCollapsed = true) } }
 
 @PreviewTest @Preview(showBackground = true, widthDp = 1280, heightDp = 800)
 @Composable fun Tablet_RailAndList_Light() = Phone {

@@ -4,6 +4,8 @@ import com.tajchert.trefoil.core.model.ClientState
 import com.tajchert.trefoil.core.model.ConnectionStatus
 import com.tajchert.trefoil.core.model.ConversationMessage
 import com.tajchert.trefoil.core.model.ModelOption
+import com.tajchert.trefoil.core.model.ModelOptionChoice
+import com.tajchert.trefoil.core.model.ModelOptionDescriptor
 import com.tajchert.trefoil.core.model.Project
 import com.tajchert.trefoil.core.model.SavedEnvironment
 import com.tajchert.trefoil.core.model.ThreadSummary
@@ -25,6 +27,15 @@ object ScreenshotFixtures {
     val projects = listOf(trefoil, website)
 
     val models = listOf(ModelOption(instanceId = "codex", model = "gpt-5", label = "GPT-5"))
+
+    val reasoningModels = listOf(
+        ModelOption(
+            instanceId = "claudeAgent", model = "claude-opus", label = "Opus",
+            descriptors = listOf(ModelOptionDescriptor.Select("effort", "Reasoning", choices = listOf(
+                ModelOptionChoice("low", "Low"), ModelOptionChoice("medium", "Medium"), ModelOptionChoice("high", "High", isDefault = true), ModelOptionChoice("max", "Max"),
+            ), isReasoning = true)),
+        ),
+    )
 
     fun thread(
         id: String, title: String, project: Project = trefoil, status: String = "idle",

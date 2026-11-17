@@ -244,4 +244,48 @@ class NewThreadFlowTest {
             compose.onNodeWithText("hello").assertExists()
         }
     }
+
+    private val effort = ModelOptionDescriptor.Select(
+        "effort", "Reasoning", choices = listOf(
+            ModelOptionChoice("low", "Low"), ModelOptionChoice("high", "High", isDefault = true, description = "Deep thinking"),
+        ), isReasoning = true,
+    )
+    private val reasoningModels = listOf(ModelOption("claude", "opus", "Opus", descriptors = listOf(effort)), ModelOption("codex", "gpt-a", "Plain"))
+    private val reasoningState = state.copy(models = reasoningModels)
+
+    @Test fun effortPillHiddenWithoutReasoning() {
+        sheet(state)
+        compose.onNodeWithContentDescription("Reasoning: High").assertDoesNotExist()
+        compose.onAllNodes(hasContentDescription("Reasoning", substring = true)).assertCountEquals(0)
+    }
+
+    @Test fun effortPillShowsDefaultAndStartSendsNoOptionUntilPicked() {
+        var started: ThreadDraft? = null
+        sheet(reasoningState) { draft, _ -> started = draft }
+        compose.onNodeWithContentDescription("Reasoning: High").assertExists()
+        compose.onNodeWithContentDescription("Start").performClick()
+        compose.runOnIdle { assertTrue(started!!.modelOptions.isEmpty()) }
+    }
+
+    @Test fun pickingEffortUpdatesLabelAndStartEmitsOption() {
+        var started: ThreadDraft? = null
+        sheet(reasoningState) { draft, _ -> started = draft }
+        compose.onNodeWithContentDescription("Reasoning: High").performClick()
+        compose.onNodeWithText("Low").performClick()
+        compose.onNodeWithContentDescription("Reasoning: Low").assertExists()
+        compose.onNodeWithContentDescription("Start").performClick()
+        compose.runOnIdle { assertEquals(mapOf("effort" to "low"), started!!.modelOptions) }
+    }
+
+    @Test fun switchingToModelWithoutEffortDropsOption() {
+        var started: ThreadDraft? = null
+        sheet(reasoningState) { draft, _ -> started = draft }
+        compose.onNodeWithContentDescription("Reasoning: High").performClick()
+        compose.onNodeWithText("Low").performClick()
+        compose.onNodeWithContentDescription("Model: Opus").performClick()
+        compose.onNodeWithText("Plain").performClick()
+        compose.onAllNodes(hasContentDescription("Reasoning", substring = true)).assertCountEquals(0)
+        compose.onNodeWithContentDescription("Start").performClick()
+        compose.runOnIdle { assertTrue(started!!.modelOptions.isEmpty()) }
+    }
 }

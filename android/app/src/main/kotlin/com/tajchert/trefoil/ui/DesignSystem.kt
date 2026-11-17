@@ -59,8 +59,22 @@ private fun strokeIcon(name: String, vararg paths: String, filled: List<String> 
         filled.forEach { d -> addPath(PathParser().parsePathString(d).toNodes(), fill = SolidColor(Color.Black)) }
     }.build()
 
+private const val EFFORT_BARS = 4
+
+private fun effortBarsIcon(filled: Int): ImageVector = ImageVector.Builder("effortBars$filled", 24.dp, 24.dp, 24f, 24f).apply {
+    for (i in 0 until EFFORT_BARS) {
+        val x = 4f + i * 5f
+        val h = 5f + i * 4f
+        addPath(PathParser().parsePathString("M$x ${20f - h}h3v${h - 1f}a1.5 1.5 0 0 1 -1.5 1.5a1.5 1.5 0 0 1 -1.5 -1.5z").toNodes(),
+            fill = SolidColor(Color.Black), fillAlpha = if (i < filled) 1f else .3f)
+    }
+}.build()
+
 /** Icons from the Trefoil design canvas. Use with [Icon]; they tint with the content color. */
 object TfIcons {
+    private val effortBars by lazy { List(EFFORT_BARS + 1) { effortBarsIcon(it) } }
+    /** Signal-style bars with [filled] of 4 bars solid (reasoning effort level). */
+    fun effort(filled: Int): ImageVector = effortBars[filled.coerceIn(0, EFFORT_BARS)]
     val Back by lazy { strokeIcon("back", "M19 12H5M11 18l-6-6 6-6") }
     val Search by lazy { strokeIcon("search", circle(11f, 11f, 7f), "M20 20l-3.5-3.5") }
     /** Sliders: the design's settings/filters affordance. */
