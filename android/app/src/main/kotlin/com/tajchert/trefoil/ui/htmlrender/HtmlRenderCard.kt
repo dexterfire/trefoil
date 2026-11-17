@@ -132,7 +132,8 @@ internal fun HtmlRenderCardContent(
     val c = Tf.colors
     val shape = RoundedCornerShape(14.dp)
     val theme = remember(c) { htmlRenderTheme(c) }
-    var fullScreen by remember(reference) { mutableStateOf(false) }
+    // Saveable so a rotation does not close the full-screen page.
+    var fullScreen by rememberSaveable(reference) { mutableStateOf(false) }
     var contentHeight by rememberHtmlRenderContentHeight(reference, (state as? HtmlRenderState.Ready)?.html)
     val ready = state as? HtmlRenderState.Ready
     Surface(modifier.fillMaxWidth(), shape = shape, color = c.s1, contentColor = c.text, border = BorderStroke(1.dp, c.line)) {

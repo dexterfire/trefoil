@@ -146,6 +146,22 @@ class HtmlRenderCardTest {
         compose.onNodeWithContentDescription("Close").assertDoesNotExist()
     }
 
+    @Test fun fullScreenStaysOpenAcrossRecreation() {
+        val restoration = androidx.compose.ui.test.junit4.StateRestorationTester(compose)
+        restoration.setContent {
+            TrefoilTheme(darkTheme = true) {
+                CompositionLocalProvider(LocalInspectionMode provides true) {
+                    HtmlRenderCardContent(reference, HtmlRenderState.Ready(html))
+                }
+            }
+        }
+        compose.onNodeWithContentDescription("Open “Fixture chart” full screen").performClick()
+        compose.onNodeWithContentDescription("Close").assertExists()
+        restoration.emulateSavedInstanceStateRestore()
+        compose.onNodeWithContentDescription("Close").assertExists().performClick()
+        compose.onNodeWithContentDescription("Close").assertDoesNotExist()
+    }
+
     @Test fun readyStateToStringRedactsContent() {
         assertFalse(HtmlRenderState.Ready(html).toString().contains("Fixture"))
     }
