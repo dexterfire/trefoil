@@ -83,6 +83,9 @@ internal fun htmlRenderRebaseCssBytes(
         decoded.flip()
         if (!reserve(decoded.remaining().toLong() * CHAR_BYTES)) return null
         val text = decoded.toString()
+        // Resolving a target allocates a few strings the size of the base URL plus the target, one at a time and
+        // in both passes: this one reservation covers them all.
+        if (!reserve(SCRATCH_FACTOR * (base.toString().length + MAX_REBASED_TARGET_CHARS) * CHAR_BYTES)) return null
         // Every charset encodes a char to at least one byte, so more than maxBytes chars cannot fit.
         val count = htmlRenderCountRebasedCss(text, base, maxBytes) ?: return null
         if (!count.rewritten) return bytes
@@ -111,6 +114,12 @@ internal fun htmlRenderRebaseCssBytes(
 }
 
 private const val CHAR_BYTES = 2L
+
+/**
+ * `base.resolve(target)` and `toString()` hold, at once, a parsed URL, its string, and a few intermediate copies of
+ * the base plus the target; this many times that many chars is reserved as scratch before they are made.
+ */
+private const val SCRATCH_FACTOR = 4L
 
 /** A rebased URL or string target longer than this is copied as written: nothing near it is a real reference. */
 private const val MAX_REBASED_TARGET_CHARS = 8_192

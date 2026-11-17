@@ -713,6 +713,9 @@ class HtmlRenderSubresourcesTest {
     private val bombCss = "u{background:url(a)}".repeat(3_000)
     private val bombBase = "https://cdn.example/${"p/".repeat(500)}style.css".toHttpUrl()
 
+    /** The fixed scratch reserved for resolving targets: 4 x (base URL + 8 192 chars) x 2 bytes. */
+    private fun scratchBytes(base: okhttp3.HttpUrl) = 4L * (base.toString().length + 8_192) * 2
+
     @Test fun expansionBombIsRefusedBeforeAnythingProportionalToTheOutputIsReserved() {
         val bytes = bombCss.toByteArray()
         val maxBytes = 100_000L
@@ -722,8 +725,9 @@ class HtmlRenderSubresourcesTest {
         var reserved = 0L
         val result = htmlRenderRebaseCssBytes(bytes, null, bombBase, maxBytes) { reserved += it; true }
         assertNull(result)
-        // Only the decode stages (a few times the input) were reserved, never a builder or encode buffer.
-        assertTrue("reserved $reserved", reserved <= bytes.size * 5L)
+        // Only the decode stages (a few times the input) and the fixed resolve scratch were reserved, never a
+        // builder or encode buffer.
+        assertTrue("reserved $reserved", reserved <= bytes.size * 4L + scratchBytes(bombBase))
     }
 
     @Test fun rebaseReservesEveryStageBeforeAllocatingAndRefusesWhenOverBudget() {
@@ -731,9 +735,10 @@ class HtmlRenderSubresourcesTest {
         val reservations = mutableListOf<Long>()
         val rebased = htmlRenderRebaseCssBytes(css, null, cssBase, 1_000) { reservations += it; true }!!
         assertEquals("a{background:url(https://cdn.example/v2/css/b.png)}", rebased.toString(Charsets.UTF_8))
-        // Decode buffer, decoded string, rebuilt text, encode buffer, and the trimmed copy of it.
-        assertEquals(5, reservations.size)
+        // Decode buffer, decoded string, resolve scratch, rebuilt text, encode buffer, and the trimmed copy of it.
+        assertEquals(6, reservations.size)
         assertTrue(reservations.all { it > 0 })
+        assertEquals(scratchBytes(cssBase), reservations[2])
         // Refusing any one of them fails the whole rebase, without ever reaching the next stage.
         reservations.indices.forEach { refused ->
             var calls = 0
@@ -743,7 +748,7 @@ class HtmlRenderSubresourcesTest {
         // Over the output cap: refused after the counting pass, before the builder is reserved.
         var calls = 0
         assertNull(htmlRenderRebaseCssBytes(css, null, cssBase, css.size + 5L) { calls++; true })
-        assertEquals(2, calls)
+        assertEquals(3, calls)
     }
 
     private fun redirectedStylesheet(body: String, target: String = "/v2/p/style.css") = FakeServer { request ->
@@ -768,8 +773,9 @@ class HtmlRenderSubresourcesTest {
     @Test fun redirectedStylesheetUnderATooSmallBudgetFailsCleanlyAndRebasesWithEnough() {
         val css = "a{background:url(b.png)}"
         val expected = "a{background:url(https://cdn.example/v2/p/b.png)}"
-        // Byte-exact sweep around the buffering reservation (one 8 KiB chunk): the rebase needs more than that.
-        val outcomes = (8_000..9_000).map { limit ->
+        // Sweep from below the buffering reservation (one 8 KiB chunk) past the rebase's own reservations,
+        // which include the fixed resolve scratch: the rebase needs well more than the chunk.
+        val outcomes = (8_000..100_000 step 250).map { limit ->
             val budget = HtmlRenderByteBudget(limit.toLong())
             val result = HtmlRenderSubresourceFetcher(redirectedStylesheet(css).client, budget = budget)
                 .fetch("https://cdn.example/latest.css", emptyMap(), policy::allowsFetch)
