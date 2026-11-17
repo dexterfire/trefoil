@@ -1,7 +1,9 @@
 package com.tajchert.trefoil.ui
 
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.*
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.test.junit4.createComposeRule
 import com.tajchert.trefoil.core.model.*
 import org.junit.Assert.*
@@ -61,7 +63,7 @@ class NewThreadFlowTest {
         sheet(state)
         compose.onNodeWithContentDescription("Search projects").assertExists()
         compose.onNodeWithText("Beta").performClick()
-        compose.onNodeWithContentDescription("Project: Beta, change").assertExists()
+        compose.onNodeWithContentDescription("Project: Beta").assertExists()
         compose.onNodeWithText("Alpha").assertDoesNotExist()
         compose.onNodeWithContentDescription("Search projects").assertDoesNotExist()
     }
@@ -70,14 +72,14 @@ class NewThreadFlowTest {
         var started: ThreadDraft? = null
         sheet(state) { draft, _ -> started = draft }
         compose.onNodeWithText("Beta").performClick()
-        compose.onNodeWithContentDescription("Project: Beta, change").performClick()
+        compose.onNodeWithContentDescription("Project: Beta").performClick()
         compose.onNodeWithText("Alpha").assertExists()
         compose.onNode(hasText("Beta") and hasClickAction()).assertIsSelected()
         compose.onNodeWithText("Alpha").performClick()
-        compose.onNodeWithContentDescription("Project: Alpha, change").performClick()
+        compose.onNodeWithContentDescription("Project: Alpha").performClick()
         compose.onNodeWithText("Beta").assertExists()
         compose.onNodeWithText("What should the agent do?").performClick()
-        compose.onNodeWithContentDescription("Project: Alpha, change").assertExists()
+        compose.onNodeWithContentDescription("Project: Alpha").assertExists()
         compose.onNodeWithText("Beta").assertDoesNotExist()
         compose.onNodeWithContentDescription("Start").performClick()
         compose.runOnIdle { assertEquals("p1", started?.projectId) }
@@ -87,13 +89,50 @@ class NewThreadFlowTest {
         sheet(state)
         compose.onNodeWithText("Beta").assertExists()
         compose.onNodeWithText("What should the agent do?").performClick()
-        compose.onNodeWithContentDescription("Project: Alpha, change").assertExists()
+        compose.onNodeWithContentDescription("Project: Alpha").assertExists()
         compose.onNodeWithText("Beta").assertDoesNotExist()
     }
 
     @Test fun singleProjectStartsCollapsed() {
         sheet(state.copy(projects = listOf(Project("p1", "Alpha"))))
-        compose.onNodeWithContentDescription("Project: Alpha, change").assertExists()
+        compose.onNodeWithContentDescription("Project: Alpha").assertExists()
+        compose.onNode(hasText("Alpha") and !hasContentDescription("Project: Alpha")).assertDoesNotExist()
+        compose.onNodeWithContentDescription("Search projects").assertDoesNotExist()
+    }
+
+    @Test fun searchImeActionSelectsSingleResultAndCollapses() {
+        val many = state.copy(projects = listOf(Project("p1", "Alpha"), Project("p2", "Beta"), Project("p3", "Alps")))
+        sheet(many)
+        compose.onNodeWithContentDescription("Search projects").performClick()
+        compose.onNodeWithText("Search projects").performTextInput("Al")
+        compose.onNode(hasImeAction(ImeAction.Search)).performImeAction()
+        compose.onNodeWithContentDescription("Project: Alpha").assertDoesNotExist()
+        compose.onNode(hasImeAction(ImeAction.Search)).assertExists()
+        compose.onNode(hasImeAction(ImeAction.Search)).performTextReplacement("Bet")
+        compose.onNode(hasImeAction(ImeAction.Search)).performImeAction()
+        compose.onNodeWithContentDescription("Project: Beta").assertExists()
+        compose.onNodeWithContentDescription("Search projects").assertDoesNotExist()
+    }
+
+    @Test fun collapsingClearsSearchQuery() {
+        sheet(state)
+        compose.onNodeWithContentDescription("Search projects").performClick()
+        compose.onNodeWithText("Search projects").performTextInput("Bet")
+        compose.onNode(hasText("Beta") and hasClickAction() and !isEditable()).performClick()
+        compose.onNodeWithContentDescription("Project: Beta").performClick()
+        compose.onNodeWithText("Alpha").assertExists()
+        compose.onNodeWithText("Bet").assertDoesNotExist()
+    }
+
+    @Test fun lateArrivingProjectSelectsAndCollapses() {
+        val current = mutableStateOf(state.copy(projects = emptyList()))
+        var started: ThreadDraft? = null
+        compose.setContent { TrefoilTheme { NewThreadSheetContent(current.value, {}, { d, _ -> started = d }) } }
+        compose.onNodeWithContentDescription("Start").assertIsNotEnabled()
+        compose.runOnIdle { current.value = state.copy(projects = listOf(Project("p9", "Late"))) }
+        compose.onNodeWithContentDescription("Project: Late").assertExists()
+        compose.onNodeWithContentDescription("Start").performClick()
+        compose.runOnIdle { assertEquals("p9", started?.projectId) }
     }
 
     @Test fun defaultModeIsApprovalRequired() {

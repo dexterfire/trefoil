@@ -75,11 +75,16 @@ internal fun NewThreadSheetContent(state: ClientState, dismiss: () -> Unit, star
     var pickerCollapsed by rememberSaveable { mutableStateOf(initiallyCollapsed ?: (state.projects.size == 1)) }
     val selectedProject = state.projects.firstOrNull { it.id == projectId }
     val collapsed = pickerCollapsed && selectedProject != null
+    var userExpanded by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(state.projects) {
+        if (state.projects.none { it.id == projectId }) { projectId = state.projects.firstOrNull()?.id.orEmpty(); pickerCollapsed = false }
+        if (state.projects.size == 1 && !userExpanded && initiallyCollapsed == null) pickerCollapsed = true
+    }
     fun collapsePicker() { pickerCollapsed = true; searching = false; query = "" }
     val model = state.models.getOrNull(modelIndex)
     val allowedModes = allowedRuntimeModes(model)
     val mode = resolveRuntimeMode(RuntimeMode.fromWire(chosenMode), allowedModes)
-    val canStart = state.canLaunchThreads && !state.busy && projectId.isNotBlank() && model != null
+    val canStart = state.canLaunchThreads && !state.busy && selectedProject != null && model != null
 
     val filtered = state.projects.filter { query.isBlank() || it.title.contains(query.trim(), ignoreCase = true) }
     val limit = 8
@@ -105,10 +110,10 @@ internal fun NewThreadSheetContent(state: ClientState, dismiss: () -> Unit, star
             }
         }
         AnimatedContent(
-            collapsed, label = "projectPicker",
+            selectedProject.takeIf { collapsed }, label = "projectPicker",
             transitionSpec = { fadeIn(tween(150)) togetherWith fadeOut(tween(100)) using SizeTransform(clip = false) },
-        ) { isCollapsed ->
-            if (isCollapsed && selectedProject != null) SelectedProjectPill(selectedProject) { pickerCollapsed = false }
+        ) { target ->
+            if (target != null) SelectedProjectPill(target) { pickerCollapsed = false; userExpanded = true }
             else Column {
                 if (searching) OutlinedTextField(query, { query = it }, singleLine = true, placeholder = { Text("Search projects") }, shape = TfFieldShape, colors = tfFieldColors(),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
@@ -122,7 +127,7 @@ internal fun NewThreadSheetContent(state: ClientState, dismiss: () -> Unit, star
                             .semantics { contentDescription = "Show $hidden more projects" },
                         contentAlignment = Alignment.Center,
                     ) { Text("+$hidden", style = TrefoilType.meta.copy(fontSize = 14.sp), color = c.muted) }
-            }
+                }
             }
         }
 
@@ -183,7 +188,7 @@ private fun SelectedProjectPill(project: Project, onClick: () -> Unit) {
     val shape = RoundedCornerShape(14.dp)
     Row(
         Modifier.padding(top = 6.dp).height(40.dp).widthIn(max = 320.dp).clip(shape).border(1.dp, c.line, shape)
-            .clickable(role = Role.Button, onClick = onClick).semantics(mergeDescendants = true) { contentDescription = "Project: ${project.title}, change" }
+            .clickable(onClickLabel = "Change project", role = Role.Button, onClick = onClick).semantics(mergeDescendants = true) { contentDescription = "Project: ${project.title}" }
             .padding(start = 8.dp, end = 12.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
