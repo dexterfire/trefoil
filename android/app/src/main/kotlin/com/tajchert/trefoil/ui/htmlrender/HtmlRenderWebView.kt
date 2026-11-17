@@ -21,11 +21,10 @@ import androidx.webkit.WebViewFeature
 import com.tajchert.trefoil.core.model.HTML_RENDER_MAX_FIT_HEIGHT
 import com.tajchert.trefoil.core.model.HTML_RENDER_MIN_HEIGHT
 import com.tajchert.trefoil.core.model.isPrivateLanAddress
-import com.tajchert.trefoil.ui.LocalFileDownloadUi
 import java.io.ByteArrayInputStream
 import java.net.InetAddress
 import java.net.URI
-import java.security.MessageDigest
+import java.security.SecureRandom
 
 /**
  * Suffix of the synthetic page origins: `.invalid` never resolves, so nothing here reaches the network. The bare
@@ -34,29 +33,25 @@ import java.security.MessageDigest
 internal const val HTML_RENDER_HOST = "html-render.trefoil.invalid"
 internal const val HTML_RENDER_BRIDGE = "TrefoilHtmlRender"
 
-/** The synthetic host itself or any per-page subdomain of it. */
+/** The synthetic host itself or any subdomain of it. */
 internal fun isHtmlRenderHost(normalizedHost: String): Boolean =
     normalizedHost == HTML_RENDER_HOST || normalizedHost.endsWith(".$HTML_RENDER_HOST")
 
+private val HTML_RENDER_SESSION_LABEL = Regex("[0-9a-f]{32}")
+private val sessionRandom by lazy { SecureRandom() }
+
 /**
- * `https://<sha256(environment, thread, attachment)[0..16]>.html-render.trefoil.invalid`: one origin per page,
- * so storage, BroadcastChannel and other same-origin state never cross pages, threads or environments. The
- * 32-hex label is DNS-safe and reveals none of the ids.
+ * `https://<32 random hex>.html-render.trefoil.invalid`: a fresh origin for every WebView session, never derived
+ * from ids. Storage, BroadcastChannel and other same-origin state never cross pages or sessions, a new session can
+ * never inherit storage left behind by a process death, and the forwarded `Origin` header cannot link views.
  */
-internal fun htmlRenderOrigin(environmentId: String, threadId: String, attachmentId: String): String {
-    val sha = MessageDigest.getInstance("SHA-256")
-    // Length-prefixed, so ("a", "bc") and ("ab", "c") never collide.
-    listOf(environmentId, threadId, attachmentId).forEach { part ->
-        val bytes = part.toByteArray(Charsets.UTF_8)
-        sha.update("${bytes.size}:".toByteArray(Charsets.UTF_8))
-        sha.update(bytes)
-    }
-    return "https://${sha.digest().take(16).joinToString("") { "%02x".format(it) }}.$HTML_RENDER_HOST"
+internal fun newHtmlRenderOrigin(): String {
+    val bytes = ByteArray(16).also(sessionRandom::nextBytes)
+    return "https://${bytes.joinToString("") { "%02x".format(it) }}.$HTML_RENDER_HOST"
 }
 
-/** `<per-page origin>/index.html`, without a fragment. */
-internal fun htmlRenderDocumentUrl(environmentId: String, threadId: String, attachmentId: String): String =
-    "${htmlRenderOrigin(environmentId, threadId, attachmentId)}/index.html"
+/** `<session origin>/index.html`, without a fragment. */
+internal fun htmlRenderDocumentUrl(origin: String = newHtmlRenderOrigin()): String = "$origin/index.html"
 
 /**
  * Reports the page height through the origin-restricted web message listener, with T3's measure: the
@@ -145,7 +140,7 @@ internal fun htmlRenderReportedHeight(data: String?): Float? =
         ?.coerceIn(HTML_RENDER_MIN_HEIGHT.toFloat(), HTML_RENDER_MAX_FIT_HEIGHT.toFloat())
 
 /**
- * Request policy for an agent page. Only the exact in-memory document is served at its per-page synthetic
+ * Request policy for an agent page. Only the exact in-memory document is served at its session's synthetic
  * origin; no synthetic host (its own or another page's) is ever a subresource or external link.
  * Subresources are GET `https:` to public-looking hosts (plus `data:`/`blob:`); loopback, `localhost`,
  * mDNS, single-label names, private/link-local/CGNAT/ULA literals, and the environment's current hosts are
@@ -153,9 +148,10 @@ internal fun htmlRenderReportedHeight(data: String?): Float? =
  * this policy re-checked on every redirect hop and DNS answers limited to public addresses.
  */
 internal class HtmlRenderPolicy(val documentUrl: String, private val network: HtmlRenderNetworkAccess) {
-    /** `https://<hash>.html-render.trefoil.invalid`, the only origin whose messages this page accepts. */
+    /** `https://<session>.html-render.trefoil.invalid`, the only origin whose messages this page accepts. */
     val origin: String = runCatching { URI(documentUrl) }.getOrNull().let { uri ->
-        require(uri != null && uri.scheme == "https" && uri.host?.endsWith(".$HTML_RENDER_HOST") == true && uri.port == -1 &&
+        require(uri != null && uri.scheme == "https" && uri.host?.substringBefore('.')?.matches(HTML_RENDER_SESSION_LABEL) == true &&
+            uri.host.substringAfter('.') == HTML_RENDER_HOST && uri.port == -1 &&
             uri.rawUserInfo == null && uri.rawPath == "/index.html" && uri.rawQuery == null && uri.rawFragment == null) { "not an html render document" }
         "https://${uri.host}"
     }
@@ -271,16 +267,16 @@ private object HtmlRenderCookies {
 
 /**
  * DOM storage and Web SQL are off, but IndexedDB, Cache Storage and similar still work per origin, and every
- * page has its own origin. A released page's origin is deleted once no live page (inline and full screen share
- * one) uses it. Once per process, other html render origins left on disk (the shared origin of older builds,
- * pages lost to process death) are deleted too.
+ * WebView session has its own random origin. A released session's origin is deleted. Once per process, every
+ * other html render origin left on disk (older builds' shared or per-page origins, sessions lost to process
+ * death) is deleted too; a live session's origin is never a leftover, and no new session can reuse an old one.
  */
 private object HtmlRenderStorage {
-    private val live = HashMap<String, Int>()
+    private val live = HashSet<String>()
     private var swept = false
 
     @Synchronized fun opened(origin: String) {
-        live[origin] = (live[origin] ?: 0) + 1
+        live += origin
         if (swept) return
         swept = true
         runCatching {
@@ -292,9 +288,7 @@ private object HtmlRenderStorage {
     }
 
     @Synchronized fun released(origin: String) {
-        val remaining = (live[origin] ?: 1) - 1
-        if (remaining > 0) { live[origin] = remaining; return }
-        live.remove(origin)
+        live -= origin
         runCatching { WebStorage.getInstance().deleteOrigin(origin) }
     }
 
@@ -304,14 +298,11 @@ private object HtmlRenderStorage {
     }
 }
 
-/** One hardened WebView showing one in-memory page. Not reused: [release] destroys it. */
+/** One hardened WebView session showing one in-memory page. Not reused: [release] destroys it. */
 @SuppressLint("SetJavaScriptEnabled")
 internal class HtmlRenderPage(
     context: Context,
     html: String,
-    environmentId: String,
-    threadId: String,
-    attachmentId: String,
     initialTheme: HtmlRenderTheme,
     private val network: HtmlRenderNetworkAccess,
     val fullScreen: Boolean,
@@ -320,7 +311,8 @@ internal class HtmlRenderPage(
 ) {
     val webView = WebView(context)
     val root: View
-    val policy = HtmlRenderPolicy(htmlRenderDocumentUrl(environmentId, threadId, attachmentId), network)
+    /** A fresh random origin for this WebView session. */
+    val policy = HtmlRenderPolicy(htmlRenderDocumentUrl(), network)
     var onHeight: (Float) -> Unit = {}
     var onOpenLink: (String) -> Unit = {}
     var onFailure: () -> Unit = {}
@@ -476,8 +468,8 @@ internal class HtmlRenderPage(
 
 /**
  * Hosts one [HtmlRenderPage] for [html]. The WebView is destroyed when this leaves composition (including
- * when the timeline row scrolls away) and paused with the lifecycle. Inline pages report their height. The
- * page origin is scoped to the environment and thread from [LocalFileDownloadUi] (empty when absent).
+ * when the timeline row scrolls away) and paused with the lifecycle. Inline pages report their height. Every
+ * new WebView gets a fresh random origin; [attachmentId] only keys the WebView, so another page never reuses it.
  */
 @Composable
 internal fun HtmlRenderWebView(
@@ -491,9 +483,6 @@ internal fun HtmlRenderWebView(
     modifier: Modifier = Modifier,
 ) {
     val uriHandler = LocalUriHandler.current
-    val ui = LocalFileDownloadUi.current
-    val environmentId = ui.environmentId.orEmpty()
-    val threadId = ui.threadId.orEmpty()
     val heightCallback by rememberUpdatedState(onContentHeight)
     val failureCallback by rememberUpdatedState(onFailure)
     val holder = remember { arrayOfNulls<HtmlRenderPage>(1) }
@@ -513,11 +502,11 @@ internal fun HtmlRenderWebView(
     LaunchedEffect(network) {
         network.currentChanges.collect { current -> if (!current) holder[0]?.connectionLost() }
     }
-    key(html, environmentId, threadId, attachmentId, fullScreen, network) {
+    key(html, attachmentId, fullScreen, network) {
         AndroidView(
             modifier = modifier,
             factory = { context ->
-                HtmlRenderPage(context, html, environmentId, threadId, attachmentId, theme, network, fullScreen).also { page ->
+                HtmlRenderPage(context, html, theme, network, fullScreen).also { page ->
                     page.onHeight = { heightCallback(it) }
                     page.onFailure = { failureCallback() }
                     page.onOpenLink = { url -> runCatching { uriHandler.openUri(url) } }

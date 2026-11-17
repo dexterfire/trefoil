@@ -94,7 +94,7 @@ class HtmlRenderSubresourcesTest {
             .header("Set-Cookie", "tracking=1")
             .body(body.toResponseBody(type.toMediaType())).build()
 
-    private val policy = HtmlRenderPolicy(htmlRenderDocumentUrl("fixture-env", "fixture-thread", "fixture"), HtmlRenderNetworkAccess({ setOf("env.example") }, { true }))
+    private val policy = HtmlRenderPolicy(htmlRenderDocumentUrl(), HtmlRenderNetworkAccess({ setOf("env.example") }, { true }))
 
     @Test fun redirectToPrivateHostIsBlockedBeforeItIsRequested() {
         listOf("https://10.0.0.1/secret", "https://localhost/x", "https://env.example/api", "http://cdn.example/x", "https://[fd00::1]/x").forEach { target ->

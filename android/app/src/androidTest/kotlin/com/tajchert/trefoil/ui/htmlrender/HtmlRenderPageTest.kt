@@ -39,29 +39,30 @@ class HtmlRenderPageTest {
 
     @Test fun fixturePageLoadsAndReportsHeight() {
         val failed = AtomicBoolean(false)
-        val page = open(fixture, "fixture-attachment-html") { it.onFailure = { failed.set(true) } }
+        val page = open(fixture) { it.onFailure = { failed.set(true) } }
         assertFalse("page reported a failure", failed.get())
         assertEquals("\"${page.policy.origin}\"", evaluate(page, "location.origin"))
     }
 
-    @Test fun pagesNeverShareStorage() {
-        val writer = open(fixture, "fixture-attachment-a")
-        val reader = open(fixture, "fixture-attachment-b")
-        val otherThread = open(fixture, "fixture-attachment-a", threadId = "fixture-thread-2")
+    @Test fun sessionsNeverShareStorage() {
+        val writer = open(fixture)
+        // The same page opened again (another session, such as full screen or after a restart) starts empty.
+        val reader = open(fixture)
+        val probePage = open(probe)
         assertNotEquals(writer.policy.origin, reader.policy.origin)
-        assertNotEquals(writer.policy.origin, otherThread.policy.origin)
+        assertNotEquals(writer.policy.origin, probePage.policy.origin)
         evaluate(writer, "caches.open('fixture').then(function(c){return c.put('/k',new Response('fixture'))}).then(function(){window.__r='ok'},function(e){window.__r='error:'+e.name});1")
         assertEquals("\"ok\"", poll(writer, "window.__r"))
         evaluate(writer, "caches.keys().then(function(k){window.__k=JSON.stringify(k)});1")
         assertEquals("\"[\\\"fixture\\\"]\"", poll(writer, "window.__k"))
-        listOf(reader, otherThread).forEach { page ->
+        listOf(reader, probePage).forEach { page ->
             evaluate(page, "caches.keys().then(function(k){window.__k=JSON.stringify(k)});1")
             assertEquals("\"[]\"", poll(page, "window.__k"))
         }
     }
 
     @Test fun peerConnectionsAndWebTransportAreGone() {
-        val page = open(probe, "fixture-attachment-rtc")
+        val page = open(probe)
         listOf("RTCPeerConnection", "webkitRTCPeerConnection", "WebTransport").forEach { name ->
             assertEquals(name, "\"undefined\"", evaluate(page, "typeof window.$name"))
             // The page cannot delete or redefine the lockdown.
@@ -78,7 +79,7 @@ class HtmlRenderPageTest {
 
     @Test fun scriptBeforeAParserClosedCommentNeverSeesPeerConnections() {
         // `<!-->` closes the comment for the HTML parser, so this script is the first thing that runs.
-        val page = open("<!--><script>window.savedRTC=typeof RTCPeerConnection;window.savedTransport=typeof WebTransport</script><!-- --><!doctype html><p>x</p>", "fixture-attachment-comment")
+        val page = open("<!--><script>window.savedRTC=typeof RTCPeerConnection;window.savedTransport=typeof WebTransport</script><!-- --><!doctype html><p>x</p>")
         assertEquals("\"undefined\"", evaluate(page, "window.savedRTC"))
         assertEquals("\"undefined\"", evaluate(page, "window.savedTransport"))
     }
@@ -86,7 +87,7 @@ class HtmlRenderPageTest {
     @Test fun withoutDocumentStartThePageRunsNoScript() {
         val html = "<!--><script>document.title='ran'</script><!-- --><!doctype html><html><head><title>static</title>" +
             "<script>document.title='ran';new RTCPeerConnection({iceServers:[{urls:'stun:192.168.1.1:3478'}]})</script></head><body><p>x</p></body></html>"
-        val page = open(html, "fixture-attachment-static", allowScript = false)
+        val page = open(html, allowScript = false)
         val deadline = SystemClock.uptimeMillis() + 20_000
         var title: String? = null
         while (SystemClock.uptimeMillis() < deadline) {
@@ -100,26 +101,26 @@ class HtmlRenderPageTest {
     }
 
     @Test fun webSocketIsBlocked() {
-        val page = open(probe, "fixture-attachment-ws")
+        val page = open(probe)
         evaluate(page, "try{var s=new WebSocket('wss://echo.example/');s.onopen=function(){window.__open=true};}catch(e){};1")
         assertViolation(page, "connect-src")
         assertEquals("null", evaluate(page, "window.__open"))
     }
 
     @Test fun iframeIsBlocked() {
-        val page = open(probe, "fixture-attachment-frame")
+        val page = open(probe)
         evaluate(page, "var f=document.createElement('iframe');f.src='https://cdn.example/frame.html';document.body.appendChild(f);1")
         assertViolation(page, "frame-src")
     }
 
     @Test fun workerIsBlocked() {
-        val page = open(probe, "fixture-attachment-worker")
+        val page = open(probe)
         assertEquals("\"blocked\"", evaluate(page, "(function(){try{new Worker(URL.createObjectURL(new Blob(['postMessage(1)'],{type:'text/javascript'})));return 'created'}catch(e){return 'blocked'}})()"))
         assertViolation(page, "worker-src")
     }
 
     @Test fun formPostIsBlocked() {
-        val page = open(probe, "fixture-attachment-form")
+        val page = open(probe)
         val origin = "\"${page.policy.origin}\""
         evaluate(page, "var f=document.createElement('form');f.method='post';f.action='https://cdn.example/collect';document.body.appendChild(f);f.submit();1")
         assertViolation(page, "form-action")
@@ -149,9 +150,6 @@ if(typeof RTCPeerConnection!=='undefined')window.__pageSawRtc=true;</script></he
      */
     private fun open(
         html: String,
-        attachmentId: String,
-        environmentId: String = "fixture-env",
-        threadId: String = "fixture-thread",
         allowScript: Boolean = true,
         configure: (HtmlRenderPage) -> Unit = {},
     ): HtmlRenderPage {
@@ -163,7 +161,7 @@ if(typeof RTCPeerConnection!=='undefined')window.__pageSawRtc=true;</script></he
         val height = AtomicReference<Float?>(null)
         lateinit var page: HtmlRenderPage
         instrumentation.runOnMainSync {
-            page = HtmlRenderPage(instrumentation.targetContext, html, environmentId, threadId, attachmentId, htmlRenderTheme(TrefoilDark), HtmlRenderNetworkAccess.Offline, fullScreen = false, allowScript = allowScript)
+            page = HtmlRenderPage(instrumentation.targetContext, html, htmlRenderTheme(TrefoilDark), HtmlRenderNetworkAccess.Offline, fullScreen = false, allowScript = allowScript)
             pages += page
             configure(page)
             page.onHeight = { height.set(it); reported.countDown() }

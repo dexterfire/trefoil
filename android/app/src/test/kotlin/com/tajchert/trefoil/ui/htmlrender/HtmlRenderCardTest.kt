@@ -133,7 +133,7 @@ class HtmlRenderCardTest {
                 assertEquals(android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW, mixedContentMode)
             }
             val shadow = shadowOf(view)
-            val documentUrl = htmlRenderDocumentUrl("fixture", "thread", reference.attachmentId)
+            val documentUrl = shadow.lastLoadedUrl.substringBefore('#').also { assertTrue(it, it.matches(Regex("https://[0-9a-f]{32}\\.$HTML_RENDER_HOST/index\\.html"))) }
             assertTrue(shadow.lastLoadedUrl.startsWith("$documentUrl#t3-theme=%7B%22appearance%22%3A%22dark%22"))
             assertFalse(shadow.lastLoadedUrl.contains("fixture.invalid"))
             val client2 = shadow.webViewClient
