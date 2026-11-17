@@ -1,5 +1,11 @@
 # Android releases
 
+Release `0.18.3` (`versionCode = 33`) turns on R8 code and resource shrinking for release builds, cutting
+the APK from 63 MB to 11 MB (most of the old size was unused Material icon classes and BouncyCastle).
+Keep rules in `android/app/proguard-rules.pro` cover the BouncyCastle JCA provider, sshj and the WebView
+bridge. The minified build was smoke-tested against the SSH emulator fixture (host key check, password login,
+projects, threads). Check SSH, link pairing and an HTML render against a real environment on a device.
+
 Release `0.18.2` (`versionCode = 32`) keeps the live connection when you tap the machine you are already
 connected to on the Machines screen (or rail): a session that answered a ping within 20 s is reused, with no
 reconnect and the selected thread kept; a different machine still closes the old connection first. The
