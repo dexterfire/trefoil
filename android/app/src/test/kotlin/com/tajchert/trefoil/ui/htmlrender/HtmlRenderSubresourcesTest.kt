@@ -489,7 +489,7 @@ class HtmlRenderSubresourcesTest {
         assertFalse(client.followSslRedirects)
         assertSame(okhttp3.CookieJar.NO_COOKIES, client.cookieJar)
         assertNull(client.cache)
-        assertTrue(client.interceptors.isEmpty())
+        assertEquals(listOf<Any>(PublicHostInterceptor), client.interceptors)
         assertEquals(listOf<Any>(PublicPeerInterceptor, HtmlRenderGateInterceptor), client.networkInterceptors)
         assertEquals(10_000, client.connectTimeoutMillis)
         assertEquals(15_000, client.readTimeoutMillis)
@@ -516,12 +516,21 @@ class HtmlRenderSubresourcesTest {
         }
     }
 
-    @Test fun productionClientNeverCompletesARequestToALoopbackLiteral() {
+    @Test fun productionClientNeverConnectsToANonPublicIpLiteral() {
         LoopbackListener().use { listener ->
-            // An IP literal skips DNS entirely; it must still never yield a response (TLS or the peer check stops it).
-            val result = HtmlRenderSubresourceFetcher(createHtmlRenderHttpClient()).fetch("https://127.0.0.1:${listener.port}/x.js", emptyMap()) { true }
-            assertEquals(502, result.status)
-            assertEquals(0, result.body.size)
+            val client = createHtmlRenderHttpClient()
+            val fetcher = HtmlRenderSubresourceFetcher(client, budget = HtmlRenderByteBudget(1024 * 1024))
+            // An IP literal skips DNS entirely, so even a permissive hop gate must not get a socket opened.
+            listOf("127.0.0.1", "[::1]", "[::ffff:127.0.0.1]", "[::127.0.0.1]").forEach { host ->
+                val result = fetcher.fetch("https://$host:${listener.port}/x.js", emptyMap()) { true }
+                assertEquals(host, 502, result.status)
+                assertEquals(host, 0, result.body.size)
+            }
+            // Outside the fetcher, and for a private LAN literal, too.
+            assertThrows(java.io.IOException::class.java) { client.newCall(Request.Builder().url("https://127.0.0.1:${listener.port}/").build()).execute() }
+            assertEquals(502, fetcher.fetch("https://192.168.1.10/x.js", emptyMap()) { true }.status)
+            Thread.sleep(300)
+            assertEquals(0, listener.accepted.get())
         }
     }
 
