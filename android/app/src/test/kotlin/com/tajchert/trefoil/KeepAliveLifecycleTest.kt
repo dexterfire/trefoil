@@ -262,18 +262,64 @@ class KeepAliveLifecycleTest {
         assertEquals(1, control.starts.size)
     }
 
-    @Test fun resumeDuringABackgroundReconnectLetsItContinue() {
+    @Test fun resumeDuringARunningBackgroundReconnectAttemptLetsItContinue() {
+        armLiveConnection()
+        enableKeepAlive()
+        model.pause()
+        // The held lock keeps the episode's first attempt running.
+        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
+        assertTrue(mutex.tryLock())
+        dropConnection(); advance(2_000)
+        val attempt = model.connectionAttempt.value
+        assertEquals(ConnectionPhase.Testing, attempt.phase)
+        assertTrue(attempt.id > 0)
+        model.resume(); advance(0)
+        // Connecting here would cancel the running attempt.
+        assertEquals(attempt, model.connectionAttempt.value)
+        mutex.unlock(); advance(0)
+    }
+
+    @Test fun resumeDuringABackgroundReconnectDelayConnectsOnceRightAway() {
         armLiveConnection()
         enableKeepAlive()
         model.pause()
         dropConnection(); advance(1_000)
-        model.resume(); advance(0)
-        // Connecting here would cancel the episode; its first attempt still comes at the backoff.
         assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
-        advance(1_000)
+        model.resume(); advance(0)
         // Testing, or already Failed: the fixture host never resolves.
+        val attempt = model.connectionAttempt.value
+        assertTrue(attempt.id > 0)
+        assertNotEquals(ConnectionPhase.Idle, attempt.phase)
+        assertNull(field("autoReconnectJob").get(model))
+        // The cancelled episode never adds a second connect when its backoff would have ended.
+        advance(30_000)
+        assertEquals(attempt.id, model.connectionAttempt.value.id)
+    }
+
+    @Test fun resumeDuringAForegroundDropBackoffConnectsTheEpisodeMachine() {
+        armLiveConnection()
+        enableKeepAlive()
+        // The drop happens in the foreground, so the pause records no machine to resume.
+        dropConnection(); advance(500)
+        model.pause(); advance(500)
+        assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
+        model.resume(); advance(0)
         assertTrue(model.connectionAttempt.value.id > 0)
         assertNotEquals(ConnectionPhase.Idle, model.connectionAttempt.value.phase)
+    }
+
+    @Test fun resumeDuringABackgroundReconnectDelayWhileOfflineKeepsWaiting() {
+        model.onDefaultNetwork(1)
+        armLiveConnection()
+        enableKeepAlive()
+        model.pause()
+        dropConnection(); advance(1_000)
+        model.onDefaultNetworkLost(1)
+        model.resume(); advance(1_000)
+        assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
+        // The episode handed over to the network watch, which connects once a network returns.
+        model.onDefaultNetwork(2); advance(0)
+        assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
     }
 
     @Test fun notificationShowsReconnectingInTheBackgroundWithoutFlapping() {
