@@ -534,6 +534,37 @@ class HtmlRenderSubresourcesTest {
         }
     }
 
+    @Test fun urlPolicyGateRejectsNonPublicLiteralsBeforeAnyConnection() {
+        LoopbackListener().use { listener ->
+            val fetcher = HtmlRenderSubresourceFetcher(createHtmlRenderHttpClient(), budget = HtmlRenderByteBudget(1024 * 1024))
+            // The same policy the WebView passes as the hop gate, for the literal and for redirects to it.
+            listOf("127.0.0.1", "[::1]", "10.0.0.1", "169.254.169.254", "[::ffff:127.0.0.1]").forEach { host ->
+                val result = fetcher.fetch("https://$host:${listener.port}/x.js", emptyMap(), policy::allowsFetch)
+                assertEquals(host, 403, result.status)
+                assertEquals(host, 0, result.body.size)
+            }
+            Thread.sleep(300)
+            assertEquals(0, listener.accepted.get())
+        }
+    }
+
+    @Test fun publicPeerInterceptorRejectsAConnectionToANonPublicPeerBeforeTheRequestIsSent() {
+        LoopbackListener().use { listener ->
+            // Plain HTTP so the network interceptor runs right after the TCP connect, standing in for the TLS case.
+            val guarded = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).addNetworkInterceptor(PublicPeerInterceptor).build()
+            val blocked = assertThrows(java.io.IOException::class.java) {
+                guarded.newCall(Request.Builder().url("http://127.0.0.1:${listener.port}/").build()).execute()
+            }
+            assertEquals("Blocked peer", blocked.message)
+            // Control: without the interceptor the same request gets past the connect and only then fails.
+            val unguarded = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).build()
+            val other = assertThrows(java.io.IOException::class.java) {
+                unguarded.newCall(Request.Builder().url("http://127.0.0.1:${listener.port}/").build()).execute()
+            }
+            assertNotEquals("Blocked peer", other.message)
+        }
+    }
+
     private val cssBase = "https://cdn.example/v2/css/style.css".toHttpUrl()
 
     @Test fun cssRelativeUrlsAreRebased() {
