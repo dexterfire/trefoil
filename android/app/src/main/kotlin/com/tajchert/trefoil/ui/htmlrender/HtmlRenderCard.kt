@@ -15,6 +15,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTag
@@ -109,11 +110,24 @@ internal fun HtmlRenderCard(reference: HtmlRenderReference, modifier: Modifier =
 
 /**
  * The measured page height, kept across a lazy-list row leaving and re-entering composition so the list does not
- * jump while the page reports its height again. A new page (different reference or html) starts unmeasured.
+ * jump while the page reports its height again. It is remembered per page ([reference]), so it also survives the
+ * page loading again after a cache miss. A height is only reused at the screen width it was measured at: the width
+ * is saved with it, because inputs of rememberSaveable are not checked when state is restored after a rotation.
  */
 @Composable
-internal fun rememberHtmlRenderContentHeight(reference: HtmlRenderReference, html: String?): MutableState<Float?> =
-    rememberSaveable(reference, html) { mutableStateOf<Float?>(null) }
+internal fun rememberHtmlRenderContentHeight(reference: HtmlRenderReference): MutableState<Float?> {
+    val width = LocalConfiguration.current.screenWidthDp
+    val saved = rememberSaveable(reference) { mutableStateOf<Pair<Int, Float>?>(null) }
+    return remember(saved, width) {
+        object : MutableState<Float?> {
+            override var value: Float?
+                get() = saved.value?.takeIf { it.first == width }?.second
+                set(height) { saved.value = height?.let { width to it } }
+            override fun component1(): Float? = value
+            override fun component2(): (Float?) -> Unit = { value = it }
+        }
+    }
+}
 
 /**
  * Stateless card: header with title and full-screen button, then the page or a state message. In
@@ -134,7 +148,7 @@ internal fun HtmlRenderCardContent(
     val theme = remember(c) { htmlRenderTheme(c) }
     // Saveable so a rotation does not close the full-screen page.
     var fullScreen by rememberSaveable(reference) { mutableStateOf(false) }
-    var contentHeight by rememberHtmlRenderContentHeight(reference, (state as? HtmlRenderState.Ready)?.html)
+    var contentHeight by rememberHtmlRenderContentHeight(reference)
     val ready = state as? HtmlRenderState.Ready
     Surface(modifier.fillMaxWidth(), shape = shape, color = c.s1, contentColor = c.text, border = BorderStroke(1.dp, c.line)) {
         Column {

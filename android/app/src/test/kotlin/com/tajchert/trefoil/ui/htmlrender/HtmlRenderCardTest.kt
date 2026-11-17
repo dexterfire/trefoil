@@ -1,5 +1,6 @@
 package com.tajchert.trefoil.ui.htmlrender
 
+import android.content.res.Configuration
 import android.net.Uri
 import android.view.View
 import android.view.ViewGroup
@@ -9,6 +10,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
@@ -96,18 +98,27 @@ class HtmlRenderCardTest {
 
     @Test fun measuredHeightSurvivesTheRowLeavingAndReturningToComposition() {
         val show = mutableStateOf(true)
-        val height = mutableStateOf(html)
+        val page = mutableStateOf(reference)
+        val width = mutableStateOf(360)
         var measured: androidx.compose.runtime.MutableState<Float?>? = null
         compose.setContent {
             val holder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
-            if (show.value) holder.SaveableStateProvider("row") { measured = rememberHtmlRenderContentHeight(reference, height.value) }
+            val configuration = Configuration(LocalConfiguration.current).apply { screenWidthDp = width.value }
+            CompositionLocalProvider(LocalConfiguration provides configuration) {
+                if (show.value) holder.SaveableStateProvider("row") { measured = rememberHtmlRenderContentHeight(page.value) }
+            }
         }
         compose.runOnIdle { measured!!.value = 480f }
         compose.runOnIdle { show.value = false }
         compose.runOnIdle { show.value = true }
         compose.runOnIdle { assertEquals(480f, measured!!.value) }
+        // A height measured at another width (rotation) is not reused; it is back when the width is.
+        compose.runOnIdle { width.value = 640 }
+        compose.runOnIdle { assertNull(measured!!.value) }
+        compose.runOnIdle { width.value = 360 }
+        compose.runOnIdle { assertEquals(480f, measured!!.value) }
         // A different page under the same row starts unmeasured.
-        compose.runOnIdle { height.value = "$html<!-- v2 -->" }
+        compose.runOnIdle { page.value = HtmlRenderReference("other-attachment", "Fixture chart", 240) }
         compose.runOnIdle { assertNull(measured!!.value) }
     }
 
