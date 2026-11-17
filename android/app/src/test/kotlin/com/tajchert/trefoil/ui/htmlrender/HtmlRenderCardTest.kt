@@ -55,6 +55,45 @@ class HtmlRenderCardTest {
         compose.onNodeWithContentDescription("Open “Fixture chart” full screen").assertIsNotEnabled()
     }
 
+    @Test fun offlineStateOffersRetryOnlyWhenAllowed() {
+        var retries = 0
+        content(HtmlRenderState.Offline, canRetry = true, onRetry = { retries++ })
+        compose.onNodeWithText("Retry").performClick()
+        assertEquals(1, retries)
+    }
+
+    @Test fun staleOfflineWhileConnectedRecoversThroughRetry() {
+        // The card was told it may download, but the client does not (yet) show this thread: load() says NotCurrent.
+        val client = ImageClient(html.toByteArray())
+        client.state.value = client.state.value.copy(selectedThreadId = "other-thread")
+        val ui = FileDownloadUi("fixture", "thread", true, htmlLoader = HtmlRenderLoader(client))
+        compose.setContent {
+            TrefoilTheme { CompositionLocalProvider(LocalFileDownloadUi provides ui, LocalInspectionMode provides true) { HtmlRenderCard(reference) } }
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("Reconnect to load “Fixture chart”").assertExists()
+        assertEquals(0, client.requests)
+        client.state.value = client.state.value.copy(selectedThreadId = "thread")
+        compose.onNodeWithText("Retry").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithTag(HTML_RENDER_PLACEHOLDER_TAG).fetchSemanticsNodes().isNotEmpty() }
+        assertEquals(1, client.requests)
+    }
+
+    @Test fun failedThenRetryThenReady() {
+        val client = ImageClient(html.toByteArray(), fail = true)
+        val ui = FileDownloadUi("fixture", "thread", true, htmlLoader = HtmlRenderLoader(client))
+        compose.setContent {
+            TrefoilTheme { CompositionLocalProvider(LocalFileDownloadUi provides ui, LocalInspectionMode provides true) { HtmlRenderCard(reference) } }
+        }
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("Unable to load “Fixture chart”").fetchSemanticsNodes().isNotEmpty() }
+        assertEquals(1, client.requests)
+        client.fail = false
+        compose.onNodeWithText("Retry").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithTag(HTML_RENDER_PLACEHOLDER_TAG).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Unable to load “Fixture chart”").assertDoesNotExist()
+        assertEquals(2, client.requests)
+    }
+
     @Test fun tooLargeState() {
         content(HtmlRenderState.TooLarge)
         compose.onNodeWithText("“Fixture chart” is too large to preview").assertExists()

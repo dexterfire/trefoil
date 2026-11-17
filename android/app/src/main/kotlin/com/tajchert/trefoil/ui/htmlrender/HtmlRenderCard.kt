@@ -42,6 +42,7 @@ internal sealed interface HtmlRenderState {
 
 internal const val HTML_RENDER_PLACEHOLDER_TAG = "html-render-placeholder"
 internal const val HTML_RENDER_WEBVIEW_TAG = "html-render-webview"
+private const val MAX_NOT_CURRENT_RETRIES = 2
 
 /**
  * Inline thread row for an agent `html_render` page. Reads environment/thread/loader from LocalFileDownloadUi.
@@ -61,6 +62,9 @@ internal fun HtmlRenderCard(reference: HtmlRenderReference, modifier: Modifier =
     }
     var attempt by remember(reference, environment, thread, loader) { mutableIntStateOf(0) }
     var failedAttempt by remember(reference, environment, thread, loader) { mutableIntStateOf(-1) }
+    // A connection blink shorter than a recomposition can make load() answer NotCurrent while canDownload never changed.
+    val canDownloadNow by rememberUpdatedState(ui.canDownload)
+    var notCurrentRetries by remember(reference, environment, thread, loader) { mutableIntStateOf(0) }
     // Leaving the thread disposes this effect, which cancels the transfer. Failures wait for an explicit Retry.
     LaunchedEffect(reference, environment, thread, loader, ui.canDownload, attempt) {
         if (loader == null || environment == null || thread == null) return@LaunchedEffect
@@ -71,7 +75,11 @@ internal fun HtmlRenderCard(reference: HtmlRenderReference, modifier: Modifier =
         state = HtmlRenderState.Loading
         state = when (val result = loader.load(reference, environment, thread)) {
             is HtmlRenderFetch.Ready -> HtmlRenderState.Ready(result.html)
-            HtmlRenderFetch.NotCurrent -> HtmlRenderState.Offline
+            HtmlRenderFetch.NotCurrent -> {
+                // Rerun once or twice (bounded) if the connection is back; otherwise Offline offers Retry.
+                if (canDownloadNow && notCurrentRetries < MAX_NOT_CURRENT_RETRIES) { notCurrentRetries++; attempt++ }
+                HtmlRenderState.Offline
+            }
             HtmlRenderFetch.TooLarge -> HtmlRenderState.TooLarge
             HtmlRenderFetch.Failed -> HtmlRenderState.Failed.also { failedAttempt = attempt }
         }
@@ -165,7 +173,9 @@ internal fun HtmlRenderCardContent(
                     HtmlRenderState.Loading -> Box(Modifier.fillMaxWidth().height(fallback.dp), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator(Modifier.size(20.dp), color = c.muted, strokeWidth = 2.dp)
                     }
-                    HtmlRenderState.Offline -> StateMessage("Reconnect to load “${reference.title}”")
+                    HtmlRenderState.Offline -> StateMessage("Reconnect to load “${reference.title}”") {
+                        if (canRetry) TextButton(onClick = onRetry) { Text("Retry", style = TrefoilType.meta) }
+                    }
                     HtmlRenderState.TooLarge -> StateMessage("“${reference.title}” is too large to preview")
                     HtmlRenderState.Failed -> StateMessage("Unable to load “${reference.title}”") {
                         if (canRetry) TextButton(onClick = onRetry) { Text("Retry", style = TrefoilType.meta) }
