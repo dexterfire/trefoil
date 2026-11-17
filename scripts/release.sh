@@ -50,8 +50,15 @@ CUR_NAME="$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' "$GRADLE_FILE")"
 NEW_CODE=$((CUR_CODE + 1))
 echo "Version $CUR_NAME ($CUR_CODE) -> $VERSION ($NEW_CODE)"
 
-revert() { git -C "$ROOT" checkout -- android/app/build.gradle.kts 2>/dev/null || true; }
-if [ "$CHECK" = 1 ]; then trap revert EXIT; fi
+# Revert the bump on any exit (dry run, failed gate, Ctrl-C) until the release commit exists.
+COMMITTED=0
+revert() {
+  [ "$COMMITTED" = 0 ] || return 0
+  git -C "$ROOT" checkout -- android/app/build.gradle.kts 2>/dev/null || true
+}
+trap revert EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Version bump
 sed -i.bak "s/versionCode = $CUR_CODE;/versionCode = $NEW_CODE;/; s/versionName = \"$CUR_NAME\"/versionName = \"$VERSION\"/" "$GRADLE_FILE"
@@ -83,6 +90,7 @@ cp "$OUT/app-release.apk" "$OUT/trefoil-$VERSION.apk"
 (cd "$OUT" && shasum -a 256 "trefoil-$VERSION.apk" > "trefoil-$VERSION.apk.sha256")
 git add android/app/build.gradle.kts
 git commit -m "chore(release): $VERSION" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+COMMITTED=1
 git tag "$TAG"
 git push origin main
 git push origin "$TAG"
