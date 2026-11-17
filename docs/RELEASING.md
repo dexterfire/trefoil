@@ -137,6 +137,44 @@ gh release create v0.1.0 trefoil-0.1.0.apk trefoil-0.1.0.apk.sha256 --repo tajch
 Adapt the version and asset paths for future releases. Only upload the public APK
 and checksum; signing credentials stay outside Git.
 
+### Scripted release
+
+`scripts/release.sh [--check] --notes FILE <x.y.z>` runs the steps above in one go. Before it starts, write the
+paragraph for the new version in this file and the release notes file, and commit both: the tree must be clean.
+`--notes FILE` is required for a real release (the path is resolved before the script changes directory).
+
+The script checks, in order:
+
+- `android/keystore.properties`, the Android SDK, `apksigner` and `gh` are available.
+- A real release runs from `main` with `HEAD == origin/main` (after `git fetch origin main --tags`), and the tag
+  `vX.Y.Z` exists neither locally nor on `origin`.
+- The new version is strictly greater than the current `versionName`, and both `versionName` and `versionCode`
+  (current + 1) land in `android/app/build.gradle.kts`.
+- The gate passes: `:core:model:test :core:ssh:test :core:protocol:test :core:session:test :app:testDebugUnitTest :app:lintRelease :app:assembleRelease`.
+- `apksigner` verifies the APK and its certificate is not the debug one.
+
+It then commits `chore(release): X.Y.Z`, tags, runs `git push --atomic origin main vX.Y.Z` and
+`gh release create` with the APK and its SHA-256 file. If anything fails before the release commit exists, the
+version bump is reverted automatically.
+
+`--check` is a dry run: it bumps, runs the gate and the signature check, then reverts. It can run on any branch,
+does not require `HEAD == origin/main`, and never commits, tags, pushes or publishes. Run it first.
+
+The script does not run `:app:connectedDebugAndroidTest` (instrumented HTML render tests) or screenshot validation
+(`:app:testDebugScreenshotTestDefaultTestSuite`). Run both manually before releasing, and smoke-test the signed
+APK on a device as described above.
+
+Recovery after a failed publish:
+
+- If the gate or signature check failed, the bump was reverted; fix the cause and re-run.
+- If the push failed (the push is atomic, so neither `main` nor the tag moved on the remote), delete the local tag
+  (`git tag -d vX.Y.Z`), undo the release commit (`git reset --hard HEAD~1`; it only touches
+  `android/app/build.gradle.kts`), fix the cause (for example `git pull --rebase`), and run the script again.
+- If only `gh release create` failed, `main` and the tag are already pushed. Re-run the exact `gh release create`
+  command the script prints; the APK and checksum are in `android/app/build/outputs/apk/release/`.
+
+The manual flow above remains the fallback if the script cannot be used.
+
 Release `0.2.0` (`versionCode = 2`) adds SSH onboarding. Verify `:core:model:test` and `:core:ssh:test` as well when releasing SSH
 changes. Keep the same release keystore for in-place upgrades.
 
