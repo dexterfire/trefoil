@@ -1,6 +1,9 @@
 package com.tajchert.trefoil.ui.htmlrender
 
 import java.net.InetAddress
+import java.net.Proxy
+import java.net.ServerSocket
+import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
@@ -462,6 +465,64 @@ class HtmlRenderSubresourcesTest {
         assertEquals(0, budget.inUse)
         sessions.forEach(HtmlRenderFetchSession::close)
         assertEquals(0, budget.inUse)
+    }
+
+    /** A plain TCP listener on loopback that counts connection attempts; a refused client never reaches it. */
+    private class LoopbackListener : AutoCloseable {
+        private val socket = ServerSocket(0, 50, InetAddress.getLoopbackAddress()).apply { soTimeout = 200 }
+        val port get() = socket.localPort
+        val accepted = AtomicInteger()
+        @Volatile private var open = true
+        private val acceptor = thread {
+            while (open) {
+                try { socket.accept().close(); accepted.incrementAndGet() } catch (_: SocketTimeoutException) {} catch (_: java.io.IOException) { return@thread }
+            }
+        }
+        override fun close() { open = false; socket.close(); acceptor.join(2_000) }
+    }
+
+    @Test fun productionClientKeepsItsHardenedConfiguration() {
+        val client = createHtmlRenderHttpClient()
+        assertSame(Proxy.NO_PROXY, client.proxy)
+        assertTrue(client.dns is PublicOnlyDns)
+        assertFalse(client.followRedirects)
+        assertFalse(client.followSslRedirects)
+        assertSame(okhttp3.CookieJar.NO_COOKIES, client.cookieJar)
+        assertNull(client.cache)
+        assertTrue(client.interceptors.isEmpty())
+        assertEquals(listOf<Any>(PublicPeerInterceptor, HtmlRenderGateInterceptor), client.networkInterceptors)
+        assertEquals(10_000, client.connectTimeoutMillis)
+        assertEquals(15_000, client.readTimeoutMillis)
+        assertEquals(10_000, client.writeTimeoutMillis)
+        assertEquals(30_000, client.callTimeoutMillis)
+    }
+
+    @Test fun productionClientRefusesANameThatResolvesToLoopback() {
+        LoopbackListener().use { listener ->
+            val loopback = object : Dns { override fun lookup(hostname: String) = listOf(InetAddress.getLoopbackAddress()) }
+            val client = createHtmlRenderHttpClient(loopback)
+            val fetcher = HtmlRenderSubresourceFetcher(client, budget = HtmlRenderByteBudget(1024 * 1024))
+            // A public-looking name that rebinds to 127.0.0.1, and one that resolves to a private LAN host.
+            assertEquals(502, fetcher.fetch("https://rebind.example:${listener.port}/x.js", emptyMap()) { true }.status)
+            val lan = createHtmlRenderHttpClient(object : Dns { override fun lookup(hostname: String) = listOf(InetAddress.getByName("192.168.1.10")) })
+            assertEquals(502, HtmlRenderSubresourceFetcher(lan).fetch("https://rebind.example/x.js", emptyMap()) { true }.status)
+            // Private-looking names are refused even if the resolver answers with a public address.
+            val publicAnswer = createHtmlRenderHttpClient(object : Dns { override fun lookup(hostname: String) = listOf(InetAddress.getByName("93.184.216.34")) })
+            assertEquals(502, HtmlRenderSubresourceFetcher(publicAnswer).fetch("https://localhost:${listener.port}/x.js", emptyMap()) { true }.status)
+            // A request outside the fetcher carries no hop gate and DNS still stops it before any connection.
+            assertThrows(java.io.IOException::class.java) { client.newCall(Request.Builder().url("https://rebind.example:${listener.port}/").build()).execute() }
+            Thread.sleep(300)
+            assertEquals(0, listener.accepted.get())
+        }
+    }
+
+    @Test fun productionClientNeverCompletesARequestToALoopbackLiteral() {
+        LoopbackListener().use { listener ->
+            // An IP literal skips DNS entirely; it must still never yield a response (TLS or the peer check stops it).
+            val result = HtmlRenderSubresourceFetcher(createHtmlRenderHttpClient()).fetch("https://127.0.0.1:${listener.port}/x.js", emptyMap()) { true }
+            assertEquals(502, result.status)
+            assertEquals(0, result.body.size)
+        }
     }
 
     private val cssBase = "https://cdn.example/v2/css/style.css".toHttpUrl()

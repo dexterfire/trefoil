@@ -88,7 +88,7 @@ internal class PublicOnlyDns(private val delegate: Dns = Dns.SYSTEM) : Dns {
 }
 
 /** Last line of defence: the socket actually connected must be a public address over TLS. */
-private object PublicPeerInterceptor : Interceptor {
+internal object PublicPeerInterceptor : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         val peer = chain.connection()?.route()?.socketAddress?.address
         if (peer == null || HtmlRenderAddresses.isNonPublic(peer) || !chain.request().url.isHttps) throw IOException("Blocked peer")
@@ -213,6 +213,27 @@ internal fun htmlRenderPassedResponseHeaders(headers: Headers): Map<String, Stri
 }
 
 /**
+ * The production client for agent-page subresources: no proxy, a [PublicOnlyDns] over [systemDns], no
+ * redirects, cookies or cache, and the public-peer and hop-gate network interceptors. Only [systemDns] is
+ * injectable, so tests can drive the real client's DNS filter without a network.
+ */
+internal fun createHtmlRenderHttpClient(systemDns: Dns = Dns.SYSTEM): OkHttpClient =
+    OkHttpClient.Builder()
+        .proxy(Proxy.NO_PROXY)
+        .dns(PublicOnlyDns(systemDns))
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .cookieJar(CookieJar.NO_COOKIES)
+        .cache(null)
+        .addNetworkInterceptor(PublicPeerInterceptor)
+        .addNetworkInterceptor(HtmlRenderGateInterceptor)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .writeTimeout(10, TimeUnit.SECONDS)
+        .callTimeout(30, TimeUnit.SECONDS)
+        .build()
+
+/**
  * Fetches an agent page's subresources for the WebView, so every hop passes [HtmlRenderPolicy]: GET over
  * https only, manual bounded redirects with the policy re-checked per hop, public addresses only (DNS and
  * connected peer), no cookies, cache, auth, or proxy, and a size cap. The hop decision is re-read after
@@ -335,22 +356,7 @@ internal class HtmlRenderSubresourceFetcher(
         /** Shared for connection reuse; never shares a cookie jar, cache, interceptors, or pool with the T3 client. */
         val shared by lazy { HtmlRenderSubresourceFetcher() }
 
-        private val sharedClient: OkHttpClient by lazy {
-            OkHttpClient.Builder()
-                .proxy(Proxy.NO_PROXY)
-                .dns(PublicOnlyDns())
-                .followRedirects(false)
-                .followSslRedirects(false)
-                .cookieJar(CookieJar.NO_COOKIES)
-                .cache(null)
-                .addNetworkInterceptor(PublicPeerInterceptor)
-                .addNetworkInterceptor(HtmlRenderGateInterceptor)
-                .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(15, TimeUnit.SECONDS)
-                .writeTimeout(10, TimeUnit.SECONDS)
-                .callTimeout(30, TimeUnit.SECONDS)
-                .build()
-        }
+        private val sharedClient: OkHttpClient by lazy { createHtmlRenderHttpClient() }
     }
 }
 
