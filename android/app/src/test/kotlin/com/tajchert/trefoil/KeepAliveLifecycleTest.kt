@@ -25,7 +25,8 @@ import java.time.Duration
 @Config(sdk = [35])
 @LooperMode(LooperMode.Mode.PAUSED)
 class KeepAliveLifecycleTest {
-    private class FakeControl(var accept: Boolean = true) : KeepAliveControl {
+    /** [async]: like the real service, an accepted first start is only `starting` until [finishStart] reports startForeground. */
+    private class FakeControl(var accept: Boolean = true, var async: Boolean = false) : KeepAliveControl {
         val starts = mutableListOf<String>()
         val reconnecting = mutableListOf<Boolean>()
         var stops = 0
@@ -33,10 +34,14 @@ class KeepAliveLifecycleTest {
         override val starting = MutableStateFlow(false)
         override fun start(context: Context, machineName: String, reconnecting: Boolean): Boolean {
             starts += machineName; this.reconnecting += reconnecting
-            if (accept) running.value = true
+            if (accept) { if (async && !running.value) starting.value = true else running.value = true }
             return accept
         }
         override fun stop(context: Context) { stops++; running.value = false }
+        fun finishStart(inForeground: Boolean) {
+            check(starting.value)
+            running.value = inForeground; starting.value = false
+        }
     }
 
     private lateinit var model: TrefoilViewModel
@@ -246,6 +251,58 @@ class KeepAliveLifecycleTest {
         assertTrue(model.keepAliveActive.value)
         control.starting.value = true; control.running.value = false; advance(0)
         assertTrue(model.keepAliveActive.value)
+    }
+
+    @Test fun startAcceptedThenForegroundedKeepsTheService() {
+        control.async = true
+        enableKeepAlive()
+        assertTrue(model.keepAliveActive.value)
+        assertTrue(control.starting.value)
+        control.finishStart(inForeground = true); advance(0)
+        assertTrue(model.keepAliveActive.value)
+        model.pause(); advance(BACKGROUND_CONNECTION_GRACE_MS + 1_000)
+        assertEquals(ConnectionStatus.Connected, model.state.value.connection)
+        assertEquals(1, control.starts.size)
+    }
+
+    @Test fun startRefusedAfterItWasAcceptedCountsAsRefused() {
+        control.async = true
+        enableKeepAlive()
+        assertTrue(model.keepAliveActive.value)
+        // startForeground fails inside the service: the start was accepted, but the service ends without running.
+        control.finishStart(inForeground = false); advance(0)
+        assertFalse(model.keepAliveActive.value)
+        // Not retried while this connection lasts.
+        model.pause(); advance(1_000); model.resume(); advance(0)
+        assertEquals(1, control.starts.size)
+        assertFalse(model.keepAliveActive.value)
+    }
+
+    @Test fun startRefusedAfterItWasAcceptedInTheBackgroundRestoresTheGraceDisconnect() {
+        control.async = true
+        enableKeepAlive()
+        model.pause(); advance(30_000)
+        // A pending start keeps the connection like a running service.
+        assertEquals(ConnectionStatus.Connected, model.state.value.connection)
+        control.finishStart(inForeground = false); advance(0)
+        assertFalse(model.keepAliveActive.value)
+        advance(BACKGROUND_CONNECTION_GRACE_MS - 1)
+        assertEquals(ConnectionStatus.Connected, model.state.value.connection)
+        advance(1)
+        assertEquals(ConnectionStatus.Disconnected, model.state.value.connection)
+    }
+
+    @Test fun clearingTheViewModelStopsARunningService() {
+        enableKeepAlive()
+        assertTrue(model.keepAliveActive.value)
+        TrefoilViewModel::class.java.getDeclaredMethod("onCleared").apply { isAccessible = true }.invoke(model)
+        assertEquals(1, control.stops)
+        assertFalse(model.keepAliveActive.value)
+    }
+
+    @Test fun clearingTheViewModelWithoutTheServiceStopsNothing() {
+        TrefoilViewModel::class.java.getDeclaredMethod("onCleared").apply { isAccessible = true }.invoke(model)
+        assertEquals(0, control.stops)
     }
 
     @Test fun disconnectWhileTheConnectionLockIsHeldNeverRestartsTheService() {

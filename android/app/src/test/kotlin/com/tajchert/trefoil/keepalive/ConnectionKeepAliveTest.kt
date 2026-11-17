@@ -126,6 +126,35 @@ class ConnectionKeepAliveTest {
         assertFalse(ConnectionKeepAlive.running.value)
     }
 
+    @Test fun refusedStartForegroundStopsTheServiceItself() {
+        for (refusal in listOf(IllegalStateException("not allowed"), SecurityException("denied"))) {
+            ConnectionKeepAlive.reset()
+            val controller = Robolectric.buildService(ConnectionKeepAliveService::class.java, requestStart("Workstation")).create()
+            shadowOf(controller.get()).setThrowInStartForeground(refusal)
+            controller.startCommand(0, 1)
+            assertTrue(shadowOf(controller.get()).isStoppedBySelf)
+            assertNull(shadowOf(controller.get()).lastForegroundNotification)
+            assertFalse(ConnectionKeepAlive.running.value)
+            assertFalse(ConnectionKeepAlive.starting.value)
+            controller.destroy()
+        }
+    }
+
+    @Test fun refusedStartForegroundKeepsTheServiceForANewerPendingStart() {
+        val first = requestStart("One")
+        val second = requestStart("Two")
+        val controller = Robolectric.buildService(ConnectionKeepAliveService::class.java, first).create()
+        shadowOf(controller.get()).setThrowInStartForeground(IllegalStateException("not allowed"))
+        controller.startCommand(0, 1)
+        // The newer start still needs its own startForeground; stopping now would kill the app.
+        assertFalse(shadowOf(controller.get()).isStoppedBySelf)
+        assertTrue(ConnectionKeepAlive.starting.value)
+        shadowOf(controller.get()).setThrowInStartForeground(null)
+        controller.withIntent(second).startCommand(0, 2)
+        assertFalse(shadowOf(controller.get()).isStoppedBySelf)
+        assertTrue(ConnectionKeepAlive.running.value)
+    }
+
     @Test fun startNeverThrowsWhenTheOsRefuses() {
         val refusing = object : android.content.ContextWrapper(app) {
             override fun startForegroundService(service: android.content.Intent?) = throw IllegalStateException("not allowed")
