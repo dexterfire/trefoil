@@ -10,6 +10,7 @@ import java.util.Collections
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import okhttp3.Call
@@ -53,7 +54,11 @@ internal object HtmlRenderAddresses {
                 address.isMulticastAddress || (bytes[0] and 0xFE) == 0xFC ||
                 // IPv4-compatible/mapped (::/96, ::ffff:0:0/96) and NAT64 (64:ff9b::/96) carry an IPv4 address.
                 (bytes.take(10).all { it == 0 } && (bytes[10] == bytes[11] && (bytes[10] == 0 || bytes[10] == 0xFF)) && isNonPublicIpv4(embedded)) ||
-                (bytes.take(12) == NAT64_PREFIX && isNonPublicIpv4(embedded))
+                (bytes.take(12) == NAT64_PREFIX && isNonPublicIpv4(embedded)) ||
+                // NAT64 local-use (64:ff9b:1::/48, RFC 8215) is never globally routable and can translate to any
+                // address, so all of it is refused. 6to4 (2002::/16) carries its IPv4 address in bytes 2..5.
+                bytes.take(6) == NAT64_LOCAL_USE_PREFIX ||
+                (bytes[0] == 0x20 && bytes[1] == 0x02 && isNonPublicIpv4(bytes.subList(2, 6)))
         }
         else -> true
     }
@@ -66,6 +71,7 @@ internal object HtmlRenderAddresses {
     }
 
     private val NAT64_PREFIX = listOf(0x00, 0x64, 0xFF, 0x9B, 0, 0, 0, 0, 0, 0, 0, 0)
+    private val NAT64_LOCAL_USE_PREFIX = listOf(0x00, 0x64, 0xFF, 0x9B, 0x00, 0x01)
 }
 
 /**
@@ -82,7 +88,7 @@ internal class PublicOnlyDns(private val delegate: Dns = Dns.SYSTEM) : Dns {
 }
 
 /** Last line of defence: the socket actually connected must be a public address over TLS. */
-private object PublicPeerInterceptor : Interceptor {
+internal object PublicPeerInterceptor : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         val peer = chain.connection()?.route()?.socketAddress?.address
         if (peer == null || HtmlRenderAddresses.isNonPublic(peer) || !chain.request().url.isHttps) throw IOException("Blocked peer")
@@ -105,6 +111,58 @@ internal object HtmlRenderGateInterceptor : Interceptor {
         val gate = chain.request().tag(HtmlRenderHopGate::class.java)
         if (gate == null || !gate.allows()) throw HtmlRenderGateClosed()
         return chain.proceed(chain.request())
+    }
+}
+
+/**
+ * A byte budget shared by every page's fetches (the process-wide [shared] one by default): a fetch holds a
+ * [Reservation] for as long as it buffers a body, and over budget the fetch fails cleanly instead of growing
+ * memory further. Reservations are released when the fetch ends, whatever the outcome.
+ */
+internal class HtmlRenderByteBudget(val limit: Long = DEFAULT_LIMIT) {
+    private val used = AtomicLong()
+
+    /** Bytes currently reserved across all open reservations. */
+    val inUse: Long get() = used.get()
+
+    fun reservation() = Reservation()
+
+    private fun add(bytes: Long): Boolean {
+        while (true) {
+            val current = used.get()
+            if (bytes > limit - current) return false
+            if (used.compareAndSet(current, current + bytes)) return true
+        }
+    }
+
+    inner class Reservation internal constructor() {
+        private var held = 0L
+        private var released = false
+
+        /** Raises the reservation to at least [total] bytes; false (nothing changes) when over budget or released. */
+        @Synchronized
+        fun growTo(total: Long): Boolean {
+            if (released) return false
+            if (total <= held) return true
+            if (!add(total - held)) return false
+            held = total
+            return true
+        }
+
+        /** Gives every held byte back; safe to call more than once. */
+        @Synchronized
+        fun release() {
+            if (released) return
+            released = true
+            used.addAndGet(-held)
+            held = 0
+        }
+    }
+
+    companion object {
+        const val DEFAULT_LIMIT = 32L * 1024 * 1024
+
+        val shared by lazy { HtmlRenderByteBudget() }
     }
 }
 
@@ -155,6 +213,27 @@ internal fun htmlRenderPassedResponseHeaders(headers: Headers): Map<String, Stri
 }
 
 /**
+ * The production client for agent-page subresources: no proxy, a [PublicOnlyDns] over [systemDns], no
+ * redirects, cookies or cache, and the public-peer and hop-gate network interceptors. Only [systemDns] is
+ * injectable, so tests can drive the real client's DNS filter without a network.
+ */
+internal fun createHtmlRenderHttpClient(systemDns: Dns = Dns.SYSTEM): OkHttpClient =
+    OkHttpClient.Builder()
+        .proxy(Proxy.NO_PROXY)
+        .dns(PublicOnlyDns(systemDns))
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .cookieJar(CookieJar.NO_COOKIES)
+        .cache(null)
+        .addNetworkInterceptor(PublicPeerInterceptor)
+        .addNetworkInterceptor(HtmlRenderGateInterceptor)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .writeTimeout(10, TimeUnit.SECONDS)
+        .callTimeout(30, TimeUnit.SECONDS)
+        .build()
+
+/**
  * Fetches an agent page's subresources for the WebView, so every hop passes [HtmlRenderPolicy]: GET over
  * https only, manual bounded redirects with the policy re-checked per hop, public addresses only (DNS and
  * connected peer), no cookies, cache, auth, or proxy, and a size cap. The hop decision is re-read after
@@ -166,6 +245,7 @@ internal class HtmlRenderSubresourceFetcher(
     http: OkHttpClient? = null,
     private val maxBytes: Long = MAX_BYTES,
     private val maxRedirects: Int = MAX_REDIRECTS,
+    private val budget: HtmlRenderByteBudget = HtmlRenderByteBudget.shared,
 ) {
     private val client by lazy { http ?: sharedClient }
 
@@ -212,22 +292,48 @@ internal class HtmlRenderSubresourceFetcher(
         return HtmlRenderResource.blocked()
     }
 
+    /** Buffers the body under a [budget] reservation that is released on every path, handed-over bytes included. */
     private fun read(response: Response, requested: HttpUrl, final: HttpUrl): HtmlRenderResource {
+        val reservation = budget.reservation()
+        try {
+            return readBuffered(response, requested, final, reservation)
+        } finally {
+            reservation.release()
+        }
+    }
+
+    private fun readBuffered(
+        response: Response,
+        requested: HttpUrl,
+        final: HttpUrl,
+        reservation: HtmlRenderByteBudget.Reservation,
+    ): HtmlRenderResource {
         val code = response.code
         // No Range was sent, so a partial response cannot be passed on as the whole resource.
         if (code !in 100..599 || code in 300..399 || code == 206) return HtmlRenderResource.failed()
         val body = response.body ?: return HtmlRenderResource.failed()
-        if (body.contentLength() > maxBytes) return HtmlRenderResource.failed()
+        val declared = body.contentLength()
+        if (declared > maxBytes) return HtmlRenderResource.failed()
+        if (declared > 0 && !reservation.growTo(declared)) return HtmlRenderResource.failed()
         val buffer = Buffer()
         val source = body.source()
-        while (source.read(buffer, 8_192) != -1L) {
-            if (buffer.size > maxBytes) return HtmlRenderResource.failed()
+        // Reserved before each chunk is buffered, so the budget is never overshot by more than one chunk.
+        var endOfBody = false
+        while (!endOfBody) {
+            if (!reservation.growTo(buffer.size + CHUNK_BYTES)) return HtmlRenderResource.failed()
+            if (source.read(buffer, CHUNK_BYTES) == -1L) endOfBody = true
+            else if (buffer.size > maxBytes) return HtmlRenderResource.failed()
         }
         val type = body.contentType()
         val reason = response.message.filter { it in ' '..'~' }.take(64).trim().ifEmpty { if (code < 400) "OK" else "Error" }
         val mimeType = type?.let { "${it.type}/${it.subtype}".lowercase() }
+        // The buffer and the copy made from it are both live.
+        val size = buffer.size
+        if (!reservation.growTo(size * 2)) return HtmlRenderResource.failed()
         var bytes = buffer.readByteArray()
         if (final != requested && mimeType == "text/css") {
+            // The rebased stylesheet is built next to the original.
+            if (!reservation.growTo(size * 3)) return HtmlRenderResource.failed()
             bytes = htmlRenderRebaseCssBytes(bytes, type?.charset(), final)
             if (bytes.size > maxBytes) return HtmlRenderResource.failed()
         }
@@ -245,26 +351,12 @@ internal class HtmlRenderSubresourceFetcher(
     companion object {
         const val MAX_BYTES = 10L * 1024 * 1024
         const val MAX_REDIRECTS = 5
+        private const val CHUNK_BYTES = 8_192L
 
         /** Shared for connection reuse; never shares a cookie jar, cache, interceptors, or pool with the T3 client. */
         val shared by lazy { HtmlRenderSubresourceFetcher() }
 
-        private val sharedClient: OkHttpClient by lazy {
-            OkHttpClient.Builder()
-                .proxy(Proxy.NO_PROXY)
-                .dns(PublicOnlyDns())
-                .followRedirects(false)
-                .followSslRedirects(false)
-                .cookieJar(CookieJar.NO_COOKIES)
-                .cache(null)
-                .addNetworkInterceptor(PublicPeerInterceptor)
-                .addNetworkInterceptor(HtmlRenderGateInterceptor)
-                .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(15, TimeUnit.SECONDS)
-                .writeTimeout(10, TimeUnit.SECONDS)
-                .callTimeout(30, TimeUnit.SECONDS)
-                .build()
-        }
+        private val sharedClient: OkHttpClient by lazy { createHtmlRenderHttpClient() }
     }
 }
 
