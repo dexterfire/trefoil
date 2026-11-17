@@ -20,21 +20,42 @@ import androidx.webkit.WebViewFeature
 import com.tajchert.trefoil.core.model.HTML_RENDER_MAX_FIT_HEIGHT
 import com.tajchert.trefoil.core.model.HTML_RENDER_MIN_HEIGHT
 import com.tajchert.trefoil.core.model.isPrivateLanAddress
+import com.tajchert.trefoil.ui.LocalFileDownloadUi
 import java.io.ByteArrayInputStream
 import java.net.InetAddress
 import java.net.URI
 import java.security.MessageDigest
 
-/** Synthetic origin for in-memory pages: `.invalid` never resolves, so nothing here reaches the network. */
+/**
+ * Suffix of the synthetic page origins: `.invalid` never resolves, so nothing here reaches the network. The bare
+ * host was the shared origin of builds before per-page origins; its leftover storage is deleted.
+ */
 internal const val HTML_RENDER_HOST = "html-render.trefoil.invalid"
-internal const val HTML_RENDER_ORIGIN = "https://$HTML_RENDER_HOST"
 internal const val HTML_RENDER_BRIDGE = "TrefoilHtmlRender"
 
-/** `https://html-render.trefoil.invalid/<sha256(attachmentId)[0..16]>/index.html`, without a fragment. */
-internal fun htmlRenderDocumentUrl(attachmentId: String): String {
-    val digest = MessageDigest.getInstance("SHA-256").digest(attachmentId.toByteArray(Charsets.UTF_8))
-    return "$HTML_RENDER_ORIGIN/${digest.take(8).joinToString("") { "%02x".format(it) }}/index.html"
+/** The synthetic host itself or any per-page subdomain of it. */
+internal fun isHtmlRenderHost(normalizedHost: String): Boolean =
+    normalizedHost == HTML_RENDER_HOST || normalizedHost.endsWith(".$HTML_RENDER_HOST")
+
+/**
+ * `https://<sha256(environment, thread, attachment)[0..16]>.html-render.trefoil.invalid`: one origin per page,
+ * so storage, BroadcastChannel and other same-origin state never cross pages, threads or environments. The
+ * 32-hex label is DNS-safe and reveals none of the ids.
+ */
+internal fun htmlRenderOrigin(environmentId: String, threadId: String, attachmentId: String): String {
+    val sha = MessageDigest.getInstance("SHA-256")
+    // Length-prefixed, so ("a", "bc") and ("ab", "c") never collide.
+    listOf(environmentId, threadId, attachmentId).forEach { part ->
+        val bytes = part.toByteArray(Charsets.UTF_8)
+        sha.update("${bytes.size}:".toByteArray(Charsets.UTF_8))
+        sha.update(bytes)
+    }
+    return "https://${sha.digest().take(16).joinToString("") { "%02x".format(it) }}.$HTML_RENDER_HOST"
 }
+
+/** `<per-page origin>/index.html`, without a fragment. */
+internal fun htmlRenderDocumentUrl(environmentId: String, threadId: String, attachmentId: String): String =
+    "${htmlRenderOrigin(environmentId, threadId, attachmentId)}/index.html"
 
 /**
  * Reports the page height through the origin-restricted web message listener, with T3's measure: the
@@ -55,8 +76,33 @@ internal const val HTML_RENDER_HEIGHT_SCRIPT = "<script>(function(){var p=window
 internal const val HTML_RENDER_CSP = "connect-src https: data: blob:; form-action 'none'; object-src 'none'; " +
     "frame-src 'none'; child-src 'none'; worker-src 'none'"
 
-/** The appended height script is the only change to the agent's (already bootstrapped) document. */
-internal fun htmlRenderDocument(html: String): ByteArray = (html + HTML_RENDER_HEIGHT_SCRIPT).toByteArray(Charsets.UTF_8)
+/**
+ * Removes WebRTC and WebTransport before any page script runs: ICE sends STUN/TURN to arbitrary (LAN) hosts and
+ * WebTransport speaks QUIC, and neither passes `shouldInterceptRequest` or the CSP. The globals become undefined
+ * and non-configurable, and same-origin iframe windows reached through `contentWindow`/`contentDocument` are
+ * locked the same way (document-start injection also runs in frames by itself).
+ */
+internal const val HTML_RENDER_NO_RTC_SCRIPT = "(function(){var n=['RTCPeerConnection','webkitRTCPeerConnection','WebTransport'];" +
+    "function l(w){if(w)for(var i=0;i<n.length;i++){try{Object.defineProperty(w,n[i],{value:undefined,writable:false,enumerable:false,configurable:false});}catch(e){}}return w;}" +
+    "l(window);var p=window.HTMLIFrameElement&&HTMLIFrameElement.prototype;if(!p)return;" +
+    "var w=Object.getOwnPropertyDescriptor(p,'contentWindow'),d=Object.getOwnPropertyDescriptor(p,'contentDocument');" +
+    "if(w&&w.get&&w.configurable)Object.defineProperty(p,'contentWindow',{get:function(){return l(w.get.call(this));},enumerable:w.enumerable,configurable:false});" +
+    "if(d&&d.get&&d.configurable)Object.defineProperty(p,'contentDocument',{get:function(){var x=d.get.call(this);if(x)l(x.defaultView);return x;},enumerable:d.enumerable,configurable:false});})();"
+
+private val HTML_RENDER_DOCTYPE = Regex("^\\uFEFF?\\s*(?:<!--.*?-->\\s*)*<!doctype[^>]*>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+
+/**
+ * The served bytes: the agent's (already bootstrapped) document plus the appended height script. Without
+ * document-start injection ([rtcLockdown]), [HTML_RENDER_NO_RTC_SCRIPT] goes first as an inline script, after
+ * any doctype so the page keeps standards mode.
+ */
+internal fun htmlRenderDocument(html: String, rtcLockdown: Boolean): ByteArray {
+    val body = if (!rtcLockdown) html else {
+        val doctypeEnd = HTML_RENDER_DOCTYPE.find(html)?.range?.last?.plus(1) ?: 0
+        html.substring(0, doctypeEnd) + "<script>$HTML_RENDER_NO_RTC_SCRIPT</script>" + html.substring(doctypeEnd)
+    }
+    return (body + HTML_RENDER_HEIGHT_SCRIPT).toByteArray(Charsets.UTF_8)
+}
 
 /** Parses a height message from the page; anything else is ignored. */
 internal fun htmlRenderReportedHeight(data: String?): Float? =
@@ -64,13 +110,21 @@ internal fun htmlRenderReportedHeight(data: String?): Float? =
         ?.coerceIn(HTML_RENDER_MIN_HEIGHT.toFloat(), HTML_RENDER_MAX_FIT_HEIGHT.toFloat())
 
 /**
- * Request policy for an agent page. Only the exact in-memory document is served at the synthetic origin.
+ * Request policy for an agent page. Only the exact in-memory document is served at its per-page synthetic
+ * origin; no synthetic host (its own or another page's) is ever a subresource or external link.
  * Subresources are GET `https:` to public-looking hosts (plus `data:`/`blob:`); loopback, `localhost`,
  * mDNS, single-label names, private/link-local/CGNAT/ULA literals, and the environment's current hosts are
  * refused. Remote ones are fetched by [HtmlRenderSubresourceFetcher] only while [network] is current, with
  * this policy re-checked on every redirect hop and DNS answers limited to public addresses.
  */
 internal class HtmlRenderPolicy(val documentUrl: String, private val network: HtmlRenderNetworkAccess) {
+    /** `https://<hash>.html-render.trefoil.invalid`, the only origin whose messages this page accepts. */
+    val origin: String = runCatching { URI(documentUrl) }.getOrNull().let { uri ->
+        require(uri != null && uri.scheme == "https" && uri.host?.endsWith(".$HTML_RENDER_HOST") == true && uri.port == -1 &&
+            uri.rawUserInfo == null && uri.rawPath == "/index.html" && uri.rawQuery == null && uri.rawFragment == null) { "not an html render document" }
+        "https://${uri.host}"
+    }
+
     /** The WebView passes the loaded URL with its `#t3-theme=` fragment, so the fragment is ignored here. */
     fun allowsMainFrame(url: String, method: String?, redirect: Boolean): Boolean =
         url.substringBefore('#') == documentUrl && method.equals("GET", ignoreCase = true) && !redirect
@@ -94,14 +148,14 @@ internal class HtmlRenderPolicy(val documentUrl: String, private val network: Ht
         if (!hasGesture) return null
         val uri = runCatching { URI(url) }.getOrNull() ?: return null
         if (uri.scheme?.lowercase() !in setOf("http", "https") || uri.host.isNullOrBlank() || uri.rawUserInfo != null) return null
-        if (normalizeHost(uri.host) == HTML_RENDER_HOST) return null
+        if (isHtmlRenderHost(normalizeHost(uri.host))) return null
         return url
     }
 
     /** Environment hosts are read live, so a route or active base learned after the page opened is refused. */
     fun isBlockedHost(rawHost: String): Boolean {
         val host = normalizeHost(rawHost)
-        if (host.isEmpty() || host == HTML_RENDER_HOST) return true
+        if (host.isEmpty() || isHtmlRenderHost(host)) return true
         if (network.environmentHosts().any { normalizeHost(it) == host }) return true
         return isNonPublicName(host)
     }
@@ -163,7 +217,7 @@ private fun deniedResource() = HtmlRenderResource.blocked().toWebResponse()
 private fun HtmlRenderResource.toWebResponse() = WebResourceResponse(mimeType, encoding, status, reason, headers, ByteArrayInputStream(body))
 
 /**
- * Cookies are never accepted (as in StreamWebView), so `document.cookie` on the shared synthetic origin
+ * Cookies are never accepted (as in StreamWebView), so `document.cookie` on a synthetic origin
  * cannot carry state between pages or environments. Cookies from builds before this rule are dropped once;
  * the app has no web login, so nothing else lives in the jar.
  */
@@ -180,11 +234,48 @@ private object HtmlRenderCookies {
     }
 }
 
+/**
+ * DOM storage and Web SQL are off, but IndexedDB, Cache Storage and similar still work per origin, and every
+ * page has its own origin. A released page's origin is deleted once no live page (inline and full screen share
+ * one) uses it. Once per process, other html render origins left on disk (the shared origin of older builds,
+ * pages lost to process death) are deleted too.
+ */
+private object HtmlRenderStorage {
+    private val live = HashMap<String, Int>()
+    private var swept = false
+
+    @Synchronized fun opened(origin: String) {
+        live[origin] = (live[origin] ?: 0) + 1
+        if (swept) return
+        swept = true
+        runCatching {
+            val storage = WebStorage.getInstance()
+            storage.getOrigins { origins ->
+                origins?.keys?.map { it.toString() }?.filter(::isLeftover)?.forEach { runCatching { storage.deleteOrigin(it) } }
+            }
+        }
+    }
+
+    @Synchronized fun released(origin: String) {
+        val remaining = (live[origin] ?: 1) - 1
+        if (remaining > 0) { live[origin] = remaining; return }
+        live.remove(origin)
+        runCatching { WebStorage.getInstance().deleteOrigin(origin) }
+    }
+
+    @Synchronized private fun isLeftover(origin: String): Boolean {
+        val host = runCatching { URI(origin).host }.getOrNull() ?: return false
+        return isHtmlRenderHost(HtmlRenderPolicy.normalizeHost(host)) && origin.trimEnd('/') !in live
+    }
+}
+
 /** One hardened WebView showing one in-memory page. Not reused: [release] destroys it. */
 @SuppressLint("SetJavaScriptEnabled")
 internal class HtmlRenderPage(
     context: Context,
     html: String,
+    environmentId: String,
+    threadId: String,
     attachmentId: String,
     initialTheme: HtmlRenderTheme,
     private val network: HtmlRenderNetworkAccess,
@@ -192,11 +283,17 @@ internal class HtmlRenderPage(
 ) {
     val webView = WebView(context)
     val root: View
-    val policy = HtmlRenderPolicy(htmlRenderDocumentUrl(attachmentId), network)
+    val policy = HtmlRenderPolicy(htmlRenderDocumentUrl(environmentId, threadId, attachmentId), network)
     var onHeight: (Float) -> Unit = {}
     var onOpenLink: (String) -> Unit = {}
     var onFailure: () -> Unit = {}
-    @Volatile private var documentBytes = htmlRenderDocument(html)
+    /** True when [HTML_RENDER_NO_RTC_SCRIPT] runs at document start; otherwise it is inlined into the document. */
+    private val rtcLockedAtDocumentStart = runCatching {
+        WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT).also { supported ->
+            if (supported) WebViewCompat.addDocumentStartJavaScript(webView, HTML_RENDER_NO_RTC_SCRIPT, setOf(policy.origin))
+        }
+    }.getOrDefault(false)
+    @Volatile private var documentBytes = htmlRenderDocument(html, rtcLockdown = !rtcLockedAtDocumentStart)
     @Volatile private var active = true
     /** This WebView's remote fetches: bounded, tracked, and cancelled on release or loss of context. */
     private val fetches = network.fetcher?.let(::HtmlRenderFetchSession)
@@ -298,8 +395,8 @@ internal class HtmlRenderPage(
         }
         if (!fullScreen) runCatching {
             if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
-                WebViewCompat.addWebMessageListener(webView, HTML_RENDER_BRIDGE, setOf(HTML_RENDER_ORIGIN)) { _, message, sourceOrigin, isMainFrame, _ ->
-                    if (active && isMainFrame && sourceOrigin.toString().trimEnd('/') == HTML_RENDER_ORIGIN) htmlRenderReportedHeight(message.data)?.let { onHeight(it) }
+                WebViewCompat.addWebMessageListener(webView, HTML_RENDER_BRIDGE, setOf(policy.origin)) { _, message, sourceOrigin, isMainFrame, _ ->
+                    if (active && isMainFrame && sourceOrigin.toString().trimEnd('/') == policy.origin) htmlRenderReportedHeight(message.data)?.let { onHeight(it) }
                 }
             }
         }
@@ -307,6 +404,7 @@ internal class HtmlRenderPage(
             tag = this@HtmlRenderPage
             addView(webView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         }
+        HtmlRenderStorage.opened(policy.origin)
         webView.loadUrl(policy.documentUrl + htmlRenderThemeFragment(initialTheme))
     }
 
@@ -339,12 +437,14 @@ internal class HtmlRenderPage(
         webView.clearCache(true)
         webView.removeAllViews()
         webView.destroy()
+        HtmlRenderStorage.released(policy.origin)
     }
 }
 
 /**
  * Hosts one [HtmlRenderPage] for [html]. The WebView is destroyed when this leaves composition (including
- * when the timeline row scrolls away) and paused with the lifecycle. Inline pages report their height.
+ * when the timeline row scrolls away) and paused with the lifecycle. Inline pages report their height. The
+ * page origin is scoped to the environment and thread from [LocalFileDownloadUi] (empty when absent).
  */
 @Composable
 internal fun HtmlRenderWebView(
@@ -358,6 +458,9 @@ internal fun HtmlRenderWebView(
     modifier: Modifier = Modifier,
 ) {
     val uriHandler = LocalUriHandler.current
+    val ui = LocalFileDownloadUi.current
+    val environmentId = ui.environmentId.orEmpty()
+    val threadId = ui.threadId.orEmpty()
     val heightCallback by rememberUpdatedState(onContentHeight)
     val failureCallback by rememberUpdatedState(onFailure)
     val holder = remember { arrayOfNulls<HtmlRenderPage>(1) }
@@ -377,11 +480,11 @@ internal fun HtmlRenderWebView(
     LaunchedEffect(network) {
         network.currentChanges.collect { current -> if (!current) holder[0]?.connectionLost() }
     }
-    key(html, attachmentId, fullScreen, network) {
+    key(html, environmentId, threadId, attachmentId, fullScreen, network) {
         AndroidView(
             modifier = modifier,
             factory = { context ->
-                HtmlRenderPage(context, html, attachmentId, theme, network, fullScreen).also { page ->
+                HtmlRenderPage(context, html, environmentId, threadId, attachmentId, theme, network, fullScreen).also { page ->
                     page.onHeight = { heightCallback(it) }
                     page.onFailure = { failureCallback() }
                     page.onOpenLink = { url -> runCatching { uriHandler.openUri(url) } }

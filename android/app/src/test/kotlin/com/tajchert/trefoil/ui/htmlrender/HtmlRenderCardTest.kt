@@ -131,7 +131,7 @@ class HtmlRenderCardTest {
                 assertEquals(android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW, mixedContentMode)
             }
             val shadow = shadowOf(view)
-            val documentUrl = htmlRenderDocumentUrl(reference.attachmentId)
+            val documentUrl = htmlRenderDocumentUrl("fixture", "thread", reference.attachmentId)
             assertTrue(shadow.lastLoadedUrl.startsWith("$documentUrl#t3-theme=%7B%22appearance%22%3A%22dark%22"))
             assertFalse(shadow.lastLoadedUrl.contains("fixture.invalid"))
             val client2 = shadow.webViewClient
@@ -140,7 +140,7 @@ class HtmlRenderCardTest {
             assertEquals("no-store", served.responseHeaders["Cache-Control"])
             assertEquals(HTML_RENDER_CSP, served.responseHeaders["Content-Security-Policy"])
             val body = served.data.bufferedReader().readText()
-            assertTrue(body.startsWith(html))
+            assertTrue(body.contains("<html><head></head><body><p>Fixture page</p></body></html>$HTML_RENDER_HEIGHT_SCRIPT"))
             assertFalse(body.contains("fixture-token"))
             assertEquals(403, client2.shouldInterceptRequest(view, request(documentUrl, method = "POST"))!!.statusCode)
             assertEquals(403, client2.shouldInterceptRequest(view, request("https://cdn.example/x.html"))!!.statusCode)

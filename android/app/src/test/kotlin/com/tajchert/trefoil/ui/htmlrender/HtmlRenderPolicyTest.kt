@@ -4,16 +4,39 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class HtmlRenderPolicyTest {
-    private val documentUrl = htmlRenderDocumentUrl("fixture-attachment")
+    private val documentUrl = htmlRenderDocumentUrl("fixture-env", "fixture-thread", "fixture-attachment")
+    private val otherPage = htmlRenderOrigin("fixture-env", "fixture-thread", "fixture-other")
     private var hosts = setOf("fixture.example", "[fd00::5]")
     private var connected = true
     private val policy = HtmlRenderPolicy(documentUrl, HtmlRenderNetworkAccess({ hosts }, { connected }))
 
     @Test fun documentUrlIsSyntheticAndHashed() {
-        assertTrue(documentUrl.matches(Regex("https://html-render\\.trefoil\\.invalid/[0-9a-f]{16}/index\\.html")))
+        assertTrue(documentUrl, documentUrl.matches(Regex("https://[0-9a-f]{32}\\.html-render\\.trefoil\\.invalid/index\\.html")))
         assertFalse(documentUrl.contains("fixture"))
-        assertEquals(documentUrl, htmlRenderDocumentUrl("fixture-attachment"))
-        assertNotEquals(documentUrl, htmlRenderDocumentUrl("fixture-other"))
+        assertEquals(documentUrl, htmlRenderDocumentUrl("fixture-env", "fixture-thread", "fixture-attachment"))
+        assertEquals(documentUrl, "${htmlRenderOrigin("fixture-env", "fixture-thread", "fixture-attachment")}/index.html")
+        assertEquals(htmlRenderOrigin("fixture-env", "fixture-thread", "fixture-attachment"), policy.origin)
+    }
+
+    @Test fun everyPageHasItsOwnOrigin() {
+        val origins = listOf(
+            htmlRenderOrigin("fixture-env", "fixture-thread", "fixture-attachment"),
+            htmlRenderOrigin("fixture-env", "fixture-thread", "fixture-other"),
+            htmlRenderOrigin("fixture-env", "fixture-thread-2", "fixture-attachment"),
+            htmlRenderOrigin("fixture-env-2", "fixture-thread", "fixture-attachment"),
+            // Field boundaries are part of the hash.
+            htmlRenderOrigin("fixture-env", "fixture-threadfixture-", "attachment"),
+            htmlRenderOrigin("", "", "fixture-attachment"),
+        )
+        assertEquals(origins.size, origins.toSet().size)
+        origins.forEach { assertFalse(it, it == "https://$HTML_RENDER_HOST") }
+    }
+
+    @Test fun policyOnlyAcceptsSyntheticDocumentUrls() {
+        listOf(
+            "https://cdn.example/index.html", "https://$HTML_RENDER_HOST.cdn.example/index.html", "https://$HTML_RENDER_HOST/index.html",
+            "http://${otherPage.removePrefix("https://")}/index.html", "$otherPage:8443/index.html", "$otherPage/other.html", "not a url",
+        ).forEach { url -> assertThrows(url, IllegalArgumentException::class.java) { HtmlRenderPolicy(url, HtmlRenderNetworkAccess.Offline) } }
     }
 
     @Test fun mainFrameOnlyExactGetDocument() {
@@ -27,6 +50,10 @@ class HtmlRenderPolicyTest {
         assertFalse(policy.allowsMainFrame("$documentUrl?x=1#t3-theme=x", "GET", false))
         assertFalse(policy.allowsMainFrame("${documentUrl}x#t3-theme=x", "GET", false))
         assertFalse(policy.allowsMainFrame("https://html-render.trefoil.invalid/other/index.html", "GET", false))
+        assertFalse(policy.allowsMainFrame("https://html-render.trefoil.invalid/index.html", "GET", false))
+        assertFalse(policy.allowsMainFrame("$otherPage/index.html", "GET", false))
+        assertFalse(policy.allowsMainFrame("$otherPage/index.html#t3-theme=x", "GET", false))
+        assertFalse(policy.allowsMainFrame("${policy.origin}/other.html", "GET", false))
         assertFalse(policy.allowsMainFrame("https://cdn.example/index.html", "GET", false))
     }
 
@@ -38,6 +65,7 @@ class HtmlRenderPolicyTest {
             "https://[2606:4700::1111]/x.js",
             "data:image/png;base64,iVBORw0KGgo=",
             "blob:https://html-render.trefoil.invalid/6c1c",
+            "blob:${policy.origin}/6c1c",
         ).forEach { assertTrue(it, policy.allowsSubresource(it, "GET")) }
     }
 
@@ -52,6 +80,9 @@ class HtmlRenderPolicyTest {
             "https://2130706433/x", "https://0x7f.0.0.1/x", "https://127.1/x", "https://010.0.0.1/x",
             "https://fixture.example/api", "https://FIXTURE.example./api", "https://[fd00::5]/x",
             "https://html-render.trefoil.invalid/other.css",
+            // Neither this page's own origin nor another page's is ever a subresource.
+            "${policy.origin}/index.html", "${policy.origin}/other.css", "$otherPage/index.html",
+            "https://X.HTML-RENDER.TREFOIL.INVALID./x", "https://a.b.html-render.trefoil.invalid/x",
             "https://user:pass@cdn.example/x",
             "file:///sdcard/x", "content://media/x", "javascript:alert(1)", "about:blank", "wss://cdn.example/x",
             "intent://x#Intent;end", "ftp://cdn.example/x", "not a url",
@@ -95,6 +126,8 @@ class HtmlRenderPolicyTest {
         assertNull(policy.externalLink("javascript:alert(1)", true))
         assertNull(policy.externalLink("file:///sdcard/x", true))
         assertNull(policy.externalLink("$documentUrl#section", true))
+        assertNull(policy.externalLink("$otherPage/index.html", true))
+        assertNull(policy.externalLink("https://html-render.trefoil.invalid/", true))
         assertNull(policy.externalLink("https://user@example.com/", true))
     }
 
@@ -107,12 +140,37 @@ class HtmlRenderPolicyTest {
 
     @Test fun servedDocumentAppendsOnlyTheHeightScript() {
         val html = "<!doctype html><p>Fixture</p>"
-        val served = htmlRenderDocument(html).toString(Charsets.UTF_8)
+        val served = htmlRenderDocument(html, rtcLockdown = false).toString(Charsets.UTF_8)
         assertTrue(served.startsWith(html))
         assertEquals(HTML_RENDER_HEIGHT_SCRIPT, served.removePrefix(html))
         assertTrue(HTML_RENDER_HEIGHT_SCRIPT.contains("window.$HTML_RENDER_BRIDGE"))
         assertTrue(HTML_RENDER_CSP.contains("connect-src https: data: blob:"))
         assertTrue(HTML_RENDER_CSP.contains("form-action 'none'"))
+    }
+
+    @Test fun noRtcScriptRemovesPeerConnectionsAndWebTransport() {
+        listOf("'RTCPeerConnection'", "'webkitRTCPeerConnection'", "'WebTransport'").forEach { assertTrue(it, HTML_RENDER_NO_RTC_SCRIPT.contains(it)) }
+        assertTrue(HTML_RENDER_NO_RTC_SCRIPT.contains("Object.defineProperty(w,n[i],{value:undefined,writable:false,enumerable:false,configurable:false})"))
+        assertTrue(HTML_RENDER_NO_RTC_SCRIPT.contains("l(window);"))
+        // Same-origin iframe windows are locked when reached through the element.
+        assertTrue(HTML_RENDER_NO_RTC_SCRIPT.contains("'contentWindow'"))
+        assertTrue(HTML_RENDER_NO_RTC_SCRIPT.contains("'contentDocument'"))
+        assertFalse(HTML_RENDER_NO_RTC_SCRIPT.contains("</script"))
+    }
+
+    @Test fun fallbackInlinesNoRtcScriptBeforeAnyPageScript() {
+        val script = "<script>$HTML_RENDER_NO_RTC_SCRIPT</script>"
+        val withDoctype = "<!DOCTYPE html><html><head><script>new RTCPeerConnection()</script></head></html>"
+        val served = htmlRenderDocument(withDoctype, rtcLockdown = true).toString(Charsets.UTF_8)
+        // After the doctype (standards mode kept), before the page's own script.
+        assertEquals("<!DOCTYPE html>$script<html><head><script>new RTCPeerConnection()</script></head></html>$HTML_RENDER_HEIGHT_SCRIPT", served)
+        val commented = "﻿ <!-- a -->\n<!doctype html ><p>x</p>"
+        assertEquals("﻿ <!-- a -->\n<!doctype html >$script<p>x</p>$HTML_RENDER_HEIGHT_SCRIPT", htmlRenderDocument(commented, rtcLockdown = true).toString(Charsets.UTF_8))
+        val bare = "<script>new RTCPeerConnection()</script><p>x</p>"
+        assertEquals("$script$bare$HTML_RENDER_HEIGHT_SCRIPT", htmlRenderDocument(bare, rtcLockdown = true).toString(Charsets.UTF_8))
+        // A doctype later in the document is not a doctype: the script still goes first.
+        val late = "<p>x</p><!doctype html>"
+        assertTrue(htmlRenderDocument(late, rtcLockdown = true).toString(Charsets.UTF_8).startsWith(script))
     }
 
     @Test fun cspBlocksFramesAndWorkers() {
