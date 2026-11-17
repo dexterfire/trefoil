@@ -60,6 +60,7 @@ private fun strokeIcon(name: String, vararg paths: String, filled: List<String> 
     }.build()
 
 private const val EFFORT_BARS = 4
+private const val SHIELD = "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"
 
 private fun effortBarsIcon(filled: Int): ImageVector = ImageVector.Builder("effortBars$filled", 24.dp, 24.dp, 24f, 24f).apply {
     for (i in 0 until EFFORT_BARS) {
@@ -96,6 +97,14 @@ object TfIcons {
     val Check by lazy { strokeIcon("check", "M5 12l5 5 9-10") }
     /** Access / runtime mode. */
     val Shield by lazy { strokeIcon("shield", "M12 3L5 6v5c0 4.5 3 8.5 7 10 4-1.5 7-5.5 7-10V6z") }
+    /** Runtime modes, matching the desktop app: supervised (lock), auto-accept edits (pen), auto (shield check), full access (shield off). */
+    val Lock by lazy { strokeIcon("lock", rect(5f, 11f, 14f, 10f, 2f), "M8 11V7a4 4 0 0 1 8 0v4") }
+    val PenLine by lazy { strokeIcon("penLine", "M13 21h8", "M16.4 3.6a2.1 2.1 0 1 1 3 3L7 19l-4 1 1-4z") }
+    val ShieldCheck by lazy { strokeIcon("shieldCheck", SHIELD, "M9 12l2 2 4-4") }
+    val ShieldOff by lazy {
+        strokeIcon("shieldOff", "M2 2l20 20", "M5 5a1 1 0 0 0-1 1v7c0 5 3.5 7.5 7.67 8.94a1 1 0 0 0 .67.01c2.35-.82 4.48-1.97 5.9-3.71",
+            "M9.31 3.65a12.25 12.25 0 0 0 1.93-1.37a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1v7a9.8 9.8 0 0 1-.08 1.26")
+    }
     /** Model picker. */
     val Sparkle by lazy { strokeIcon("sparkle", "M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z") }
     val File by lazy { strokeIcon("file", "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z", "M14 3v5h5") }
@@ -244,6 +253,16 @@ fun TfPill(label: String, onClick: () -> Unit, modifier: Modifier = Modifier, ic
             if (icon != null) Icon(icon, null, Modifier.size(14.dp))
             Text(label, style = if (mono) TrefoilType.mono else TrefoilType.meta.copy(color = c.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+    }
+}
+
+/** Icon-only [TfPill]; [contentDescription] names the current value. */
+@Composable
+fun TfIconPill(icon: ImageVector, onClick: () -> Unit, contentDescription: String, modifier: Modifier = Modifier, enabled: Boolean = true) {
+    val c = Tf.colors
+    Surface(onClick = onClick, enabled = enabled, shape = RoundedCornerShape(16.dp), color = c.s2, contentColor = c.text,
+        modifier = modifier.semantics { this.contentDescription = contentDescription }) {
+        Box(Modifier.size(40.dp, 32.dp), contentAlignment = Alignment.Center) { Icon(icon, null, Modifier.size(16.dp)) }
     }
 }
 

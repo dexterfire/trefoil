@@ -50,10 +50,10 @@ internal fun fastModeOn(model: ModelOption?, explicit: ModelOptionValues): Boole
     return model.resolvedOptionValue(d, explicit) == true
 }
 
-/** Composer pill text: `<model> · <effort>` plus ` · Fast` when Fast mode is on. */
-internal fun modelPillLabel(model: ModelOption?, explicit: ModelOptionValues, threadSelection: Boolean = false): String {
+/** Composer pill text: `<model>` plus ` · Fast` when Fast mode is on; effort has its own icon pill. */
+internal fun modelPillLabel(model: ModelOption?, explicit: ModelOptionValues): String {
     if (model == null) return "Model"
-    val parts = listOfNotNull(model.label, reasoningChoice(model, explicit, threadSelection)?.label, if (fastModeOn(model, explicit)) "Fast" else null)
+    val parts = listOfNotNull(model.label, if (fastModeOn(model, explicit)) "Fast" else null)
     return parts.joinToString(" · ")
 }
 

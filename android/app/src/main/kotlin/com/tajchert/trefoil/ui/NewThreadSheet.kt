@@ -39,6 +39,14 @@ internal fun allowedRuntimeModes(model: ModelOption?): List<RuntimeMode> =
     model?.supportedRuntimeModes?.takeIf { it.isNotEmpty() }?.let { supported -> RuntimeMode.entries.filter { it in supported } }?.takeIf { it.isNotEmpty() } ?: RuntimeMode.entries.toList()
 
 /** Filled bars (1..4) for choice [index] of [count] selectable choices. */
+/** Desktop-matching glyph for a runtime mode. */
+internal val RuntimeMode.icon: ImageVector get() = when (this) {
+    RuntimeMode.ApprovalRequired -> TfIcons.Lock
+    RuntimeMode.AutoAcceptEdits -> TfIcons.PenLine
+    RuntimeMode.Auto -> TfIcons.ShieldCheck
+    RuntimeMode.FullAccess -> TfIcons.ShieldOff
+}
+
 internal fun effortBarCount(index: Int, count: Int): Int = if (count <= 1 || index < 0) 4 else 1 + Math.round(index * 3f / (count - 1))
 
 /** Keeps [preferred] when allowed, otherwise falls back to the first allowed mode. */
@@ -179,7 +187,7 @@ internal fun NewThreadSheetContent(state: ClientState, dismiss: () -> Unit, star
                 val currentIndex = choices.indexOfFirst { it.id == current?.id }
                 val currentLabel = current?.label ?: "Default"
                 Box {
-                    SheetPill(currentLabel, TfIcons.effort(effortBarCount(currentIndex, choices.size)), "${reasoning.label.ifBlank { "Reasoning" }}: $currentLabel") { effortMenu = true }
+                    SheetPill(null, TfIcons.effort(effortBarCount(currentIndex, choices.size)), "${reasoning.label.ifBlank { "Reasoning" }}: $currentLabel") { effortMenu = true }
                     DropdownMenu(effortMenu, { effortMenu = false }, containerColor = c.sheet, shape = RoundedCornerShape(16.dp)) {
                         choices.forEachIndexed { index, option ->
                             DropdownMenuItem(
@@ -192,11 +200,12 @@ internal fun NewThreadSheetContent(state: ClientState, dismiss: () -> Unit, star
                 }
             }
             Box {
-                SheetPill(mode.label, TfIcons.Shield, "Access: ${mode.label}") { modeMenu = true }
+                SheetPill(null, mode.icon, "Access: ${mode.label}") { modeMenu = true }
                 DropdownMenu(modeMenu, { modeMenu = false }, containerColor = c.sheet, shape = RoundedCornerShape(16.dp)) {
                     allowedModes.forEach { option ->
                         DropdownMenuItem(
                             text = { Column { Text(option.label); Text(option.description, style = TrefoilType.meta, color = c.muted) } },
+                            leadingIcon = { Icon(option.icon, null, Modifier.size(18.dp), tint = c.muted) },
                             trailingIcon = { if (option == mode) Icon(TfIcons.Check, null, Modifier.size(18.dp), tint = c.accent) },
                             onClick = { chosenMode = option.wire; modeMenu = false })
                     }
@@ -241,16 +250,16 @@ private fun ProjectChip(project: Project, selected: Boolean, onClick: () -> Unit
 }
 
 @Composable
-private fun SheetPill(label: String, icon: ImageVector, description: String, enabled: Boolean = true, onClick: () -> Unit) {
+private fun SheetPill(label: String?, icon: ImageVector, description: String, enabled: Boolean = true, onClick: () -> Unit) {
     val c = Tf.colors
     val shape = RoundedCornerShape(18.dp)
     Row(
         Modifier.height(36.dp).clip(shape).background(c.s2, shape).clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-            .semantics(mergeDescendants = true) { contentDescription = description }.padding(horizontal = 12.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
+            .semantics(mergeDescendants = true) { contentDescription = description }.padding(horizontal = if (label == null) 10.dp else 12.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(if (label == null) 4.dp else 6.dp),
     ) {
-        Icon(icon, null, Modifier.size(14.dp), tint = if (enabled) c.text else c.muted)
-        Text(label, style = TrefoilType.meta, color = if (enabled) c.text else c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Icon(icon, null, Modifier.size(if (label == null) 18.dp else 14.dp), tint = if (enabled) c.text else c.muted)
+        if (label != null) Text(label, style = TrefoilType.meta, color = if (enabled) c.text else c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Icon(TfIcons.ChevronDown, null, Modifier.size(14.dp), tint = c.muted)
     }
 }

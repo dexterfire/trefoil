@@ -320,7 +320,7 @@ private fun ComposerPickers(state: ClientState, draft: ThreadDraft?, onSetRuntim
         Box(Modifier.weight(1f, fill = false)) {
             val shown = catalogModel(model, state.models)
             val explicit = if (draft != null) draft.modelOptions else state.selectedModelOptions
-            val pillLabel = modelPillLabel(shown, explicit, threadSelection = draft == null)
+            val pillLabel = modelPillLabel(shown, explicit)
             TfPill(pillLabel, { modelOpen = true }, icon = TfIcons.Sparkle, enabled = enabled && state.models.isNotEmpty(), contentDescription = "Model: ${if (shown == null) "not set" else pillLabel}")
             if (modelOpen) ModelPickerSheet(
                 models = pickerModels(state.models, model, state.selectedProviderLocked, draft != null), providers = state.providers,
@@ -328,11 +328,20 @@ private fun ComposerPickers(state: ClientState, draft: ThreadDraft?, onSetRuntim
                 onSetModel = onSetModel, onSetModelOption = onSetModelOption, threadSelection = draft == null,
             )
         }
-        Box(Modifier.weight(1f, fill = false)) {
-            TfPill(mode?.label ?: "Mode", { modeOpen = true }, icon = TfIcons.Shield, enabled = enabled, contentDescription = "Runtime mode: ${mode?.label ?: "not set"}")
+        val effortShown = catalogModel(model, state.models)
+        val effort = reasoningChoice(effortShown, if (draft != null) draft.modelOptions else state.selectedModelOptions, threadSelection = draft == null)
+        val reasoning = effortShown?.reasoning
+        if (reasoning != null && effort != null) {
+            val choices = reasoning.selectableChoices
+            TfIconPill(TfIcons.effort(effortBarCount(choices.indexOfFirst { it.id == effort.id }, choices.size)), { modelOpen = true },
+                enabled = enabled && state.models.isNotEmpty(), contentDescription = "${reasoning.label.ifBlank { "Reasoning" }}: ${effort.label}")
+        }
+        Box {
+            TfIconPill(mode?.icon ?: TfIcons.Shield, { modeOpen = true }, enabled = enabled, contentDescription = "Runtime mode: ${mode?.label ?: "not set"}")
             DropdownMenu(modeOpen, { modeOpen = false }) {
                 allowedRuntimeModes(model).forEach { option ->
                     DropdownMenuItem(text = { Column { Text(option.label); Text(option.description, style = MaterialTheme.typography.labelSmall, color = c.muted) } },
+                        leadingIcon = { Icon(option.icon, null, Modifier.size(18.dp), tint = c.muted) },
                         onClick = { modeOpen = false; onSetRuntimeMode(option) },
                         trailingIcon = { if (option == mode) Icon(TfIcons.Check, "Selected", Modifier.size(18.dp)) })
                 }

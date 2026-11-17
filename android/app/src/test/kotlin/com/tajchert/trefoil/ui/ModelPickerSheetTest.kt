@@ -17,11 +17,11 @@ class ModelPickerSheetTest {
     private val claude = ModelOption("claude", "opus", "Opus", descriptors = listOf(effort, fast))
     private val plain = ModelOption("codex", "gpt-5", "GPT-5")
 
-    @Test fun pillLabelShowsDefaultEffort() = assertEquals("Opus · High", modelPillLabel(claude, emptyMap()))
-    @Test fun pillLabelShowsExplicitEffortAndFast() = assertEquals("Opus · Low · Fast", modelPillLabel(claude, mapOf("effort" to "low", "fastMode" to true)))
+    @Test fun pillLabelOmitsEffort() = assertEquals("Opus", modelPillLabel(claude, emptyMap()))
+    @Test fun pillLabelShowsFast() = assertEquals("Opus · Fast", modelPillLabel(claude, mapOf("effort" to "low", "fastMode" to true)))
     @Test fun pillLabelWithoutOptions() = assertEquals("GPT-5", modelPillLabel(plain, mapOf("effort" to "low")))
     @Test fun pillLabelWithoutModel() = assertEquals("Model", modelPillLabel(null, emptyMap()))
-    @Test fun unknownValueFallsBackToId() = assertEquals("Opus · max", modelPillLabel(claude, mapOf("effort" to "max")))
+    @Test fun unknownValueFallsBackToId() = assertEquals("max", reasoningChoice(claude, mapOf("effort" to "max"))?.label)
     @Test fun noReasoningChoiceWithoutDescriptor() = assertNull(reasoningChoice(plain, emptyMap()))
     @Test fun fastOffByDefault() = assertFalse(fastModeOn(claude, emptyMap()))
 
