@@ -1,5 +1,12 @@
 # Android releases
 
+Release `0.18.0` (`versionCode = 30`) adds a reasoning effort picker: the composer model pill opens a
+bottom sheet with models grouped by provider, reasoning choices and a Fast switch, and the pill shows the
+effort and Fast state. Model option changes are serialized. The New thread sheet collapses the project
+picker to a single pill once a project is picked or the prompt gains focus (tap to change), opens collapsed
+with one project and handles projects that arrive late. Check effort selection and starting a new thread
+against a real environment on a device.
+
 Release `0.17.2` (`versionCode = 29`) is a review-fix release. HTML render pages now run sandboxed on a
 random origin per session, without WebRTC, WebTransport, Cache Storage, IndexedDB or cookies, and stay
 script-free if the lockdown script cannot be injected; their subresource fetches refuse non-public literal,
