@@ -55,7 +55,11 @@ fi
 if git fetch origin main --tags; then
   if [ "$CHECK" = 0 ]; then
     [ "$(git rev-parse HEAD)" = "$(git rev-parse refs/remotes/origin/main)" ] || die "HEAD is not origin/main; pull or push first"
-    git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1 && die "tag $TAG already exists on origin"
+    # --exit-code: 0 = tag found, 2 = no such tag, anything else = the remote could not be queried.
+    LS_REMOTE_RC=0
+    git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1 || LS_REMOTE_RC=$?
+    [ "$LS_REMOTE_RC" != 0 ] || die "tag $TAG already exists on origin"
+    [ "$LS_REMOTE_RC" = 2 ] || die "cannot check origin for tag $TAG (git ls-remote exit $LS_REMOTE_RC)"
   fi
 elif [ "$CHECK" = 0 ]; then
   die "git fetch origin failed; cannot verify the remote state"
