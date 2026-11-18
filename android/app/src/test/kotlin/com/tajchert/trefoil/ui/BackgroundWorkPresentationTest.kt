@@ -1,6 +1,8 @@
 package com.tajchert.trefoil.ui
 
 import com.tajchert.trefoil.core.model.PendingBackgroundTask
+import com.tajchert.trefoil.core.model.Subagent
+import com.tajchert.trefoil.core.model.ToolActivity
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -37,5 +39,30 @@ class BackgroundWorkPresentationTest {
     @Test fun endedTurnShowsNoThinkingRow() {
         assertEquals("Thinking", thinkingRowLabel(emptyList(), "r", emptyList(), streaming = false, hasRequests = false))
         assertNull(thinkingRowLabel(emptyList(), "r", emptyList(), streaming = false, hasRequests = false, turnEnded = true))
+    }
+
+    @Test fun waitingRunWithEndedTurnHandsTheTailToTheBackgroundStatus() {
+        val tasks = listOf(subagent("a", "Stream A", "child-a"), subagent("b", "Stream B", "child-b"))
+        val agents = listOf(Subagent("a", "t", runId = "r", status = "running"), Subagent("b", "t", runId = "r", status = "running"))
+        val tail = listOf(ConversationEntry.Activities(listOf(
+            ToolActivity("i1", "Subagent", kind = "subagent", status = "running", runId = "r", ordinal = 1, subagentId = "a"),
+            ToolActivity("i2", "Subagent", kind = "subagent", status = "running", runId = "r", ordinal = 2, subagentId = "b"))))
+        val ended = liveTurnLayout(tail, "r", null, agents, streaming = false, hasRequests = false, turnEnded = true)
+        assertNull(ended.thinkingLabel)
+        val status = backgroundWorkStatus(tasks, ended.thinkingLabel, hasRequests = false)!!
+        assertEquals("Waiting on 2 subagents", status.title)
+        assertTrue(status.hasSubagents)
+        // A `running` run whose provider turn ended (live agents at its tail) is not thinking either, and T3 lists no
+        // background work while a run is running, so neither row shows; the inline agent rows carry the liveness.
+        assertNull(thinkingRowLabel(tail, "r", agents, streaming = false, hasRequests = false, turnEnded = true))
+        assertNull(backgroundWorkStatus(emptyList(), null, hasRequests = false))
+        // Before the turn ends the thinking row owns the tail.
+        val live = liveTurnLayout(tail, "r", null, agents, streaming = false, hasRequests = false)
+        assertEquals("Waiting on 2 subagents", live.thinkingLabel)
+        assertNull(backgroundWorkStatus(tasks, live.thinkingLabel, hasRequests = false))
+    }
+
+    @Test fun detailsNeedsASubagent() {
+        assertFalse(presentPendingBackgroundWork(listOf(PendingBackgroundTask("c", "command"), PendingBackgroundTask("m", "monitor")))!!.hasSubagents)
     }
 }

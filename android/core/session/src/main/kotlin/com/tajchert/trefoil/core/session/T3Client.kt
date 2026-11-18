@@ -610,7 +610,9 @@ class T3Client(
             val supported = request.obj("responseCapability").string("type") == "live" && (basicApproval || item.string("type") == "user_input_request")
             RuntimeRequest(request.string("id"), item.string("prompt").ifBlank { kind }, if (supported) item.string("reason") else "Respond using another T3 client: unsupported or non-resumable request", questions, supported)
         }
-        val active = value.objects("runs").lastOrNull { it.string("status") in setOf("preparing", "running", "starting", "waiting") }?.string("id")
+        // Highest ordinal; the stable sort keeps wire order for runs without one.
+        val active = value.objects("runs").filter { it.string("status") in setOf("preparing", "running", "starting", "waiting") }
+            .sortedBy { (it["ordinal"] as? JsonPrimitive)?.intOrNull ?: Int.MIN_VALUE }.lastOrNull()?.string("id")
         val thread = value.obj("thread")
         update { it.copy(selectedThreadId = threadId, canWrite = it.canWrite && threadReady, canRead = it.canRead && threadReady, messages = conversationMessages(value),
             activities = toolActivities(value), requests = requests, activeRunId = active,

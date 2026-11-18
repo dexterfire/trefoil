@@ -13,6 +13,8 @@ internal data class BackgroundWorkItemUi(val taskId: String, val kind: String, v
 /** [waiting] is false when only unawaited commands or monitors run: the thread is done, they just keep going. */
 internal data class BackgroundWorkUi(val title: String, val items: List<BackgroundWorkItemUi>, val waiting: Boolean) {
     val accessibilityLabel: String get() = "$title: ${items.joinToString(", ") { it.label }}"
+    /** Details opens the Agents sheet, which lists only subagents. */
+    val hasSubagents: Boolean get() = items.any { it.kind == "subagent" }
 }
 
 private data class BackgroundWorkKind(val order: Int, val singular: String, val plural: String)

@@ -2,6 +2,8 @@ package com.tajchert.trefoil.core.session
 
 import com.tajchert.trefoil.core.model.PendingBackgroundTask
 import kotlinx.serialization.json.Json
+import com.tajchert.trefoil.core.protocol.objects
+import com.tajchert.trefoil.core.protocol.string
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.*
 import org.junit.Test
@@ -81,5 +83,32 @@ class BackgroundWorkProjectionTest {
         assertFalse(runs("pending"))
         assertFalse(runs("completed", runStatus = "completed"))
         assertFalse(conversationRuns(fixture("""{"runs":[{"id":"r","status":"waiting","activeAttemptId":"a2"}]}""")).single().turnEnded)
+    }
+
+    @Test fun usageLimitedRunStaysLatestWhileAQueuedMessageWaits() {
+        val failure = ""","turnItems":[{"id":"e1","type":"error","status":"failed","runId":"r1","nodeId":"root","ordinal":5,
+            "updatedAt":"2026-01-01T10:00:00Z","failure":{"class":"usage_limit","message":"Usage limit reached"}}]"""
+        val runs = """{"id":"r1","ordinal":1,"status":"failed","rootNodeId":"root","startedAt":"2026-01-01T09:00:00Z","completedAt":"2026-01-01T10:00:00Z"},
+            {"id":"r2","ordinal":2,"status":"queued"}"""
+        assertEquals(3, pendingBackgroundWork(projection(runs, roster + failure)).size)
+        // A different, newer session error supersedes the recorded usage limit; the queued run is latest again.
+        val sessions = ""","providerSessions":[{"providerInstanceId":"claude","updatedAt":"2026-01-01T10:05:00Z","lastError":"Other failure"}]"""
+        val thread = fixture("""{"thread":{"id":"t","activeProviderThreadId":"pt","providerInstanceId":"claude"},"runs":[$runs]$roster$failure$sessions}""")
+        assertTrue(pendingBackgroundWork(thread).isEmpty())
+        // Any other failure class leaves the queued run as latest.
+        assertTrue(pendingBackgroundWork(projection(runs, roster + failure.replace("usage_limit", "provider_error"))).isEmpty())
+    }
+
+    @Test fun steerCancelledRunIsSkippedAsLatest() {
+        val runs = """{"id":"r1","ordinal":1,"status":"completed","completedAt":"2026-01-01T10:05:00Z"},
+            {"id":"r2","ordinal":2,"status":"cancelled","startedAt":null,"completedAt":"2026-01-01T10:01:00Z"}"""
+        assertEquals("r1", latestUnheldRun(fixture("""{"runs":[$runs]}""").objects("runs"))?.string("id"))
+        assertEquals(3, pendingBackgroundWork(projection(runs, roster)).size)
+    }
+
+    @Test fun absentActiveProviderThreadReadsEveryRosterAndNullRunItemsStay() {
+        val work = pendingBackgroundWork(fixture("""{"thread":{"id":"t"},"runs":[{"id":"r1","ordinal":1,"status":"completed"}]$roster,
+            "turnItems":[{"id":"i1","type":"subagent","status":"running","runId":null,"nativeItemRef":{"nativeId":""}}]}"""))
+        assertEquals(listOf("turn-item:delegated-task:a", "dev", "odd", "stale", "i1"), work.map { it.taskId })
     }
 }

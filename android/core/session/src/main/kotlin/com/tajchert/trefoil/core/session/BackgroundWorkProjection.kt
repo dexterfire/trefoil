@@ -1,5 +1,6 @@
 /* Pending background work derivation adapted from T3 Code shared/orchestrationV2PendingBackgroundWork.ts
- * (derivePendingBackgroundWork) and shared/orchestrationV2ThreadError.ts (latestUnheldRun) (MIT).
+ * (derivePendingBackgroundWork) and shared/orchestrationV2ThreadError.ts (latestUnheldRun,
+ * usageLimitRunPresentedAsLatest) (MIT).
  * Copyright (c) 2026 T3 Tools Inc. See licenses/T3-Code-MIT.txt.
  */
 package com.tajchert.trefoil.core.session
@@ -37,7 +38,9 @@ internal fun pendingBackgroundWork(projection: JsonObject): List<PendingBackgrou
     if (runs.any { it.string("status") in LIVE_RUN_STATUSES }) return emptyList()
     val thread = projection.obj("thread")
     val pullRequests = pullRequestWatchTasks(thread.objects("pullRequests"))
-    val latestRun = latestUnheldRun(runs) ?: return pullRequests
+    // As T3's shell: a usage-limited run stays latest while the runs queued after it never started.
+    val latestRun = usageLimitRunPresentedAsLatest(runs, projection.objects("turnItems"), providerSessionError(projection))
+        ?: latestUnheldRun(runs) ?: return pullRequests
     if (latestRun.string("status") !in SETTLED_FOR_BACKGROUND_WAIT_RUN_STATUSES) return emptyList()
 
     val byTaskId = LinkedHashMap<String, PendingBackgroundTask>()
@@ -99,6 +102,45 @@ private fun outlivedBeforeStart(run: JsonObject, runs: List<JsonObject>): Boolea
         earlier.runOrdinal() < run.runOrdinal() && earlier.string("status") != "queued" &&
             (earlier.trimmed("completedAt")?.let(::instant)?.let { it >= cancelledAt } ?: true)
     }
+}
+
+/** The latest session error of the thread's selected provider instance, as T3 server shells read it. */
+private fun providerSessionError(projection: JsonObject): String? {
+    val instanceId = projection.obj("thread").string("providerInstanceId")
+    return projection.objects("providerSessions").filter { it.string("providerInstanceId") == instanceId }
+        .sortedBy { it.trimmed("updatedAt")?.let(::instant) ?: Long.MIN_VALUE }.lastOrNull()?.trimmed("lastError")
+}
+
+private fun endMillis(run: JsonObject): Long = run.trimmed("completedAt")?.let(::instant) ?: Long.MAX_VALUE
+
+/** T3 `latestExecutedRun` with `runRanAfter`: held queues can execute out of ordinal order; unfinished runs count as latest. */
+private fun latestExecutedRun(runs: List<JsonObject>): JsonObject? = runs
+    .filterNot { it.string("status") == "queued" || (it.string("status") == "cancelled" && it.trimmed("startedAt") == null) }
+    .fold<JsonObject, JsonObject?>(null) { latest, run ->
+        if (latest == null) run
+        else if (endMillis(run) == endMillis(latest)) (if (run.runOrdinal() > latest.runOrdinal()) run else latest)
+        else if (endMillis(run) > endMillis(latest)) run else latest
+    }
+
+/** T3 `latestRootProviderFailure`: the newest failed root `error` item of a failed run. */
+private fun latestRootProviderFailure(run: JsonObject, turnItems: List<JsonObject>): JsonObject? {
+    if (run.string("status") != "failed") return null
+    return turnItems.filter {
+        it.string("type") == "error" && it.string("status") == "failed" && it.string("runId") == run.string("id") &&
+            it.string("nodeId") == run.string("rootNodeId")
+    }.maxWithOrNull(compareBy<JsonObject>({ it.trimmed("updatedAt")?.let(::instant) ?: Long.MIN_VALUE }, { it.runOrdinal() }, { it.string("id") }))
+        ?.get("failure") as? JsonObject
+}
+
+/** T3 `usageLimitRunPresentedAsLatest`: a run blocked on a usage limit, while higher-ordinal runs exist. */
+internal fun usageLimitRunPresentedAsLatest(runs: List<JsonObject>, turnItems: List<JsonObject>, sessionError: String?): JsonObject? {
+    val executed = latestExecutedRun(runs) ?: return null
+    if (executed.string("status") != "failed") return null
+    val failure = latestRootProviderFailure(executed, turnItems)
+    // threadErrorSummary: a different live session error supersedes the recorded failure.
+    val current = if (sessionError != null && sessionError != failure?.trimmed("message")) null else failure
+    if (current?.string("class") != "usage_limit") return null
+    return executed.takeIf { blocked -> runs.any { it.runOrdinal() > blocked.runOrdinal() } }
 }
 
 /** A merged or dismissed pull request's watch holds nothing; one whose checks all finished stays listed but not awaited. */

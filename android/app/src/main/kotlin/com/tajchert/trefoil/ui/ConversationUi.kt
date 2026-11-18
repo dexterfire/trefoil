@@ -197,7 +197,7 @@ internal fun Conversation(
                     }
                     items(liveTurn.orphanSubagents, key = { "subagent:${it.id}" }) { SubagentTimelineRow(it, onOpenThread, onOpenAgents) }
                     liveTurn.thinkingLabel?.let { label -> item(key = "thinking") { ThinkingRow(label) } }
-                    backgroundWork?.let { work -> item(key = "background-work") { BackgroundWorkRow(work, onOpenThread, onOpenAgents) } }
+                    backgroundWork?.let { work -> item(key = "background-work") { BackgroundWorkRow(work, onOpenThread, onOpenAgents, live = state.canRead && state.connection == ConnectionStatus.Connected) } }
                     items(state.requests, key = { "request:${it.id}" }) { RequestCard(it, canSend, respond) }
                     item(key = "bottom") { Spacer(Modifier.height(1.dp)) }
                 }

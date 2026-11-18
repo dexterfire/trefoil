@@ -79,15 +79,18 @@ internal fun ThinkingRow(label: String) {
  * Agents sheet. Subagent lines open their child thread. Stop stays per agent in the sheet.
  */
 @Composable
-internal fun BackgroundWorkRow(work: BackgroundWorkUi, onOpenThread: ((String) -> Unit)?, onOpenAgents: (() -> Unit)?) {
+internal fun BackgroundWorkRow(work: BackgroundWorkUi, onOpenThread: ((String) -> Unit)?, onOpenAgents: (() -> Unit)?, live: Boolean = true) {
     val c = Tf.colors
+    // Disconnected or stale data cannot vouch that the work still runs: no spinner, muted title.
+    val spinning = work.waiting && live
+    val openAgents = onOpenAgents?.takeIf { work.hasSubagents }
     Surface(Modifier.fillMaxWidth().testTag("background-work-row"), shape = RoundedCornerShape(16.dp), color = c.s1, contentColor = c.text, border = BorderStroke(1.dp, c.line)) {
         Column(Modifier.padding(start = 14.dp, end = 4.dp, top = 4.dp, bottom = 8.dp)) {
             Row(Modifier.fillMaxWidth().heightIn(min = 40.dp).semantics(mergeDescendants = true) { contentDescription = work.accessibilityLabel },
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (work.waiting) WorkingSpinner(size = 14.dp) else Icon(TfIcons.Reasoning, null, Modifier.size(14.dp), tint = c.muted)
-                Text(work.title, Modifier.weight(1f), style = WorkRowText, color = if (work.waiting) c.blue else c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (onOpenAgents != null) TextButton(onClick = onOpenAgents) { Text("Details") }
+                if (spinning) WorkingSpinner(size = 14.dp) else Icon(TfIcons.Reasoning, null, Modifier.size(14.dp), tint = c.muted)
+                Text(work.title, Modifier.weight(1f), style = WorkRowText, color = if (spinning) c.blue else c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (openAgents != null) TextButton(onClick = openAgents) { Text("Details") }
             }
             work.items.forEach { item ->
                 val threadId = item.childThreadId
