@@ -14,6 +14,7 @@ import com.tajchert.trefoil.core.model.ConnectionStatus
 import com.tajchert.trefoil.core.model.ConversationMessage
 import com.tajchert.trefoil.core.model.ConversationRun
 import com.tajchert.trefoil.core.model.ModelOption
+import com.tajchert.trefoil.core.model.PendingBackgroundTask
 import com.tajchert.trefoil.core.model.Question
 import com.tajchert.trefoil.core.model.RemoteFileReference
 import com.tajchert.trefoil.core.model.RuntimeMode
@@ -122,6 +123,14 @@ object ConversationFixtures {
             livePlan.copy(text = "I'll have a subagent reproduce the crash and find the cause. It will fix it only if the fix is clear and low-risk.")),
         activities = listOf(liveThought.copy(output = "**Looking into the lint crash** from the FIR lazy resolve error."), agentItem("a-agent", "s-lint", "running", 4)),
         subagents = listOf(lintAgent, docsAgent),
+    )
+
+    /** The parent's turn ended while two delegated subagents keep running. */
+    fun backgroundWorkState(): ClientState = chatState().copy(
+        backgroundWork = listOf(
+            PendingBackgroundTask("turn-item:delegated-task:a", "subagent", "Stream A: boundary ingestion (OSM)", childThreadId = "thread:delegated-task:a"),
+            PendingBackgroundTask("turn-item:delegated-task:b", "subagent", "Stream B: tile cache warmup", childThreadId = "thread:delegated-task:b"),
+        ),
     )
 
     fun disconnectedState(): ClientState = chatState().copy(connection = ConnectionStatus.Disconnected, canWrite = false, canWriteThreads = false)

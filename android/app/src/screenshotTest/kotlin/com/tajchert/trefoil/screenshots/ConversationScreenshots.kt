@@ -89,6 +89,13 @@ fun Conversation_LiveSubagent_Dark() = Screen(fx.liveSubagentState(), dark = tru
 @PreviewTest
 @Preview(showBackground = true, widthDp = 400, heightDp = 800)
 @Composable
+fun Conversation_BackgroundWork_Light() = Frame {
+    Conversation(fx.backgroundWorkState(), send = {}, interrupt = {}, respond = { _, _, _ -> }, onBack = {}, onOpenAgents = {}, onOpenThread = {})
+}
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, heightDp = 800)
+@Composable
 fun Conversation_BackBadge_Light() = Frame {
     Conversation(fx.chatState(), send = {}, interrupt = {}, respond = { _, _, _ -> }, onBack = {}, onOpenAgents = null, otherNeedsYou = 2)
 }

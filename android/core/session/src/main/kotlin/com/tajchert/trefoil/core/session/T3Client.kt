@@ -530,7 +530,7 @@ class T3Client(
         val cached = state.value.environment?.id?.let { threadProjections[it to threadId] }
         if (cached != null) applyProjection(cached, threadId)
         else if (state.value.selectedThreadId == threadId) update { it.copy(canWrite = false, canRead = false) }
-        else update { it.copy(selectedThreadId = threadId, messages = emptyList(), requests = emptyList(), activities = emptyList(), runs = emptyList(), attempts = emptyList(), subagents = emptyList(), activeRunId = null, canWrite = false, selectedRuntimeMode = null, selectedModel = null, selectedModelOptions = emptyMap(), selectedProviderLocked = false) }
+        else update { it.copy(selectedThreadId = threadId, messages = emptyList(), requests = emptyList(), activities = emptyList(), runs = emptyList(), attempts = emptyList(), subagents = emptyList(), backgroundWork = emptyList(), activeRunId = null, canWrite = false, selectedRuntimeMode = null, selectedModel = null, selectedModelOptions = emptyMap(), selectedProviderLocked = false) }
         val epoch = generation
         refreshSignals?.close(); refreshJob?.cancel()
         val signals = Channel<Unit>(Channel.CONFLATED)
@@ -615,6 +615,7 @@ class T3Client(
         update { it.copy(selectedThreadId = threadId, canWrite = it.canWrite && threadReady, canRead = it.canRead && threadReady, messages = conversationMessages(value),
             activities = toolActivities(value), requests = requests, activeRunId = active,
             runs = conversationRuns(value), attempts = runAttempts(value), subagents = subagents(value),
+            backgroundWork = pendingBackgroundWork(value),
             selectedRuntimeMode = RuntimeMode.fromWire(thread.string("runtimeMode")),
             selectedModel = selectedModel(thread["modelSelection"] as? JsonObject, it.models),
             selectedModelOptions = modelOptionValues(thread.obj("modelSelection")["options"]),

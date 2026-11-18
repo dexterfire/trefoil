@@ -19,7 +19,22 @@ internal fun providerInstances(config: JsonObject): List<ProviderInstance> = con
     )
 }
 
-internal fun conversationRuns(projection: JsonObject): List<ConversationRun> = projection.objects("runs").map { run ->
+private val ACTIVITY_RUN_STATUSES = setOf("preparing", "starting", "running", "waiting")
+
+internal fun conversationRuns(projection: JsonObject): List<ConversationRun> {
+    val turns = projection.objects("providerTurns")
+    return projection.objects("runs").map { run -> conversationRun(run, turns) }
+}
+
+/** T3 `summarizeThreadRun.turnEnded` via `latestProviderTurnForAttempt`: an activity run whose latest turn settled. */
+private fun runTurnEnded(run: JsonObject, turns: List<JsonObject>): Boolean {
+    if (run.string("status") !in ACTIVITY_RUN_STATUSES) return false
+    val attemptId = run.optionalText("activeAttemptId") ?: return false
+    val latest = turns.filter { it.string("runAttemptId") == attemptId }.maxByOrNull { it.ordinal() ?: 0 } ?: return false
+    return latest.string("status") != "pending" && latest.string("status") != "running"
+}
+
+private fun conversationRun(run: JsonObject, turns: List<JsonObject>) =
     ConversationRun(
         id = run.string("id"), status = run.string("status"), ordinal = run.ordinal(),
         requestedAt = run.optionalText("requestedAt"), startedAt = run.optionalText("startedAt"),
@@ -28,8 +43,8 @@ internal fun conversationRuns(projection: JsonObject): List<ConversationRun> = p
         providerInstanceId = run.optionalText("providerInstanceId"),
         modelInstanceId = run.obj("modelSelection").optionalText("instanceId") ?: run.obj("modelSelection").optionalText("provider"),
         model = run.obj("modelSelection").optionalText("model"),
+        turnEnded = runTurnEnded(run, turns),
     )
-}
 
 internal fun runAttempts(projection: JsonObject): List<RunAttempt> = projection.objects("attempts").map { attempt ->
     RunAttempt(

@@ -69,7 +69,7 @@ internal fun subagentPill(roster: SubagentRoster?): SubagentPill? {
 private val SUBAGENT_PREFIX = Regex("^Subagent:\\s*", RegexOption.IGNORE_CASE)
 private val ROOT_PATH = Regex("^/root/(?:[^/]+/)*([^/]+)/?$")
 
-private fun formatSubagentDisplayTitle(title: String): String {
+internal fun formatSubagentDisplayTitle(title: String): String {
     val display = title.replace(SUBAGENT_PREFIX, "")
     val name = ROOT_PATH.find(display)?.groupValues?.get(1) ?: return display
     val words = name.replace(Regex("[_\\s]+"), " ").trim()

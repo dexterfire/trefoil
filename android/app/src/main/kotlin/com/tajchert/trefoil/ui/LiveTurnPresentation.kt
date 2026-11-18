@@ -17,11 +17,11 @@ internal data class LiveTurnLayout(val headerIndex: Int?, val orphanSubagents: L
 
 internal fun liveTurnLayout(
     entries: List<ConversationEntry>, activeRunId: String?, roster: SubagentRoster?, subagents: List<Subagent>,
-    streaming: Boolean, hasRequests: Boolean,
+    streaming: Boolean, hasRequests: Boolean, turnEnded: Boolean = false,
 ): LiveTurnLayout = LiveTurnLayout(
     activeTurnHeaderIndex(entries, activeRunId),
     orphanSubagents(entries, roster, activeRunId != null),
-    thinkingRowLabel(entries, activeRunId, subagents, streaming, hasRequests),
+    thinkingRowLabel(entries, activeRunId, subagents, streaming, hasRequests, turnEnded),
 )
 
 /** The live header's LazyColumn key: the key the run's fold takes once it settles (see [ConversationEntry.Work]). */
@@ -74,10 +74,14 @@ internal fun waitingOnSubagentsLabel(count: Int): String = if (count == 1) "Wait
 /**
  * T3 thinking row: shown while a run is active, no message streams, no request waits on the user and the tail is not
  * already a live in-progress work row. Live agents at the very end of the run read "Waiting on a subagent" (T3
- * `runningSubagentsAtRunTail`), otherwise "Thinking".
+ * `runningSubagentsAtRunTail`), otherwise "Thinking". A run whose provider turn already ended (T3 `turnEnded`, for example
+ * a `waiting` run draining checkpoints) is not thinking.
  */
-internal fun thinkingRowLabel(entries: List<ConversationEntry>, activeRunId: String?, subagents: List<Subagent>, streaming: Boolean, hasRequests: Boolean): String? {
-    if (activeRunId == null || streaming || hasRequests) return null
+internal fun thinkingRowLabel(
+    entries: List<ConversationEntry>, activeRunId: String?, subagents: List<Subagent>, streaming: Boolean, hasRequests: Boolean,
+    turnEnded: Boolean = false,
+): String? {
+    if (activeRunId == null || turnEnded || streaming || hasRequests) return null
     val last = entries.lastOrNull()
     if (last is ConversationEntry.Activities && !last.isSubagentGroup && last.activities.first().runId == activeRunId &&
         last.activities.any { it.visibleInGroup() && it.isRunning }) return null

@@ -114,8 +114,12 @@ internal fun Conversation(
     }
     val roster = remember(state.runs, state.subagents, draft) { if (draft == null) subagentRoster(state.runs, state.subagents) else null }
     val streaming = state.messages.any { it.streaming }
-    val liveTurn = remember(entries, state.activeRunId, roster, state.subagents, streaming, state.requests.isNotEmpty()) {
-        liveTurnLayout(entries, state.activeRunId, roster, state.subagents, streaming, state.requests.isNotEmpty())
+    val turnEnded = state.runs.firstOrNull { it.id == state.activeRunId }?.turnEnded == true
+    val liveTurn = remember(entries, state.activeRunId, roster, state.subagents, streaming, state.requests.isNotEmpty(), turnEnded) {
+        liveTurnLayout(entries, state.activeRunId, roster, state.subagents, streaming, state.requests.isNotEmpty(), turnEnded)
+    }
+    val backgroundWork = remember(state.backgroundWork, liveTurn.thinkingLabel, state.requests.isNotEmpty(), draft) {
+        if (draft == null) backgroundWorkStatus(state.backgroundWork, liveTurn.thinkingLabel, state.requests.isNotEmpty()) else null
     }
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -124,7 +128,7 @@ internal fun Conversation(
     LaunchedEffect(list) {
         snapshotFlow { list.isScrollInProgress to nearBottom }.collect { (scrolling, bottom) -> if (scrolling) following = bottom }
     }
-    LaunchedEffect(entries, state.requests, state.activeRunId, liveTurn) {
+    LaunchedEffect(entries, state.requests, state.activeRunId, liveTurn, backgroundWork) {
         if (following) {
             // Let LazyColumn measure new rows before scrolling to the trailing anchor.
             withFrameNanos { }
@@ -193,6 +197,7 @@ internal fun Conversation(
                     }
                     items(liveTurn.orphanSubagents, key = { "subagent:${it.id}" }) { SubagentTimelineRow(it, onOpenThread, onOpenAgents) }
                     liveTurn.thinkingLabel?.let { label -> item(key = "thinking") { ThinkingRow(label) } }
+                    backgroundWork?.let { work -> item(key = "background-work") { BackgroundWorkRow(work, onOpenThread, onOpenAgents) } }
                     items(state.requests, key = { "request:${it.id}" }) { RequestCard(it, canSend, respond) }
                     item(key = "bottom") { Spacer(Modifier.height(1.dp)) }
                 }

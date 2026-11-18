@@ -77,6 +77,8 @@ data class ConversationRun(
     val workStartedAt: String? = null, val ordinal: Int? = null,
     val activeAttemptId: String? = null, val userMessageId: String? = null,
     val providerInstanceId: String? = null, val modelInstanceId: String? = null, val model: String? = null,
+    /** T3 `ThreadRunSummary.turnEnded`: the active attempt's latest provider turn is no longer pending or running. */
+    val turnEnded: Boolean = false,
 )
 data class RunAttempt(
     val id: String, val runId: String, val status: String,
@@ -182,6 +184,8 @@ data class ClientState(
     val defaultRuntimeMode: RuntimeMode? = null,
     /** Selected thread's projection `subagents[]`, in wire order. */
     val subagents: List<Subagent> = emptyList(),
+    /** Selected thread's pending background work (T3 `derivePendingBackgroundWork`); empty while a run is live. */
+    val backgroundWork: List<PendingBackgroundTask> = emptyList(),
     /** Server `environment.capabilities.threadStop`; false when not reported. */
     val threadStopSupported: Boolean = false,
     /** Session grants `diagnostics:read`, which `server.getUsageSummary` requires. Limits only need read access. */
