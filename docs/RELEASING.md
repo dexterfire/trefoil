@@ -1,5 +1,10 @@
 # Android releases
 
+Release `0.18.5` (`versionCode = 35`) shows a "Waiting on N subagents" row in the thread screen when the
+parent's turn has ended but subagents or awaited background tasks are still running, following T3's
+pending background work rules (including a usage-limited run kept as latest). An ended turn no longer shows
+"Thinking". Check a live thread with delegated subagents on a device.
+
 Release `0.18.4` (`versionCode = 34`) ships a baseline profile, installed by `androidx.profileinstaller`, so
 ART compiles the cold-start path ahead of time instead of interpreting it on the first launches. The
 `:baselineprofile` module generates it from a fresh-install journey (startup, Machines screen, pairing dialog)
