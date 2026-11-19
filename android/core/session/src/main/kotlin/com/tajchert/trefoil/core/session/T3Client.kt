@@ -279,11 +279,7 @@ class T3Client(
             synchronized(lifecycleLock) { check(epoch == generation) { "Connection was cancelled" }; directEndpoints = directEndpointHints(config) }
             update { it.copy(connection = ConnectionStatus.Connected, activeRoute = route, canReadUsage = mayReadUsage, models = models, providers = providerInstances(config), defaultRuntimeMode = defaultMode, threadStopSupported = threadStop,
                 selectedModel = it.selectedModel?.let { selected -> models.firstOrNull { m -> m.instanceId == selected.instanceId && m.model == selected.model } ?: selected }) }
-            subscribe("orchestration.subscribeShell", buildJsonObject {
-                put("requestCompletionMarker", true)
-                // Native grouping needs complete lineage and all settled rows for exact counts.
-                put("omitIdleSubagents", false); put("omitOlderSettled", false)
-            }, ::shellItem)
+            subscribeShell(epoch, environment.id, shellOrigin(environment.id, config))
             startRouteHints(epoch, environment, base)
             state.value.selectedThreadId?.let { selectThread(it) }
         } catch (error: CancellationException) {
@@ -591,7 +587,28 @@ class T3Client(
         it.copy(canRead = fresh, canWrite = authorized && fresh,
             canWriteThreads = authorized && shellReady && it.connection == ConnectionStatus.Connected)
     }
+    /** Memory-only shell cursors; see [ShellResume]. */
+    private val shellResume = ShellResume()
+    private var shellSubscription: String? = null
+    /**
+     * Retained rows of the same environment and server build resume from their cursor (`afterSequence`): the
+     * server replays the missed deltas, or answers a snapshot when it cannot (and old servers ignore the field).
+     * Writes stay disabled until the `synchronized` marker either way.
+     */
+    private fun subscribeShell(epoch: Long, environmentId: String, origin: ShellOrigin?) = synchronized(lifecycleLock) {
+        check(epoch == generation && state.value.environment?.id == environmentId) { "Connection was cancelled" }
+        val afterSequence = shellResume.begin(environmentId, origin, environmentStates.containsKey(environmentId), environmentStates.keys.toSet())
+        shellSubscription = subscribe("orchestration.subscribeShell", shellSubscribeInput(afterSequence), ::shellItem)
+    }
     private fun shellItem(item: JsonObject) {
+        if (item.string("kind") == "snapshot-required") {
+            // Only sent for `httpSnapshotFallback`, which Trefoil never asks for: drop the cursor and load a socket snapshot.
+            shellResume.invalidate()
+            shellSubscription?.let { streams.remove(it); runCatching { send(EffectRpc.signal("Interrupt", it)) } }
+            shellReady = false; writable()
+            shellSubscription = subscribe("orchestration.subscribeShell", shellSubscribeInput(null), ::shellItem)
+            return
+        }
         when (item.string("kind")) {
             "snapshot" -> {
                 val snapshot = item.obj("snapshot")
@@ -610,6 +627,8 @@ class T3Client(
             "thread.removed" -> update { it.copy(threads = it.threads.filterNot { t -> t.id == item.string("threadId") }) }
             "synchronized" -> { shellReady = true; writable() }
         }
+        // After the rows changed: an item that failed to apply never moves the cursor.
+        shellResume.applied(item)
     }
     private fun project(value: JsonObject) = Project(value.string("id"), value.string("title"), value.string("workspaceRoot"))
     private fun applyProjection(incoming: JsonObject, threadId: String? = state.value.selectedThreadId, authoritative: Boolean = true) {
