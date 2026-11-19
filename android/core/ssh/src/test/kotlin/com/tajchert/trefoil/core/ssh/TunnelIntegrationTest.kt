@@ -171,9 +171,11 @@ class TunnelIntegrationTest {
                 client.connect(saved)
                 withTimeout(5000) { client.state.first { it.canWrite } }
                 assertEquals(ConnectionStatus.Connected, client.state.value.connection)
-                val oauth = oauthRequests.single { it.path == "/oauth/token" }
+                // Background requests keep arriving; read a locked snapshot.
+                val recorded = synchronized(oauthRequests) { oauthRequests.toList() }
+                val oauth = recorded.single { it.path == "/oauth/token" }
                 assertTrue(oauth.body.readUtf8().contains("subject_token=fixture-only-credential"))
-                assertTrue(oauthRequests.any { it.path == "/api/auth/session" && it.getHeader("Authorization") == "Bearer fixture-bearer" })
+                assertTrue(recorded.any { it.path == "/api/auth/session" && it.getHeader("Authorization") == "Bearer fixture-bearer" })
                 tunnel.close()
                 withTimeout(5000) { client.state.first { !it.canWrite } }
                 assertFalse(tunnel.active.value)
