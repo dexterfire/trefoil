@@ -126,7 +126,12 @@ internal fun Conversation(
         if (draft == null) backgroundWorkStatus(state.backgroundWork, liveTurn.thinkingLabel, state.requests.isNotEmpty()) else null
     }
     // Client-side window over the fully loaded timeline; switching threads resets it to the latest turns.
-    var visibleTurns by rememberSaveable(state.environment?.id, composerKey) { mutableIntStateOf(TURN_WINDOW_PAGE) }
+    var requestedTurns by rememberSaveable(state.environment?.id, composerKey) { mutableIntStateOf(TURN_WINDOW_PAGE) }
+    // Turn count when the thread first loaded (-1 until then); later prompts widen the window instead of sliding it.
+    var seenTurns by rememberSaveable(state.environment?.id, composerKey) { mutableIntStateOf(-1) }
+    val turnCount = remember(entries) { entries.count { it.startsUserTurn } }
+    LaunchedEffect(turnCount > 0) { if (seenTurns < 0 && turnCount > 0) seenTurns = turnCount }
+    val visibleTurns = grownVisibleTurns(requestedTurns, seenTurns.takeIf { it >= 0 }, turnCount)
     val window = remember(entries, visibleTurns, liveTurn.headerIndex, state.activeRunId) {
         windowConversationTimeline(entries, visibleTurns, liveTimelineIndex(entries, state.activeRunId, liveTurn.headerIndex))
     }
@@ -172,12 +177,13 @@ internal fun Conversation(
     fun loadEarlier() {
         val anchor = list.layoutInfo.visibleItemsInfo.firstOrNull { it.key != LOAD_EARLIER_KEY }
         val next = windowConversationTimeline(entries, visibleTurns + TURN_WINDOW_PAGE, liveTimelineIndex(entries, state.activeRunId, liveTurn.headerIndex))
-        visibleTurns += TURN_WINDOW_PAGE
+        requestedTurns += TURN_WINDOW_PAGE
         if (anchor == null) return
         // Applied on the next measure together with the revealed rows, instead of LazyColumn's key tracking, which would
-        // keep the (still first) "Load earlier turns" row in place and push the reader's entry down.
+        // keep the (still first) "Load earlier turns" row in place and push the reader's entry down. `following` is left
+        // alone: requestScrollToItem runs no scroll pass of its own (it only cancels one already in progress), so the
+        // isScrollInProgress observer above sees nothing and only real user scrolls change it.
         list.requestScrollToItem(prependedAnchorIndex(anchor.index, window, next), -anchor.offset)
-        following = false
     }
     CompositionLocalProvider(LocalFileDownloadUi provides fileDownloadUi, LocalContentColor provides c.text) {
         Column(Modifier.fillMaxSize()) {

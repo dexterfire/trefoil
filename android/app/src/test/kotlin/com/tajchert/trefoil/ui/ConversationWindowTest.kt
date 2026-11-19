@@ -100,4 +100,20 @@ class ConversationWindowTest {
         assertEquals(1 + 30, prependedAnchorIndex(1, first, second))
         assertEquals(1 + 15 - 1, prependedAnchorIndex(1, second, third))
     }
+
+    @Test fun newPromptsWidenTheWindowInsteadOfDroppingTheOldestVisibleTurn() {
+        assertEquals(TURN_WINDOW_PAGE, grownVisibleTurns(TURN_WINDOW_PAGE, seenTurns = null, turnCount = 0))
+        assertEquals(TURN_WINDOW_PAGE, grownVisibleTurns(TURN_WINDOW_PAGE, seenTurns = null, turnCount = 11)) // first load
+        val opened = windowConversationTimeline(thread(11), grownVisibleTurns(TURN_WINDOW_PAGE, 11, 11))
+        assertEquals("u1", opened.firstPrompt())
+        // Two prompts arrive: the window widens by two, so u1 stays the oldest visible turn.
+        val grown = windowConversationTimeline(thread(13), grownVisibleTurns(TURN_WINDOW_PAGE, 11, 13))
+        assertEquals("u1", grown.firstPrompt())
+        assertEquals(1, grown.hiddenTurns)
+        // Expanded windows keep their start too, and a later tap still reveals the rest.
+        assertEquals(22, grownVisibleTurns(TURN_WINDOW_PAGE * 2, 11, 13))
+        assertFalse(windowConversationTimeline(thread(13), grownVisibleTurns(TURN_WINDOW_PAGE * 2, 11, 13)).hasEarlier)
+        // A shrinking thread (rewind) never narrows the window below the requested size.
+        assertEquals(TURN_WINDOW_PAGE, grownVisibleTurns(TURN_WINDOW_PAGE, 11, 8))
+    }
 }

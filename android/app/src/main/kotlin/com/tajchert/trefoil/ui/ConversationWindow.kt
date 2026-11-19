@@ -62,3 +62,11 @@ private fun ConversationEntry.belongsToRun(runId: String): Boolean = when (this)
  */
 internal fun prependedAnchorIndex(anchorIndex: Int, before: TimelineWindow, after: TimelineWindow): Int =
     anchorIndex + (before.hiddenCount - after.hiddenCount) - (if (before.hasEarlier && !after.hasEarlier) 1 else 0)
+
+/**
+ * The window size to use when [turnCount] turns are loaded: [requested] (the initial page plus taps), widened by every
+ * turn that arrived since the thread first loaded with [seenTurns], so a new prompt never pushes the oldest visible turn
+ * out. Null [seenTurns] means the thread has not loaded yet.
+ */
+internal fun grownVisibleTurns(requested: Int, seenTurns: Int?, turnCount: Int): Int =
+    requested + (turnCount - (seenTurns ?: turnCount)).coerceAtLeast(0)
