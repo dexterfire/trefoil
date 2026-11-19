@@ -96,11 +96,12 @@ class EnvironmentProbe(
                         current = try { tokens.fresh(current, base, rejectedToken = current.accessToken) }
                             catch (_: TokenRenewalUnavailable) { return@withTimeoutOrNull MachineProbe.Unreachable }
                             catch (_: TokenRenewalRejected) { return@withTimeoutOrNull MachineProbe.AuthFailed }
+                            catch (_: DpopKeyUnavailable) { return@withTimeoutOrNull MachineProbe.AuthFailed }
                         true
                     }
                     else -> false
                 }
-                val (session, status) = (if (retry) get(sessionRequest()) else first)
+                val (session, status) = (if (retry) try { get(sessionRequest()) } catch (_: DpopKeyUnavailable) { return@withTimeoutOrNull MachineProbe.AuthFailed } else first)
                     ?: return@withTimeoutOrNull MachineProbe.Unreachable
                 when {
                     status == 401 || status == 403 -> MachineProbe.AuthFailed

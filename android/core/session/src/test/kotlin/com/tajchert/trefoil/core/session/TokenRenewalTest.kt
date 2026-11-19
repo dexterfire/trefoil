@@ -12,6 +12,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.*
 import okhttp3.*
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.ResponseBody.Companion.toResponseBody
 import okhttp3.mockwebserver.*
 import org.junit.Assert.*
 import org.junit.Test
@@ -185,5 +187,18 @@ class TokenRenewalTest {
                 catch (error: PairingException) { assertTrue(error.message.orEmpty().contains("pair again")) }
             } finally { offline.shutdown() }
         } finally { client.close(); scope.cancel(); runCatching { server.shutdown() } }
+    }
+
+    @Test fun learnedServerClockStaysWithItsHost() {
+        val authorizer = EnvironmentAuthorizer({ key })
+        val skewed = "https://skewed.example/api/auth/session".toHttpUrl()
+        val serverNow = System.currentTimeMillis() + 3_600_000
+        val rejection = Response.Builder().request(Request.Builder().url(skewed).build()).protocol(Protocol.HTTP_1_1).code(401).message("Unauthorized")
+            .header("WWW-Authenticate", "DPoP").header("Date", java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME.format(java.time.Instant.ofEpochMilli(serverNow).atOffset(java.time.ZoneOffset.UTC)))
+            .body("""{"dpopFailureReason":"time_window"}""".toResponseBody()).build()
+        assertTrue(authorizer.shouldRetry(rejection))
+        fun iat(url: String) = part(authorizer.proof("GET", url.toHttpUrl(), null), 1)["iat"]!!.jsonPrimitive.long
+        assertTrue("The skewed host gets its clock", kotlin.math.abs(iat("https://skewed.example/ws") - serverNow / 1000) < 30)
+        assertTrue("Another host keeps the device clock", kotlin.math.abs(iat("https://other.example/api/auth/session") - System.currentTimeMillis() / 1000) < 30)
     }
 }

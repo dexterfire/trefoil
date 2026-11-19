@@ -75,9 +75,8 @@ class UsageWidgetWorker(context: Context, parameters: WorkerParameters) : Corout
         // A renewal made here goes straight to the vault, over the same session's token only.
         val vault = EnvironmentVault(applicationContext)
         val tokens = EnvironmentTokenRenewer(DeviceDpopKey::loadOrCreate, onRenewed = { renewed, replaces -> withContext(Dispatchers.IO) {
-            val saved = vault.read()
-            if (saved.any { it.id == renewed.id && it.accessToken in replaces })
-                vault.write(saved.map { if (it.id == renewed.id && it.accessToken in replaces) it.withTokenOf(renewed) else it })
+            // Atomic against the view model's writes: a forgotten or re-paired machine is left alone.
+            vault.update { saved -> saved.map { if (it.id == renewed.id && it.accessToken in replaces) it.withTokenOf(renewed) else it } }
         } })
         val client = T3Client(connectionScope, tokens = tokens)
         var tunnel: SshTunnel? = null

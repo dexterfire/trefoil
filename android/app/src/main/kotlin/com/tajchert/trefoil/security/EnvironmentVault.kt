@@ -32,7 +32,7 @@ class EnvironmentVault(context: Context) {
                 .setKeySize(256).build())
         }.generateKey()
     }
-    @Synchronized fun read(): List<SavedEnvironment> = readEncrypted(file)?.let { json.decodeFromString(serializer, it) } ?: emptyList()
+    fun read(): List<SavedEnvironment> = synchronized(LOCK) { readEncrypted(file)?.let { json.decodeFromString(serializer, it) } ?: emptyList() }
     @Synchronized fun readHostKeys(): List<SshHostKey> = readEncrypted(hostKeysFile)?.let { json.decodeFromString(hostKeysSerializer, it) } ?: emptyList()
     @Synchronized fun writeHostKeys(keys: List<SshHostKey>) = writeEncrypted(hostKeysFile, json.encodeToString(hostKeysSerializer, keys))
     private fun readEncrypted(source: AtomicFile): String? {
@@ -42,12 +42,22 @@ class EnvironmentVault(context: Context) {
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, nonce))
         return cipher.doFinal(encrypted).decodeToString()
     }
-    @Synchronized fun write(environments: List<SavedEnvironment>) = writeEncrypted(file, json.encodeToString(serializer, environments))
+    fun write(environments: List<SavedEnvironment>) = synchronized(LOCK) { writeEncrypted(file, json.encodeToString(serializer, environments)) }
+    /** Atomic read-modify-write against every vault instance in this process (view model, widget worker). */
+    fun update(transform: (List<SavedEnvironment>) -> List<SavedEnvironment>) = synchronized(LOCK) {
+        val current = read()
+        val next = transform(current)
+        if (next != current) write(next)
+    }
     private fun writeEncrypted(destination: AtomicFile, plaintext: String) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val bytes = SecretEnvelope.encode(cipher.iv, cipher.doFinal(plaintext.encodeToByteArray()))
         val stream = destination.startWrite()
         try { stream.write(bytes); destination.finishWrite(stream) } catch (e: Exception) { destination.failWrite(stream); throw e }
+    }
+    private companion object {
+        /** One lock per process: instances share the same file. */
+        val LOCK = Any()
     }
 }

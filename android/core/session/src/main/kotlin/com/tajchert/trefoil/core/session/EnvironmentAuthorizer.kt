@@ -22,8 +22,9 @@ class EnvironmentAuthorizer(
     private val dpopKey: (() -> DpopKey)? = null,
     private val clockMillis: () -> Long = System::currentTimeMillis,
 ) {
-    /** Server clock minus device clock, learned from a DPoP `time_window` rejection's `Date` header. */
-    @Volatile private var serverOffsetMillis = 0L
+    /** Server clock minus device clock per host (scheme, host, port), learned from a DPoP `time_window` rejection's `Date` header. */
+    private val serverOffsetMillis = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private fun hostKey(url: HttpUrl) = "${url.scheme}://${url.host}:${url.port}"
 
     val supportsDpop: Boolean get() = dpopKey != null
 
@@ -35,7 +36,7 @@ class EnvironmentAuthorizer(
     /** A proof for [url]; [accessToken] adds `ath` (the access token, or the WebSocket ticket for the upgrade). */
     fun proof(method: String, url: HttpUrl, accessToken: String?): String {
         val key = try { dpopKey?.invoke() } catch (_: Exception) { null } ?: throw DpopKeyUnavailable()
-        return Dpop.proof(key, method, url, accessToken, Math.floorDiv(clockMillis() + serverOffsetMillis, 1000L))
+        return Dpop.proof(key, method, url, accessToken, Math.floorDiv(clockMillis() + (serverOffsetMillis[hostKey(url)] ?: 0L), 1000L))
     }
 
     /**
@@ -51,7 +52,7 @@ class EnvironmentAuthorizer(
             "replay" -> true
             "time_window" -> {
                 val serverMillis = response.headers.getDate("Date")?.time ?: return false
-                serverOffsetMillis = serverMillis - clockMillis()
+                serverOffsetMillis[hostKey(response.request.url)] = serverMillis - clockMillis()
                 true
             }
             else -> false
