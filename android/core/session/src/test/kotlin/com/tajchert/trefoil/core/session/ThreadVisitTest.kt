@@ -40,12 +40,13 @@ class ThreadVisitTrackerTest {
   }
   @Test fun commandUsesThreadUpdatedAtAndOmitsOpenedWhenFalse() {
     val projection = Json.parseToJsonElement("""{"thread":{"updatedAt":"2026-11-12T10:00:00.000Z"}}""").jsonObject
-    val open = ThreadVisitTracker.command("t1", projection, true)
+    val open = ThreadVisitTracker.command("t1", projection, true)!!
     assertEquals(setOf("type", "commandId", "threadId", "visitedAt", "opened"), open.keys)
     assertEquals("2026-11-12T10:00:00.000Z", open.string("visitedAt"))
-    val activity = ThreadVisitTracker.command("t1", JsonObject(emptyMap()), false, Instant.parse("2026-11-13T00:00:00Z"))
+    val activity = ThreadVisitTracker.command("t1", projection, false)!!
     assertEquals(setOf("type", "commandId", "threadId", "visitedAt"), activity.keys)
-    assertEquals("2026-11-13T00:00:00Z", activity.string("visitedAt"))
+    assertNull("no updatedAt, no visit", ThreadVisitTracker.command("t1", JsonObject(emptyMap()), false))
+    assertNull(ThreadVisitTracker.command("t1", Json.parseToJsonElement("""{"thread":{"updatedAt":"soon"}}""").jsonObject, true))
   }
 }
 

@@ -507,11 +507,15 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         vaultMutex.withLock { save(_environments.value.filterNot { it.id == environment.id }) }
         widgetSync.forget(environment.id)
     }
+    private var threadShown = false
+    /** The conversation is on screen (reported by the UI); a visit is recorded only while it is shown in the foreground. */
+    fun setThreadShown(shown: Boolean) { threadShown = shown; updateThreadViewing() }
+    private fun updateThreadViewing() = client.setThreadViewing(foreground && threadShown)
     fun pause() {
         if (!foreground) return
         screenSessions.pause()
         foreground = false
-        client.setThreadViewing(false)
+        updateThreadViewing()
         // Route switches and machine probes wait for the foreground.
         refreshRouteMonitor()
         probeJob?.cancel(); probeJob = null
@@ -544,7 +548,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     }
     fun resume() {
         foreground = true
-        client.setThreadViewing(true)
+        updateThreadViewing()
         backgroundDisconnectJob?.cancel(); backgroundDisconnectJob = null
         postKeepAliveCheck()
         screenSessions.resume()

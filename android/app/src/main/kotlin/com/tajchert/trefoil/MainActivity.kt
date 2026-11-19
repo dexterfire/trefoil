@@ -124,6 +124,7 @@ class MainActivity : ComponentActivity() {
             val usage by model.usage.collectAsStateWithLifecycle()
             val keepConnected by model.keepConnected.collectAsStateWithLifecycle()
             TrefoilApp(
+                onThreadShown = model::setThreadShown,
                 usageOpenRequest = usageRequest,
                 pairLinkRequest = pairLinkRequest,
                 usage = usage,

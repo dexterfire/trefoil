@@ -55,13 +55,14 @@ internal class ThreadVisitTracker(private val throttleMillis: Long = VISIT_THROT
     companion object {
         const val VISIT_THROTTLE_MS = 10_000L
 
-        /** `visitedAt` is the thread's own `updatedAt` (as T3 clients do), so device clock skew cannot mark unseen work read. */
-        fun command(threadId: String, projection: JsonObject, opened: Boolean, now: Instant = Instant.now()): JsonObject {
+        /** `visitedAt` is the thread's own `updatedAt` (as T3 clients do), so device clock skew cannot mark unseen work read; null when it is missing or unparseable, and no visit is sent. */
+        fun command(threadId: String, projection: JsonObject, opened: Boolean): JsonObject? {
             val updatedAt = ((projection["thread"] as? JsonObject)?.get("updatedAt") as? kotlinx.serialization.json.JsonPrimitive)
                 ?.takeIf { it.isString }?.content?.takeIf { runCatching { Instant.parse(it) }.isSuccess }
+            if (updatedAt == null) return null
             return buildJsonObject {
                 put("type", "thread.visit"); put("commandId", UUID.randomUUID().toString()); put("threadId", threadId)
-                put("visitedAt", updatedAt ?: now.toString())
+                put("visitedAt", updatedAt)
                 if (opened) put("opened", true)
             }
         }

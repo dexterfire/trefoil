@@ -37,6 +37,7 @@ fun TrefoilApp(
     draft: ThreadDraft?, onStartDraft: (ThreadDraft) -> Unit, onCancelDraft: () -> Unit,
     onSetRuntimeMode: (RuntimeMode) -> Unit, onSetModel: (ModelOption) -> Unit,
     onReconnect: () -> Unit, onDisconnect: () -> Unit, onForget: (SavedEnvironment) -> Unit,
+    onThreadShown: (Boolean) -> Unit = {},
     keepConnected: Boolean = false, onSetModelOption: (String, Any) -> Unit = { _, _ -> },
     onKeepConnectedChange: (Boolean) -> Unit = {},
     onSshConnect: (SshConnectionInput) -> Unit = {},
@@ -152,6 +153,9 @@ fun TrefoilApp(
         val openThreadId = state.selectedThreadId.takeIf {
             draft == null && it != null && (wideLayout || showThread) && connected && !choosingEnvironment && !showUsage && !showScreens
         }
+        // Visit tracking follows what is on screen, not merely which thread is selected.
+        LaunchedEffect(openThreadId != null) { onThreadShown(openThreadId != null) }
+        DisposableEffect(Unit) { onDispose { onThreadShown(false) } }
         val otherNeedsYou = if (state.connection == ConnectionStatus.Connected) needsYouThreads.count { it.id != openThreadId } else 0
         // A thread that enters Needs you while another screen is open surfaces as a snackbar. Detection only queues the
         // message; one long-lived collector shows them in turn so a state update never dismisses a snackbar on screen.

@@ -67,7 +67,7 @@ class T3Client(
     private var threadSubscription: String? = null
     private val visits = ThreadVisitTracker()
     private var visitTimer: Job? = null
-    private var threadViewing = true
+    private var threadViewing = false
     private var shellReady = false
     private var threadReady = false
     private var authorized = false
@@ -422,7 +422,7 @@ class T3Client(
         if (epoch != generation) return@synchronized
         fileDownloads.forEach { it.cancel() }; fileDownloads.clear()
         generation++
-        refreshSignals?.close(); refreshJob?.cancel()
+        refreshSignals?.close(); refreshJob?.cancel(); visits.reset(null); visitTimer?.cancel(); visitTimer = null
         shellReady = false; threadReady = false; authorized = false; previewAuthorized = false
         resetRoute()
         resetScreens()
@@ -438,6 +438,7 @@ class T3Client(
         cacheState()
         fileDownloads.forEach { it.cancel() }; fileDownloads.clear()
         generation++; threadGeneration++; refreshSignals?.close(); refreshJob?.cancel(); heartbeat?.cancel(); heartbeat = null
+        visits.reset(null); visitTimer?.cancel(); visitTimer = null
         socket?.close(1000, null); socket = null
         pending.values.forEach { it.completeExceptionally(IllegalStateException("Disconnected; pending command outcome may be uncertain")) }
         pending.clear(); streams.clear(); threadSubscription = null; shellReady = false; threadReady = false; authorized = false; previewAuthorized = false
@@ -575,11 +576,11 @@ class T3Client(
             ThreadVisitTracker.Action.None -> Unit
             is ThreadVisitTracker.Action.Wait -> if (visitTimer?.isActive != true) {
                 val epoch = generation
-                visitTimer = scope.launch { delay(action.millis); synchronized(lifecycleLock) { if (epoch == generation) noteThreadVisit() } }
+                visitTimer = scope.launch { delay(action.millis); synchronized(lifecycleLock) { visitTimer = null; if (epoch == generation) noteThreadVisit() } }
             }
             is ThreadVisitTracker.Action.Send -> {
                 val epoch = generation
-                val payload = ThreadVisitTracker.command(threadId!!, projection, action.opened)
+                val payload = ThreadVisitTracker.command(threadId!!, projection, action.opened) ?: return
                 scope.launch { try { rpc("orchestration.dispatchCommand", payload, epoch) } catch (error: CancellationException) { throw error } catch (_: Exception) {} }
             }
         }
