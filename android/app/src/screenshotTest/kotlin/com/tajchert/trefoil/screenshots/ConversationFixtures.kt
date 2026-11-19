@@ -133,6 +133,18 @@ object ConversationFixtures {
         ),
     )
 
+    private val longThreadPrompts = listOf("Add a dark theme preview.", "Cover the thread list too.", "Now the settings screen.",
+        "Fix the clipped title.", "Run lint.", "Update the README.", "Bump the version.", "Check the widget colors.",
+        "Record the screenshots.", "Run the unit tests.", "Tidy the imports.", "Rename the fixture.", "Squash the commits.", "Open the PR.")
+
+    /** Fourteen settled turns: the latest ten show, with "Load earlier turns" at the top. */
+    fun longThreadState(): ClientState = chatState().copy(
+        messages = longThreadPrompts.flatMapIndexed { i, prompt ->
+            listOf(msg("lu$i", "user", prompt, i * 2), msg("la$i", "assistant", "Done: ${prompt.lowercase().removeSuffix(".")}.", i * 2 + 1))
+        },
+        activities = emptyList(),
+    )
+
     fun disconnectedState(): ClientState = chatState().copy(connection = ConnectionStatus.Disconnected, canWrite = false, canWriteThreads = false)
 
     val approval = RuntimeRequest(id = "req-1", title = "Run command", detail = "./gradlew :core:ssh:test")

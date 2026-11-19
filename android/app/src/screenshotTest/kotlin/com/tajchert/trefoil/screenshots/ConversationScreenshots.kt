@@ -107,6 +107,17 @@ fun Conversation_BackBadge_Dark() = Frame(dark = true) {
     Conversation(fx.chatState(), send = {}, interrupt = {}, respond = { _, _, _ -> }, onBack = {}, onOpenAgents = null, otherNeedsYou = 2)
 }
 
+/** Tall enough for the whole ten-turn window, so the list cannot scroll and the control row shows at the top. */
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, heightDp = 1400)
+@Composable
+fun Conversation_LoadEarlierTurns_Light() = Screen(fx.longThreadState())
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, heightDp = 1400, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun Conversation_LoadEarlierTurns_Dark() = Screen(fx.longThreadState(), dark = true)
+
 @PreviewTest
 @Preview(showBackground = true, widthDp = 400, heightDp = 800)
 @Composable

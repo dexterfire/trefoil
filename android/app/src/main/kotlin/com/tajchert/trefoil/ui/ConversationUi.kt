@@ -11,6 +11,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -25,11 +27,13 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import com.tajchert.trefoil.ui.htmlrender.HtmlRenderCard
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.tajchert.trefoil.R
 import com.tajchert.trefoil.core.model.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -121,6 +125,12 @@ internal fun Conversation(
     val backgroundWork = remember(state.backgroundWork, liveTurn.thinkingLabel, state.requests.isNotEmpty(), draft) {
         if (draft == null) backgroundWorkStatus(state.backgroundWork, liveTurn.thinkingLabel, state.requests.isNotEmpty()) else null
     }
+    // Client-side window over the fully loaded timeline; switching threads resets it to the latest turns.
+    var visibleTurns by rememberSaveable(state.environment?.id, composerKey) { mutableIntStateOf(TURN_WINDOW_PAGE) }
+    val window = remember(entries, visibleTurns, liveTurn.headerIndex, state.activeRunId) {
+        windowConversationTimeline(entries, visibleTurns, liveTimelineIndex(entries, state.activeRunId, liveTurn.headerIndex))
+    }
+    val shown = window.visible
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val nearBottom by remember { derivedStateOf { !list.canScrollForward || (list.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= list.layoutInfo.totalItemsCount - 2 } }
@@ -128,6 +138,7 @@ internal fun Conversation(
     LaunchedEffect(list) {
         snapshotFlow { list.isScrollInProgress to nearBottom }.collect { (scrolling, bottom) -> if (scrolling) following = bottom }
     }
+    // Keyed on the full timeline, not the window: revealing earlier turns must not yank the list to the bottom.
     LaunchedEffect(entries, state.requests, state.activeRunId, liveTurn, backgroundWork) {
         if (following) {
             // Let LazyColumn measure new rows before scrolling to the trailing anchor.
@@ -157,6 +168,17 @@ internal fun Conversation(
     val workLabel = "Working" + if (workStartedAt != null) " ${formatWorkDuration(clock - workStartedAt)}" else ""
     val activeRun = state.runs.firstOrNull { it.id == state.activeRunId }
     val turnStartedAt = workStartedAt ?: validThreadInstant(activeRun?.workStartedAt ?: activeRun?.startedAt)
+    /** Reveals [TURN_WINDOW_PAGE] more turns and keeps the entry the reader was looking at in place (prepend anchoring). */
+    fun loadEarlier() {
+        val anchor = list.layoutInfo.visibleItemsInfo.firstOrNull { it.key != LOAD_EARLIER_KEY }
+        val next = windowConversationTimeline(entries, visibleTurns + TURN_WINDOW_PAGE, liveTimelineIndex(entries, state.activeRunId, liveTurn.headerIndex))
+        visibleTurns += TURN_WINDOW_PAGE
+        if (anchor == null) return
+        // Applied on the next measure together with the revealed rows, instead of LazyColumn's key tracking, which would
+        // keep the (still first) "Load earlier turns" row in place and push the reader's entry down.
+        list.requestScrollToItem(prependedAnchorIndex(anchor.index, window, next), -anchor.offset)
+        following = false
+    }
     CompositionLocalProvider(LocalFileDownloadUi provides fileDownloadUi, LocalContentColor provides c.text) {
         Column(Modifier.fillMaxSize()) {
             ConversationHeader(
@@ -187,13 +209,15 @@ internal fun Conversation(
                             is ConversationEntry.Work -> CompletedWork(entry, canLoadActivity, onLoadActivity, subagents = state.subagents, onOpenThread = onOpenThread, onOpenAgents = onOpenAgents)
                         }
                     }
+                    if (window.hasEarlier) item(key = LOAD_EARLIER_KEY) { LoadEarlierTurnsRow(::loadEarlier) }
                     // The active turn opens with its "Working for" header, right after the prompt that started it.
-                    val headerAt = liveTurn.headerIndex?.coerceIn(0, entries.size)
-                    items(if (headerAt == null) entries else entries.subList(0, headerAt), key = { it.key }) { entryRow(it) }
+                    // The window always keeps the header's turn, so its index maps into the visible tail.
+                    val headerAt = liveTurn.headerIndex?.minus(window.hiddenCount)?.coerceIn(0, shown.size)
+                    items(if (headerAt == null) shown else shown.subList(0, headerAt), key = { it.key }) { entryRow(it) }
                     if (headerAt != null) {
                         val headerKey = state.activeRunId?.let(::workingHeaderKey)?.takeIf { key -> entries.none { it.key == key } } ?: "working-header"
                         item(key = headerKey) { WorkingTurnHeader(turnStartedAt) }
-                        items(entries.subList(headerAt, entries.size), key = { it.key }) { entryRow(it) }
+                        items(shown.subList(headerAt, shown.size), key = { it.key }) { entryRow(it) }
                     }
                     items(liveTurn.orphanSubagents, key = { "subagent:${it.id}" }) { SubagentTimelineRow(it, onOpenThread, onOpenAgents) }
                     liveTurn.thinkingLabel?.let { label -> item(key = "thinking") { ThinkingRow(label) } }
@@ -375,6 +399,20 @@ internal fun rememberSteadyCanWrite(state: ClientState): Boolean {
 }
 
 private const val STALE_GRACE_MS = 1_500L
+
+private const val LOAD_EARLIER_KEY = "load-earlier"
+
+/** T3's history control: a full-width secondary button at the top of the list, explicit tap only. */
+@Composable
+internal fun LoadEarlierTurnsRow(onClick: () -> Unit) {
+    val c = Tf.colors
+    OutlinedButton(onClick = onClick, modifier = Modifier.fillMaxWidth().testTag(LOAD_EARLIER_KEY),
+        border = BorderStroke(1.dp, c.line), colors = ButtonDefaults.outlinedButtonColors(contentColor = c.muted)) {
+        Icon(Icons.Default.KeyboardArrowUp, null, Modifier.size(18.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(stringResource(R.string.load_earlier_turns), style = TrefoilType.meta.copy(color = c.muted))
+    }
+}
 
 /** Launching a thread needs the shell (projects, models), not a fresh projection of whichever thread is open. `canWrite` implies it. */
 internal val ClientState.canLaunchThreads: Boolean get() = canWrite || (canWriteThreads && connection == ConnectionStatus.Connected)
