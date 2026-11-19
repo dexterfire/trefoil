@@ -56,7 +56,15 @@ class T3Client(
     private val usageClockMillis: () -> Long = System::currentTimeMillis,
     /** Descriptor preflight timeout per route kind during [connect]. */
     private val routeTimeoutMillis: (RouteKind) -> Long = ::routePreflightTimeoutMillis,
+    /** This device's DPoP proof key, loaded lazily; needed for DPoP environments (null: bearer only). */
+    dpopKey: (() -> DpopKey)? = null,
+    /**
+     * Ask for a DPoP-bound token at pairing. Off by default: a direct T3 pairing then issues a 1-hour DPoP token that
+     * no endpoint renews (renewal needs a fresh bootstrap credential, which only T3 Connect mints), against a 30-day bearer.
+     */
+    private val pairWithDpop: Boolean = false,
 ) : TrefoilClient {
+    private val authorizer = EnvironmentAuthorizer(dpopKey)
     private val mutable = MutableStateFlow(ClientState())
     override val state: StateFlow<ClientState> = mutable.asStateFlow()
     private val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).build()
@@ -141,12 +149,24 @@ class T3Client(
         val cancellation = launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) { try { awaitCancellation() } finally { call.cancel() } }
         try {
             call.execute().use { response ->
-                if (!response.isSuccessful) throw HttpFailure(response.code)
+                if (!response.isSuccessful) throw HttpFailure(response.code, authorizer.shouldRetry(response))
                 EffectRpc.json.parseToJsonElement(response.body?.string() ?: error("Empty server response")).jsonObject
             }
         } finally { cancellation.cancel() }
     }
-    private class HttpFailure(val status: Int) : IllegalStateException(if (status == 401 || status == 403) "Authorization expired or denied; pair again" else "Server HTTP error $status")
+    /**
+     * Authenticated HTTP to an already verified [url] with the saved token's scheme. A DPoP `replay` or clock-skew
+     * answer gets exactly one retry with a fresh proof; anything else propagates (401/403: pair again).
+     */
+    private suspend fun authorizedFetch(environment: SavedEnvironment, method: String, url: HttpUrl, timeoutMillis: Long? = null): JsonObject {
+        // Off the caller's thread: a DPoP proof is a keystore signature.
+        suspend fun request() = withContext(Dispatchers.IO) {
+            authorizer.authorize(Request.Builder().url(url), environment, method, url).apply { if (method == "POST") post(ByteArray(0).toRequestBody()) }.build()
+        }
+        return try { fetch(request(), timeoutMillis) } catch (error: HttpFailure) { if (!error.dpopRetry) throw error; fetch(request(), timeoutMillis) }
+    }
+    /** [dpopRetry]: a DPoP rejection one fresh proof can fix (see [EnvironmentAuthorizer.shouldRetry]). */
+    private class HttpFailure(val status: Int, val dpopRetry: Boolean = false) : IllegalStateException(if (status == 401 || status == 403) "Authorization expired or denied; pair again" else "Server HTTP error $status")
     /** The server answered with a failure Exit: a definite answer, not a lost reply. */
     private class ServerRejected : IllegalStateException("Server rejected request; refresh before trying again")
     /** The server answered with an interrupted Exit: it stopped handling the request, so the outcome is unknown. */
@@ -167,11 +187,25 @@ class T3Client(
             .add("requested_token_type", "urn:ietf:params:oauth:token-type:access_token")
             .add("client_label", name.ifBlank { "Trefoil" }).add("client_device_type", "mobile").add("client_os", "Android").build()
         currentCoroutineContext().ensureActive()
-        val token = fetch(Request.Builder().url(base.resolve("/oauth/token")!!).post(form).build())
+        val tokenUrl = base.resolve("/oauth/token")!!
+        // With a proof (no `ath`) T3 binds the token to this key and answers `DPoP`; it checks the proof before spending
+        // the credential, so one retry after `replay`/clock skew is safe. No usable key: plain bearer pairing.
+        suspend fun exchange(): Request {
+            val proof = if (pairWithDpop && authorizer.supportsDpop) withContext(Dispatchers.IO) { try { authorizer.proof("POST", tokenUrl, null) } catch (_: DpopKeyUnavailable) { null } } else null
+            return Request.Builder().url(tokenUrl).post(form).apply { if (proof != null) header("DPoP", proof) }.build()
+        }
+        val sent = exchange()
+        val token = try { fetch(sent) } catch (error: HttpFailure) { if (!error.dpopRetry || sent.header("DPoP") == null) throw error; fetch(exchange()) }
         currentCoroutineContext().ensureActive()
-        require(token.string("token_type") == "Bearer") { "Server did not issue a bearer token" }
+        val tokenType = when (token.string("token_type")) {
+            "Bearer" -> AccessTokenType.Bearer
+            "DPoP" -> AccessTokenType.DPoP.also { require(sent.header("DPoP") != null) { "Server issued a DPoP token without a proof" } }
+            else -> throw IllegalArgumentException("Server issued an unsupported token type")
+        }
         require(token.string("access_token").isNotBlank()) { "Server returned an empty access token" }
-        SavedEnvironment(info.string("environmentId").ifBlank { error("Missing environment identity") }, name.ifBlank { info.string("label") }, base.toString(), token.string("access_token"), allowInsecureHttp = allowInsecureHttp && base.scheme == "http" && isPrivateLanAddress(base.host))
+        val expiresAt = (token["expires_in"] as? JsonPrimitive)?.takeUnless { it.isString }?.doubleOrNull?.takeIf { it > 0 }?.let { System.currentTimeMillis() + (it * 1000).toLong() }
+        SavedEnvironment(info.string("environmentId").ifBlank { error("Missing environment identity") }, name.ifBlank { info.string("label") }, base.toString(), token.string("access_token"), allowInsecureHttp = allowInsecureHttp && base.scheme == "http" && isPrivateLanAddress(base.host),
+            tokenType = tokenType, accessTokenExpiresAtMillis = expiresAt)
     } catch (error: CancellationException) { throw error }
     catch (error: PairingException) { throw error }
     catch (error: HttpFailure) { throw PairingException(if (error.status == 401 || error.status == 403) "Pairing token expired or was denied. Generate a new pairing link." else "Pairing server returned HTTP ${error.status}. Check the server and try again.") }
@@ -211,9 +245,10 @@ class T3Client(
             currentCoroutineContext().ensureActive()
             check(epoch == generation) { "Connection was cancelled" }
             // Identity verified: the bearer goes to this route only.
-            val session = try { fetch(Request.Builder().url(base.resolve("/api/auth/session")!!).header("Authorization", "Bearer ${environment.accessToken}").build()) }
+            val session = try { authorizedFetch(environment, "GET", base.resolve("/api/auth/session")!!) }
             catch (error: CancellationException) { throw error }
             catch (error: HttpFailure) { if (error.status == 401 || error.status == 403) throw error; failure = error; continue }
+            catch (error: DpopKeyUnavailable) { throw error }
             catch (error: Exception) { failure = error; continue }
             require(session["authenticated"]?.jsonPrimitive?.booleanOrNull == true) { "Authorization expired; pair again" }
             return SelectedRoute(route, base, session)
@@ -232,17 +267,22 @@ class T3Client(
         }
         try {
             val (route, base, session) = selectRoute(environment, routes, epoch)
-            fun ticketRequest(path: String) = Request.Builder().url(base.resolve(path)!!).header("Authorization", "Bearer ${environment.accessToken}").post(ByteArray(0).toRequestBody()).build()
+            suspend fun ticketRequest(path: String) = authorizedFetch(environment, "POST", base.resolve(path)!!)
             val permissions = (session["permissions"] ?: session["scopes"]) as? JsonArray
             val mayOperate = permissions?.any { it.jsonPrimitive.content == "orchestration:operate" } == true
             val mayReadUsage = permissions?.any { (it as? JsonPrimitive)?.contentOrNull == "diagnostics:read" } == true
-            val ticket = try { fetch(ticketRequest("/api/auth/websocket-ticket/rpc")) } catch (error: HttpFailure) {
+            val ticket = try { ticketRequest("/api/auth/websocket-ticket/rpc") } catch (error: HttpFailure) {
                 if (error.status != 404) throw error
-                fetch(ticketRequest("/api/auth/websocket-ticket"))
+                ticketRequest("/api/auth/websocket-ticket")
             }
             require(ticket.string("ticket").isNotBlank()) { "Missing WebSocket ticket" }
             synchronized(lifecycleLock) { check(epoch == generation) { "Connection was cancelled" }; activeBase = base }
-            val endpoint = base.newBuilder().encodedPath("/ws").query(null).addQueryParameter("wsTicket", ticket.string("ticket")).addQueryParameter("orchestrationProtocol", "2").build()
+            val socketBase = base.newBuilder().encodedPath("/ws").query(null).build()
+            // A DPoP session's RPC ticket is bound to the key; the upgrade cannot carry headers, so its proof (GET, the
+            // http(s) /ws URL, `ath` over the ticket) travels in the `dpop` query parameter.
+            val upgradeProof = if (environment.tokenType == AccessTokenType.DPoP) withContext(Dispatchers.IO) { authorizer.proof("GET", socketBase, ticket.string("ticket")) } else null
+            val endpoint = socketBase.newBuilder().addQueryParameter("wsTicket", ticket.string("ticket")).addQueryParameter("orchestrationProtocol", "2")
+                .apply { if (upgradeProof != null) addQueryParameter("dpop", upgradeProof) }.build()
             val opened = CompletableDeferred<Unit>()
             socket = http.newWebSocket(Request.Builder().url(endpoint).build(), object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) { synchronized(lifecycleLock) { if (epoch == generation) opened.complete(Unit) else webSocket.cancel() } }
@@ -296,7 +336,7 @@ class T3Client(
         catch (error: Exception) {
             val message = when (error) {
                 is PairingException -> error.message ?: "Connection failed"
-                is HttpFailure -> error.message ?: "Connection failed"
+                is HttpFailure, is DpopKeyUnavailable -> error.message ?: "Connection failed"
                 is RequestTimedOut, is java.io.InterruptedIOException -> "T3 connection timed out. Check the server and network, then try again."
                 else -> "Connection failed. Check the network and server, or pair again."
             }
@@ -314,7 +354,7 @@ class T3Client(
         if (epoch != generation) return@synchronized
         configSubscription = runCatching { subscribe("subscribeServerConfig", buildJsonObject {}) { event -> serverConfigEvent(epoch, environment.id, event) } }.getOrNull()
         linkStateJob = scope.launch {
-            val tunnel = linkState(base, environment.accessToken)
+            val tunnel = linkState(base, environment)
             synchronized(lifecycleLock) {
                 if (epoch == generation) { initialHintSent = true; hints.tryEmit(RouteHints(environment.id, directEndpoints, tunnel)) }
             }
@@ -331,9 +371,9 @@ class T3Client(
     }
 
     /** `GET /api/connect/link-state` on the verified route; any failure is [TunnelHint.Unknown] and never fails the connection. */
-    private suspend fun linkState(base: HttpUrl, token: String): TunnelHint = try {
+    private suspend fun linkState(base: HttpUrl, environment: SavedEnvironment): TunnelHint = try {
         val state = withTimeoutOrNull(LINK_STATE_TIMEOUT_MS) {
-            fetch(Request.Builder().url(base.resolve("/api/connect/link-state")!!).header("Authorization", "Bearer $token").build(), LINK_STATE_TIMEOUT_MS)
+            authorizedFetch(environment, "GET", base.resolve("/api/connect/link-state")!!, LINK_STATE_TIMEOUT_MS)
         }
         if (state == null) TunnelHint.Unknown else tunnelHint(state)
     } catch (error: CancellationException) { throw error } catch (_: Exception) { TunnelHint.Unknown }
@@ -806,8 +846,8 @@ class T3Client(
         val (epoch, selection, environment, currentTarget) = captured
         // The live route's base: it passed the URL policy and the identity check before the bearer reached it.
         val base = url(captured.base.toString(), environment.allowInsecureHttp)
-        val ticket = try { fetch(Request.Builder().url(base.resolve("/api/auth/websocket-ticket/media")!!)
-            .header("Authorization", "Bearer ${environment.accessToken}").post(ByteArray(0).toRequestBody()).build(), timeoutMillis = 8_000).string("ticket") }
+        // Media tickets stay unbound on T3 (one ticket serves several requests), so only the mint carries a proof.
+        val ticket = try { authorizedFetch(environment, "POST", base.resolve("/api/auth/websocket-ticket/media")!!, timeoutMillis = 8_000).string("ticket") }
         catch (error: CancellationException) { throw error }
         catch (_: Exception) { throw IllegalStateException("Remote screen access failed. Refresh and try again.") }
         currentCoroutineContext().ensureActive()

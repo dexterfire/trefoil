@@ -8,9 +8,15 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class SavedEnvironment(val id: String, val name: String, val baseUrl: String, val accessToken: String, val ssh: SshProfile? = null, val allowInsecureHttp: Boolean = false,
     /** Learned routes only (see Routes.kt); the paired address stays in [baseUrl]. Defaults keep old vault JSON decodable. */
-    val routes: List<EnvironmentRoute> = emptyList()) {
+    val routes: List<EnvironmentRoute> = emptyList(),
+    /** T3 `token_type`. A [AccessTokenType.DPoP] token is bound to this device's proof key; old vault JSON has none and stays Bearer. */
+    val tokenType: AccessTokenType = AccessTokenType.Bearer,
+    /** Expiry the server reported at pairing (`expires_in`), epoch millis; null when it did not say. Informational: the server decides. */
+    val accessTokenExpiresAtMillis: Long? = null) {
     override fun toString() = "SavedEnvironment(credentials=***)"
 }
+/** Authorization scheme of a saved access token: `Authorization: Bearer`, or `Authorization: DPoP` plus a per-request proof (RFC 9449). */
+@Serializable enum class AccessTokenType { Bearer, DPoP }
 data class Project(val id: String, val title: String, val path: String = "")
 data class ThreadTarget(val environmentId: String, val threadId: String)
 enum class ThreadAction { Settle, Unsettle, Pin, Unpin, Rename, Snooze, Wake }

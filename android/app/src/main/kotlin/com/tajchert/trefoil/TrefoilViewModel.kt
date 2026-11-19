@@ -13,6 +13,7 @@ import com.tajchert.trefoil.core.ssh.SshConnectionException
 import com.tajchert.trefoil.core.ssh.SshTunnel
 import com.tajchert.trefoil.core.ssh.SshTunnelConnector
 import com.tajchert.trefoil.keepalive.ConnectionKeepAlive
+import com.tajchert.trefoil.security.DeviceDpopKey
 import com.tajchert.trefoil.security.EnvironmentVault
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -29,7 +30,7 @@ internal val AUTO_RECONNECT_BACKOFF_MS = listOf(2_000L, 5_000L, 15_000L)
 internal const val LINK_CHECK_TIMEOUT_MS = 4_000L
 
 class TrefoilViewModel(application: Application) : AndroidViewModel(application) {
-    private val client = T3Client(viewModelScope)
+    private val client = T3Client(viewModelScope, dpopKey = DeviceDpopKey::loadOrCreate)
     val usageController = UsageController(viewModelScope, { client }, onReport = {
         try { widgetSync.report(it) } catch (e: CancellationException) { throw e } catch (_: Exception) { /* Widget storage must not fail app reads. */ }
     })
@@ -98,7 +99,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     private var keepAliveCheckPosted = false
     /** Set by an explicit disconnect or forgetting the live machine; until the next connection action nothing starts the service. */
     private var keepAliveLatched = false
-    private val environmentProbe = EnvironmentProbe()
+    private val environmentProbe = EnvironmentProbe(dpopKey = DeviceDpopKey::loadOrCreate)
     private val prober = MachineProber(
         // Adapter over the single-route probe; EnvironmentProbe's multi-route probe has the same contract.
         direct = { environment, routes -> probeRoutes(routes) { environmentProbe.probe(environment, it.baseUrl) } },

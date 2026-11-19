@@ -7,6 +7,8 @@ import com.tajchert.trefoil.core.model.RouteKind
 import com.tajchert.trefoil.core.model.SavedEnvironment
 import com.tajchert.trefoil.core.protocol.EffectRpc
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.*
@@ -18,14 +20,17 @@ import kotlin.coroutines.resumeWithException
 
 /**
  * Read-only reachability check for a saved environment: the public descriptor, then
- * `GET /api/auth/session` with the saved bearer token. It opens no WebSocket, requests no
+ * `GET /api/auth/session` with the saved token (bearer, or DPoP with a fresh proof). It opens no WebSocket, requests no
  * ticket and sends no command. The shared URL policy runs first, so a blocked address is
  * never contacted, and the token is only sent after the descriptor proves the same identity.
  */
 class EnvironmentProbe(
     private val timeoutMillis: Long = 8_000,
     http: OkHttpClient = OkHttpClient(),
+    /** This device's DPoP proof key, for environments paired with a DPoP-bound token. */
+    dpopKey: (() -> DpopKey)? = null,
 ) {
+    private val authorizer = EnvironmentAuthorizer(dpopKey)
     private val http = http.newBuilder().followRedirects(false).followSslRedirects(false)
         .callTimeout(timeoutMillis, TimeUnit.MILLISECONDS).build()
 
@@ -71,8 +76,12 @@ class EnvironmentProbe(
                 if (descriptorStatus != 200 || info == null) return@withTimeoutOrNull MachineProbe.Unreachable
                 if (info["orchestrationProtocolVersion"]?.jsonPrimitive?.intOrNull != 2 ||
                     info["environmentId"]?.jsonPrimitive?.contentOrNull != environment.id) return@withTimeoutOrNull MachineProbe.NeedsAttention
-                val (session, status) = get(Request.Builder().url(base.resolve("/api/auth/session")!!)
-                    .header("Authorization", "Bearer ${environment.accessToken}").build())
+                val sessionUrl = base.resolve("/api/auth/session")!!
+                suspend fun sessionRequest() = withContext(Dispatchers.IO) { authorizer.authorize(Request.Builder().url(sessionUrl), environment, "GET", sessionUrl).build() }
+                val first = try { get(sessionRequest()) } catch (_: DpopKeyUnavailable) { return@withTimeoutOrNull MachineProbe.AuthFailed }
+                    ?: return@withTimeoutOrNull MachineProbe.Unreachable
+                // A DPoP `replay` or clock-skew answer gets one fresh proof, like the client's connect.
+                val (session, status) = (if (first.third) get(sessionRequest()) else first)
                     ?: return@withTimeoutOrNull MachineProbe.Unreachable
                 when {
                     status == 401 || status == 403 -> MachineProbe.AuthFailed
@@ -85,11 +94,11 @@ class EnvironmentProbe(
         } ?: MachineProbe.Unreachable
     }
 
-    /** Parsed JSON object body (null if absent or not an object) and status; null on network failure. */
-    private suspend fun get(request: Request): Pair<JsonObject?, Int>? = try {
+    /** Parsed JSON object body (null if absent or not an object), status and whether a DPoP retry may help; null on network failure. */
+    private suspend fun get(request: Request): Triple<JsonObject?, Int, Boolean>? = try {
         http.newCall(request).await().use { response ->
             val body = runCatching { EffectRpc.json.parseToJsonElement(response.peekBody(MAX_BODY).string()) as? JsonObject }.getOrNull()
-            body to response.code
+            Triple(body, response.code, authorizer.shouldRetry(response))
         }
     } catch (_: IOException) { null }
 

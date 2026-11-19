@@ -7,6 +7,7 @@ import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.core.session.T3Client
 import com.tajchert.trefoil.core.ssh.SshTunnel
 import com.tajchert.trefoil.core.ssh.SshTunnelConnector
+import com.tajchert.trefoil.security.DeviceDpopKey
 import com.tajchert.trefoil.security.EnvironmentVault
 import java.time.ZoneId
 import kotlinx.coroutines.*
@@ -69,7 +70,7 @@ class UsageWidgetWorker(context: Context, parameters: WorkerParameters) : Corout
 
     private suspend fun refresh(environment: SavedEnvironment, keys: List<SshHostKey>, store: UsageWidgetStore) = coroutineScope {
         val connectionScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        val client = T3Client(connectionScope)
+        val client = T3Client(connectionScope, dpopKey = DeviceDpopKey::loadOrCreate)
         var tunnel: SshTunnel? = null
         try {
             withTimeout(30_000) {
