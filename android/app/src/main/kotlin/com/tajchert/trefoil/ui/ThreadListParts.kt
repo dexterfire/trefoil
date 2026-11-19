@@ -169,15 +169,29 @@ internal fun FoldedShelfRow(title: String, count: Int, open: Boolean, toggle: ()
 
 /* ---------- Rows ---------- */
 
-/** What the right side of a row shows: spinner for work, dots for done/error, otherwise just time. */
-internal enum class RowMark { None, Working, Done, Error }
+/**
+ * What the right side of a row shows: spinner for work, a muted spinner while the agent waits on work it started
+ * (subagents, awaited background tasks, another thread), dots for done/error, otherwise just time.
+ */
+internal enum class RowMark { None, Working, Waiting, Done, Error }
+
+/**
+ * Work the thread still waits on although its own turn may have finished: T3 parks such a thread at "Waiting"
+ * (never Completed) while background work holds completion or the run is blocked on another thread.
+ */
+internal fun threadAwaitsWork(thread: ThreadSummary): Boolean =
+    thread.completionHeldBackgroundWork && thread.status != "failed" ||
+        thread.blockedOnThreadWait == true && (thread.activityRunStatus ?: thread.status) == "running"
 
 internal fun threadRowMark(thread: ThreadSummary): RowMark = when (threadIndicator(thread).kind) {
     "working" -> RowMark.Working
     "error" -> RowMark.Error
-    "ready", "waiting" -> if (thread.latestRunCompletedAt != null || thread.status.equals("completed", ignoreCase = true)) RowMark.Done else RowMark.None
+    "waiting" -> if (threadAwaitsWork(thread)) RowMark.Waiting else doneMark(thread)
+    "ready" -> doneMark(thread)
     else -> RowMark.None
 }
+private fun doneMark(thread: ThreadSummary) =
+    if (thread.latestRunCompletedAt != null || thread.status.equals("completed", ignoreCase = true)) RowMark.Done else RowMark.None
 
 /** Right-aligned row time: work duration while working, otherwise time since the last update. */
 internal fun threadRowTime(thread: ThreadSummary, now: Long): String {
@@ -249,6 +263,7 @@ private fun RowTime(thread: ThreadSummary, indicator: ThreadIndicator, mark: Row
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         when (mark) {
             RowMark.Working -> WorkingSpinner(size = 16.dp)
+            RowMark.Waiting -> WorkingSpinner(size = 16.dp, color = c.muted)
             RowMark.Done -> StatusDot(c.accent)
             RowMark.Error -> StatusDot(c.red)
             RowMark.None -> {}

@@ -75,6 +75,10 @@ class T3Client(
     private var visitTimer: Job? = null
     private var threadViewing = false
     private var shellReady = false
+    /** Request id of the live `orchestration.subscribeShell` stream; replaced by [refreshThreads]. */
+    private var shellSubscription: String? = null
+    /** Completes when the current shell stream's snapshot is synchronized; shared by concurrent [refreshThreads] calls. */
+    private var shellRefresh: CompletableDeferred<Unit>? = null
     private var threadReady = false
     private var authorized = false
     private var previewAuthorized = false
@@ -511,6 +515,7 @@ class T3Client(
         generation++
         refreshSignals?.close(); refreshJob?.cancel(); visits.reset(null); visitTimer?.cancel(); visitTimer = null
         shellReady = false; threadReady = false; authorized = false; previewAuthorized = false
+        endShellStream(message)
         resetRoute()
         resetScreens()
         undoPlan = null; pendingModelSelections = null
@@ -529,6 +534,7 @@ class T3Client(
         socket?.close(1000, null); socket = null
         pending.values.forEach { it.completeExceptionally(IllegalStateException("Disconnected; pending command outcome may be uncertain")) }
         pending.clear(); streams.clear(); threadSubscription = null; shellReady = false; threadReady = false; authorized = false; previewAuthorized = false
+        endShellStream("Disconnected before the thread list refreshed")
         resetRoute()
         resetScreens()
         undoPlan = null; pendingModelSelections = null
@@ -672,6 +678,40 @@ class T3Client(
             }
         }
     }
+    /**
+     * A user refresh must correct stale rows, so it never resumes from the cursor: the cursor is dropped and a full
+     * snapshot requested; that snapshot then seeds a fresh cursor. Caller holds [lifecycleLock].
+     */
+    private fun subscribeFullShell() {
+        shellResume.invalidate()
+        shellSubscription = subscribe("orchestration.subscribeShell", shellSubscribeInput(null), ::shellItem)
+    }
+    private fun endShellStream(message: String) {
+        shellSubscription = null
+        shellRefresh?.completeExceptionally(IllegalStateException(message)); shellRefresh = null
+    }
+    override suspend fun refreshThreads() {
+        val (epoch, done) = synchronized(lifecycleLock) {
+            check(state.value.connection == ConnectionStatus.Connected && socket != null && shellSubscription != null) { "Connect before refreshing threads" }
+            shellRefresh?.let { return@synchronized generation to it }
+            val done = CompletableDeferred<Unit>()
+            shellRefresh = done
+            // Stop the old stream first: its late frames are dropped, and the new snapshot is authoritative.
+            shellSubscription?.let { old -> streams.remove(old); runCatching { send(EffectRpc.signal("Interrupt", old)) } }
+            try { subscribeFullShell() } catch (error: Exception) {
+                shellRefresh = null
+                fail(generation, "Thread list refresh failed; reconnect to refresh")
+                throw error
+            }
+            generation to done
+        }
+        val synced = withTimeoutOrNull(requestTimeoutMillis) { done.await() }
+        if (synced == null) {
+            // Without a synchronized shell stream the list would silently stop updating; let reconnect handling take over.
+            fail(epoch, "Thread list refresh timed out; reconnect to refresh")
+            throw RequestTimedOut()
+        }
+    }
     private fun writable() { updateWritable(); noteThreadVisit() }
     private fun updateWritable() = update {
         val fresh = shellReady && (it.selectedThreadId == null || threadReady) && it.connection == ConnectionStatus.Connected
@@ -680,7 +720,6 @@ class T3Client(
     }
     /** Memory-only shell cursors; see [ShellResume]. */
     private val shellResume = ShellResume()
-    private var shellSubscription: String? = null
     /**
      * Retained rows of the same environment and server build resume from their cursor (`afterSequence`): the
      * server replays the missed deltas, or answers a snapshot when it cannot (and old servers ignore the field).
@@ -715,8 +754,15 @@ class T3Client(
             "project.updated" -> { val value = project(item.obj("project")); update { it.copy(projects = it.projects.filterNot { p -> p.id == value.id } + value) } }
             "project.removed" -> update { it.copy(projects = it.projects.filterNot { p -> p.id == item.string("projectId") }) }
             "thread.updated" -> { val value = threadSummary(item.obj("thread"), archived = item.string("location") == "archive"); update { it.copy(threads = it.threads.filterNot { t -> t.id == value.id } + value) } }
-            "thread.removed" -> update { it.copy(threads = it.threads.filterNot { t -> t.id == item.string("threadId") }) }
-            "synchronized" -> { shellReady = true; writable() }
+            // Archive moves send `thread.removed` for the old location; it must not drop the row now in the other one.
+            "thread.removed" -> {
+                val archived = when (item.string("location")) { "archive" -> true; "active" -> false; else -> null }
+                update { it.copy(threads = it.threads.filterNot { t -> t.id == item.string("threadId") && (archived == null || t.archived == archived) }) }
+            }
+            "synchronized" -> {
+                shellReady = true; writable()
+                shellRefresh?.complete(Unit); shellRefresh = null
+            }
         }
         // After the rows changed: an item that failed to apply never moves the cursor.
         shellResume.applied(item, ShellRows(state.value.projects, state.value.threads))

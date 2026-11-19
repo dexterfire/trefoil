@@ -232,4 +232,42 @@ class TrefoilViewModelLifecycleTest {
         assertEquals(login, model.sshLogin.value)
         assertEquals(ConnectionStatus.Disconnected, model.state.value.connection)
     }
+
+    private fun shellSubscribes() = sent.mapNotNull { Regex(""""id":"(\d+)","tag":"orchestration.subscribeShell"""").find(it)?.groupValues?.get(1) }
+    private fun seedShellStream() = T3Client::class.java.getDeclaredField("shellSubscription").apply { isAccessible = true }.set(client, "shell-0")
+    private fun receive(frame: String) = T3Client::class.java.getDeclaredMethod("receive", kotlinx.serialization.json.JsonObject::class.java).apply { isAccessible = true }
+        .invoke(client, kotlinx.serialization.json.Json.parseToJsonElement(frame) as kotlinx.serialization.json.JsonObject)
+
+    @Test fun pullToRefreshResubscribesTheShellAndReportsRefreshingUntilSynchronized() {
+        seedShellStream()
+        mutable.value = mutable.value.copy(threads = listOf(ThreadSummary("t", "p", "Fixture", "completed")))
+        model.refresh(); advance(0)
+        assertTrue(model.isRefreshing.value)
+        val id = shellSubscribes().single()
+        assertTrue(sent.any { it.contains("\"Interrupt\"") && it.contains("shell-0") })
+        model.refresh(); advance(0)
+        assertEquals("A refresh in flight is not restarted", 1, shellSubscribes().size)
+        receive("""{"_tag":"Chunk","requestId":"$id","values":[{"kind":"snapshot","snapshot":{"projects":[],"threads":[{"id":"t","projectId":"p","title":"Fixture","status":"completed","pendingBackgroundTasks":[{"taskId":"a","kind":"subagent"}]}],"archivedThreads":[]}},{"kind":"synchronized"}]}""")
+        advance(0)
+        assertFalse(model.isRefreshing.value)
+        assertTrue(model.state.value.threads.single().completionHeldBackgroundWork)
+        assertTrue("Refresh is read-only", sent.none { it.contains("dispatchCommand") })
+        assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
+    }
+
+    @Test fun pullToRefreshWithoutALiveConnectionReconnects() {
+        mutable.value = mutable.value.copy(connection = ConnectionStatus.Error)
+        model.refresh(); advance(0)
+        assertTrue(model.isRefreshing.value)
+        assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+    }
+
+    @Test fun resumeOnARetainedSessionSilentlyRereadsTheShell() {
+        seedShellStream()
+        model.pause(); advance(5_000)
+        model.resume(); advance(0)
+        assertEquals(1, shellSubscribes().size)
+        assertFalse(model.isRefreshing.value)
+        assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
+    }
 }

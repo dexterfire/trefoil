@@ -154,6 +154,23 @@ class ThreadPresentationTest {
         assertEquals(RowMark.None, threadRowMark(done.copy(status = "idle")))
         assertEquals(RowMark.None, threadRowMark(done.copy(pendingRequestKind = "approval")))
     }
+    @Test fun rowWaitingOnSubagentsNeverShowsDone() {
+        // The parent's turn finished but a subagent still runs: T3 parks it at Waiting, never Completed.
+        val held = ThreadSummary("h", "p", "H", "completed", latestRunId = "run", latestRunCompletedAt = "2026-11-07T11:50:00Z",
+            completionHeldBackgroundWork = true)
+        assertEquals("waiting", threadIndicator(held).kind)
+        assertEquals(RowMark.Waiting, threadRowMark(held))
+        assertTrue(threadIsWorking(held))
+        assertEquals("Working", threadSections(threadShelves(listOf(held))).single().title)
+        // Once the shell drops the hold, the same row is done.
+        assertEquals(RowMark.Done, threadRowMark(held.copy(completionHeldBackgroundWork = false)))
+        // A failed run with leftover background work stays an error.
+        assertEquals(RowMark.Error, threadRowMark(held.copy(status = "failed")))
+        // A run blocked on another thread waits; a stale flag on a finished run does not.
+        val blocked = ThreadSummary("b", "p", "B", "running", activityRunStatus = "running", blockedOnThreadWait = true, latestRunCompletedAt = "2026-11-07T11:00:00Z")
+        assertEquals(RowMark.Waiting, threadRowMark(blocked))
+        assertEquals(RowMark.Done, threadRowMark(blocked.copy(status = "completed", activityRunStatus = null)))
+    }
     @Test fun shellLayoutBreakpoints() {
         assertEquals(ShellLayout.Phone, shellLayout(411f))
         assertEquals(ShellLayout.TwoPane, shellLayout(600f))

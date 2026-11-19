@@ -59,6 +59,9 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     val notice = _notice.asStateFlow()
     private val _working = MutableStateFlow(false)
     val working = _working.asStateFlow()
+    private val _isRefreshing = MutableStateFlow(false)
+    /** True while a [refresh] the user asked for runs (pull-to-refresh indicator); silent resume refreshes never set it. */
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
     private val _connectionAttempt = MutableStateFlow(ConnectionAttempt())
     val connectionAttempt = _connectionAttempt.asStateFlow()
     /** Mutations started here or by [drafts] that have not settled; a route switch waits for zero. */
@@ -473,6 +476,38 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         else connectionAction("Could not reconnect. Check the server or pair again.") { connectThroughPlan(environment) }
     }
 
+    /**
+     * Pull-to-refresh for the thread list. A live connection re-reads the shell ([TrefoilClient.refreshThreads]), so
+     * every row's run status, background work and requests come from a fresh server snapshot. Without one it reconnects
+     * the current machine (or waits for the attempt already running). Read-only: never replays a mutation. A second
+     * call while [isRefreshing] is ignored.
+     */
+    fun refresh() {
+        if (_isRefreshing.value) return
+        val current = state.value
+        val live = current.connection == ConnectionStatus.Connected && current.environment != null && !_working.value
+        if (!live && !_working.value) {
+            if (selectedEnvironment == null && current.environment == null) return
+            reconnect()
+        }
+        _isRefreshing.value = true
+        viewModelScope.launch {
+            try {
+                if (live) client.refreshThreads() else _working.first { !it }
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { _notice.value = "Could not refresh threads. Check the connection and try again." }
+            finally { _isRefreshing.value = false }
+        }
+    }
+
+    /** Resuming on a retained live session re-reads the shell, so rows never show statuses from before the background. */
+    private fun refreshRetainedShell() {
+        if (state.value.connection != ConnectionStatus.Connected || _working.value) return
+        viewModelScope.launch {
+            try { client.refreshThreads() } catch (e: CancellationException) { throw e } catch (_: Exception) { /* A failed refresh fails the connection; drop handling reconnects. */ }
+        }
+    }
+
     fun disconnect() {
         liveEnvironment = null; reconnectWhenOnline = null
         autoReconnectJob?.cancel(); autoReconnectJob = null
@@ -582,6 +617,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         if (target != null && _sshLogin.value == null && !reconnectInFlight &&
             (state.value.connection != ConnectionStatus.Connected || state.value.environment?.id != target.id ||
                 (client.millisSinceLastPong()?.let { it > RETAINED_CONNECTION_FRESHNESS_MS } != false))) connect(target)
+        else if (environment != null && !reconnectInFlight && state.value.environment?.id == environment.id) refreshRetainedShell()
         probeMachines(skipId = target?.id)
     }
 

@@ -235,6 +235,13 @@ interface TrefoilClient {
     suspend fun selectThread(threadId: String)
     /** False while the app is in the background: the open thread is then not being looked at, so no visit is recorded. */
     fun setThreadViewing(viewing: Boolean) {}
+    /**
+     * Re-reads the live environment's shell (projects and thread rows, including run status and background work):
+     * the shell stream is resubscribed and its fresh snapshot replaces the list. Returns once that snapshot is
+     * synchronized. Read-only: never sends or replays a mutation. Throws when there is no live connection; a refresh
+     * that does not synchronize fails the connection so its normal reconnect handling runs.
+     */
+    suspend fun refreshThreads() { error("Thread refresh is unavailable") }
     suspend fun refreshScreens() { error("Remote screens are unavailable") }
     suspend fun screenAccess(target: ScreenTarget): ScreenAccess { error("Remote screens are unavailable") }
     fun isScreenAccessCurrent(access: ScreenAccess): Boolean = false
