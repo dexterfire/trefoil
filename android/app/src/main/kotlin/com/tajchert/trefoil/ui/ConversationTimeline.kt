@@ -144,24 +144,29 @@ internal fun foldConversationTimeline(
     }.maxOrNull()
     fun workLabel(start: Instant?, end: Instant?): String =
         if (start != null && end != null) "Worked for ${workDuration(Duration.between(start, end).toMillis().coerceAtLeast(0))}" else "Worked"
-    // T3 `deriveTurnFolds` timing. A response starts at a user message or a notification; the run group created next takes
-    // that prompt's time as its start boundary. Group entries are assistant messages and work, never renders.
-    fun startsResponse(entry: ConversationEntry) = (entry is ConversationEntry.Message && entry.message.role == "user") ||
-        (entry is ConversationEntry.Activities && entry.activities.first().kind == "notification")
+    // T3 `deriveTurnFolds` timing. A response starts at a non-steer user message or a notification; the run group created
+    // next takes that prompt's time as its start boundary. Group entries are assistant messages and work, never renders.
+    fun startsResponse(entry: ConversationEntry) =
+        (entry is ConversationEntry.Message && entry.message.role == "user" && entry.message.inputIntent !in steerIntents) ||
+            (entry is ConversationEntry.Activities && entry.activities.first().kind == "notification")
+    fun isSteer(entry: ConversationEntry) =
+        entry is ConversationEntry.Message && entry.message.role == "user" && entry.message.inputIntent in steerIntents
     fun groupRunId(entry: ConversationEntry): String? = when (entry) {
         is ConversationEntry.Message -> entry.message.runId.takeIf { entry.message.role == "assistant" }
         is ConversationEntry.Activities -> entry.activities.first().runId.takeIf { entry.activities.first().kind != "system_notice" }
         is ConversationEntry.HtmlRender, is ConversationEntry.Work -> null
     }
-    // T3 `timelineEntryEnd`: a message ends at its last update, a work entry at its creation (start) time.
+    // T3 `timelineEntryEnd`: a message ends at its last update, a work entry at its creation time (`startedAt ?? updatedAt`;
+    // completedAt only for snapshots without either).
+    fun ToolActivity.createdAt(): Instant? = timelineInstant(startedAt ?: updatedAt ?: completedAt)
     fun entryStart(entry: ConversationEntry): Instant? = when (entry) {
         is ConversationEntry.Message -> timelineInstant(entry.message.createdAt)
-        is ConversationEntry.Activities -> entry.activities.first().let { timelineInstant(it.startedAt ?: it.completedAt) }
+        is ConversationEntry.Activities -> entry.activities.first().createdAt()
         else -> null
     }
     fun entryEnd(entry: ConversationEntry): Instant? = when (entry) {
         is ConversationEntry.Message -> timelineInstant(entry.message.updatedAt ?: entry.message.createdAt)
-        is ConversationEntry.Activities -> entry.activities.last().let { timelineInstant(it.startedAt ?: it.completedAt) }
+        is ConversationEntry.Activities -> entry.activities.last().createdAt()
         else -> null
     }
     val startBoundary = mutableMapOf<String, Instant?>()
@@ -172,6 +177,7 @@ internal fun foldConversationTimeline(
             pendingBoundary = entryStart(entry)
             continue
         }
+        if (isSteer(entry)) continue
         val runId = groupRunId(entry) ?: continue
         if (runId !in groupEntries) {
             startBoundary[runId] = pendingBoundary
@@ -181,8 +187,12 @@ internal fun foldConversationTimeline(
     }
     // T3 passes the thread's activity run (`deriveThreadActivityRun`) as `latestRun`: only that run is timed by its own start
     // and completion, every other turn from its prompt to the later of its final reply and its last entry.
-    val latestRun = runs.filter { it.status in liveRunStatuses }.maxByOrNull { it.ordinal ?: Int.MIN_VALUE }
-        ?: runs.filterNot { outlivedBeforeStart(it, runs) }.maxByOrNull { it.ordinal ?: Int.MIN_VALUE }
+    // Live run first, then T3 `presentedLatestRun`: a usage-limited run presented as latest, else `latestUnheldRun`.
+    fun newest(candidates: List<ConversationRun>) =
+        candidates.withIndex().maxWithOrNull(compareBy({ it.value.ordinal ?: Int.MIN_VALUE }, { it.index }))?.value
+    val latestRun = newest(runs.filter { it.status in liveRunStatuses })
+        ?: runs.firstOrNull { it.presentedAsLatest }
+        ?: newest(runs.filterNot { (it.status == "queued" && it.queueHeld) || outlivedBeforeStart(it, runs) })
     fun label(runId: String): String {
         val run = runById[runId]
         if (run != null && run.id == latestRun?.id) {
@@ -196,11 +206,11 @@ internal fun foldConversationTimeline(
         return workLabel(start, end)
     }
 
-    // T3 folds a turn into one row that also hides settled work after the final reply; failed trailing work stays visible.
+    // T3 folds a turn into one row that also hides settled work after the final reply, per entry: failed trailing items stay
+    // visible. Standalone kinds keep their own rows, as in T3, where they are not fold-group work (plans, handoffs, resource
+    // cards, notices, notifications) or always failures (errors); approval and input requests never become activities here.
     val terminalIndex = finalByRun.mapValues { (_, final) -> entries.indexOf(final) }
     fun trailing(index: Int, entry: ConversationEntry) = index > (terminalIndex[entry.runId] ?: Int.MAX_VALUE)
-    fun hiddenAt(index: Int, entry: ConversationEntry): Boolean = hidden(entry) &&
-        !(trailing(index, entry) && entry is ConversationEntry.Activities && entry.activities.any { it.displayFailure })
     val result = mutableListOf<ConversationEntry>()
     var pending = mutableListOf<ConversationEntry>()
     val parts = mutableMapOf<String, Int>()
@@ -214,9 +224,13 @@ internal fun foldConversationTimeline(
         pending = mutableListOf()
     }
     for ((index, entry) in entries.withIndex()) {
-        if (hiddenAt(index, entry)) {
+        if (hidden(entry)) {
             if (trailing(index, entry)) {
-                trailingByRun.getOrPut(entry.runId!!) { mutableListOf() } += entry
+                flush()
+                val (failed, settled) = (entry as? ConversationEntry.Activities)?.activities.orEmpty().partition { it.displayFailure }
+                if (entry !is ConversationEntry.Activities) trailingByRun.getOrPut(entry.runId!!) { mutableListOf() } += entry
+                if (settled.isNotEmpty()) trailingByRun.getOrPut(entry.runId!!) { mutableListOf() } += ConversationEntry.Activities(settled)
+                if (failed.isNotEmpty()) result += ConversationEntry.Activities(failed)
                 continue
             }
             if (pending.isNotEmpty() && pending.first().runId != entry.runId) flush()
@@ -228,10 +242,11 @@ internal fun foldConversationTimeline(
     }
     flush()
     for ((runId, trailingEntries) in trailingByRun) {
-        val first = result.indexOfFirst { it is ConversationEntry.Work && it.runId == runId && it.part == 0 }
-        if (first >= 0) {
-            val work = result[first] as ConversationEntry.Work
-            result[first] = work.copy(entries = work.entries + trailingEntries)
+        // The last fold of the turn sits right before its reply, so trailing work extends it and split rows stay apart.
+        val last = result.indexOfLast { it is ConversationEntry.Work && it.runId == runId }
+        if (last >= 0) {
+            val work = result[last] as ConversationEntry.Work
+            result[last] = work.copy(entries = work.entries + trailingEntries)
         } else {
             // No earlier fold: T3 anchors the row at the turn's first entry after its prompt.
             val anchor = result.indexOfFirst { it.runId == runId && !(it is ConversationEntry.Message && it.message.role == "user") }
@@ -253,6 +268,7 @@ internal fun foldConversationTimeline(
 }
 
 private val liveRunStatuses = setOf("preparing", "starting", "running", "waiting")
+private val steerIntents = setOf("steer", "promoted_queued_to_steer")
 
 /** T3 `latestUnheldRun` skips a run that a steer cancelled before it started. */
 private fun outlivedBeforeStart(run: ConversationRun, runs: List<ConversationRun>): Boolean {

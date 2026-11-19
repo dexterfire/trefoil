@@ -23,7 +23,9 @@ private val ACTIVITY_RUN_STATUSES = setOf("preparing", "starting", "running", "w
 
 internal fun conversationRuns(projection: JsonObject): List<ConversationRun> {
     val turns = projection.objects("providerTurns")
-    return projection.objects("runs").map { run -> conversationRun(run, turns) }
+    val runs = projection.objects("runs")
+    val presentedLatestId = usageLimitRunPresentedAsLatest(runs, projection.objects("turnItems"), providerSessionError(projection))?.string("id")
+    return runs.map { run -> conversationRun(run, turns).copy(presentedAsLatest = run.string("id") == presentedLatestId) }
 }
 
 /** T3 `summarizeThreadRun.turnEnded` via `latestProviderTurnForAttempt`: an activity run whose latest turn settled. */
@@ -44,6 +46,7 @@ private fun conversationRun(run: JsonObject, turns: List<JsonObject>) =
         modelInstanceId = run.obj("modelSelection").optionalText("instanceId") ?: run.obj("modelSelection").optionalText("provider"),
         model = run.obj("modelSelection").optionalText("model"),
         turnEnded = runTurnEnded(run, turns),
+        queueHeld = (run["queueHeld"] as? JsonPrimitive)?.booleanOrNull == true,
     )
 
 internal fun runAttempts(projection: JsonObject): List<RunAttempt> = projection.objects("attempts").map { attempt ->
@@ -269,6 +272,7 @@ internal fun conversationMessages(projection: JsonObject): List<ConversationMess
             runId = message.optionalText("runId") ?: item?.optionalText("runId"), ordinal = item?.ordinal(),
             nodeId = item?.optionalText("nodeId"), providerTurnId = item?.optionalText("providerTurnId"),
             runAttemptId = item?.let(resolveAttempt),
+            inputIntent = message.optionalText("inputIntent") ?: item?.optionalText("inputIntent"),
             attachments = ((message["attachments"] as? JsonArray) ?: (item?.get("attachments") as? JsonArray)).orEmpty().mapNotNull { element ->
                 val attachment = element as? JsonObject ?: return@mapNotNull null
                 val id = attachment.optionalText("id") ?: return@mapNotNull null
@@ -372,6 +376,7 @@ internal fun toolActivities(projection: JsonObject): List<ToolActivity> {
             sourceThreadId = item.optionalText("sourceThreadId"), sourceItemId = item.optionalText("sourceItemId"),
             images = images, htmlRender = htmlRender,
             subagentId = if (kind == "subagent") item.optionalText("subagentId") else null,
+            updatedAt = item.optionalText("updatedAt"),
         )
     }
 }

@@ -105,7 +105,7 @@ private fun outlivedBeforeStart(run: JsonObject, runs: List<JsonObject>): Boolea
 }
 
 /** The latest session error of the thread's selected provider instance, as T3 server shells read it. */
-private fun providerSessionError(projection: JsonObject): String? {
+internal fun providerSessionError(projection: JsonObject): String? {
     val instanceId = projection.obj("thread").string("providerInstanceId")
     return projection.objects("providerSessions").filter { it.string("providerInstanceId") == instanceId }
         .sortedBy { it.trimmed("updatedAt")?.let(::instant) ?: Long.MIN_VALUE }.lastOrNull()?.trimmed("lastError")

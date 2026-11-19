@@ -289,6 +289,83 @@ class ConversationTimelineTest {
         assertEquals(listOf("message:u", "run:r", "message:a", "activity:t2"), failed.map { it.key })
     }
 
+    // r2's run timestamps (9s) differ from its prompt-to-reply time (6.3s), so the label shows which rule applied.
+    private fun r2Label(vararg runs: ConversationRun): String? = foldConversationTimeline(twoTurnThread(), runs = listOf(*runs))
+        .filterIsInstance<ConversationEntry.Work>().firstOrNull { it.runId == "r2" }?.label
+    private val r2Run = ConversationRun("r2", "completed", ordinal = 2, startedAt = "2026-01-01T12:00:00.026Z", completedAt = "2026-01-01T12:00:09.000Z")
+
+    @Test fun latestRunSelectionFollowsT3ActivityRun() {
+        assertEquals("Worked for 9s", r2Label(r2Run))
+        // A live later run is the latest: the settled turn falls back to prompt-to-reply timing.
+        assertEquals("Worked for 6.3s", r2Label(r2Run, ConversationRun("r3", "running", ordinal = 3)))
+        // A held queued run is skipped; an unheld queued run is the latest.
+        assertEquals("Worked for 9s", r2Label(r2Run, ConversationRun("r3", "queued", ordinal = 3, queueHeld = true)))
+        assertEquals("Worked for 6.3s", r2Label(r2Run, ConversationRun("r3", "queued", ordinal = 3)))
+        // A usage-limited run presented as latest wins over higher ordinals.
+        assertEquals("Worked for 6.3s", r2Label(ConversationRun("r1", "failed", ordinal = 1, presentedAsLatest = true), r2Run))
+        // A run a steer cancelled before it started is skipped.
+        assertEquals("Worked for 9s", r2Label(r2Run, ConversationRun("r3", "cancelled", ordinal = 3, completedAt = "2026-01-01T12:00:05Z")))
+        // Without ordinals the newest (last listed) run is the latest.
+        assertEquals("Worked for 9s", r2Label(ConversationRun("r1", "completed"), r2Run.copy(ordinal = null)))
+        assertEquals("Worked for 6.3s", r2Label(r2Run.copy(ordinal = null), ConversationRun("r3", "completed")))
+    }
+
+    @Test fun trailingWorkJoinsTheLastPartOfARenderSplitTurn() {
+        fun timed(id: String, ordinal: Int, start: String, end: String) =
+            ToolActivity(id, "Edit", kind = "file_change", status = "completed", runId = "r", ordinal = ordinal, startedAt = start, completedAt = end)
+        val folded = foldConversationTimeline(conversationTimeline(listOf(
+            ConversationMessage("u", "user", "Draw", runId = "r", ordinal = 0, createdAt = "2026-01-01T12:00:00Z"),
+            ConversationMessage("a", "assistant", "Done", runId = "r", ordinal = 4, createdAt = "2026-01-01T12:00:21Z")), listOf(
+            timed("t1", 1, "2026-01-01T12:00:01Z", "2026-01-01T12:00:05Z"),
+            htmlActivity("h", 2).copy(startedAt = "2026-01-01T12:00:06Z", completedAt = "2026-01-01T12:00:07Z"),
+            timed("t2", 3, "2026-01-01T12:00:10Z", "2026-01-01T12:00:20Z"),
+            timed("t3", 5, "2026-01-01T12:00:25Z", "2026-01-01T12:00:30Z"))),
+            runs = listOf(ConversationRun("r", "completed", startedAt = "2026-01-01T12:00:00Z", completedAt = "2026-01-01T12:00:30Z")))
+        assertEquals(listOf("message:u", "run:r", "html-render:h", "run:r:activity:t2", "message:a"), folded.map { it.key })
+        val work = folded.filterIsInstance<ConversationEntry.Work>()
+        assertEquals(listOf(listOf("t1"), listOf("t2", "t3")), work.map { w -> w.entries.flatMap { (it as ConversationEntry.Activities).activities }.map { it.id } })
+        assertEquals(listOf("Worked for 4s", "Worked for 20s"), work.map { it.label })
+    }
+
+    @Test fun trailingGroupHidesSettledItemsAndKeepsOnlyTheFailedOne() {
+        fun tool(id: String, ordinal: Int, exitCode: Int? = null) =
+            ToolActivity(id, "Command", kind = "command_execution", status = "completed", runId = "r", ordinal = ordinal, exitCode = exitCode)
+        val entries = conversationTimeline(
+            listOf(ConversationMessage("u", "user", "Go", runId = "r", ordinal = 0), ConversationMessage("a", "assistant", "Done", runId = "r", ordinal = 2)),
+            listOf(tool("t1", 1), tool("t2", 3), tool("t3", 4, exitCode = 1), tool("t4", 5)))
+        assertEquals(3, (entries.last() as ConversationEntry.Activities).activities.size)
+        val folded = foldConversationTimeline(entries, runs = listOf(ConversationRun("r", "completed", completedAt = "2026-01-01T12:00:30Z")))
+        assertEquals(listOf("message:u", "run:r", "message:a", "activity:t3"), folded.map { it.key })
+        assertEquals(listOf("t1", "t2", "t4"), (folded[1] as ConversationEntry.Work).entries.flatMap { (it as ConversationEntry.Activities).activities }.map { it.id })
+    }
+
+    @Test fun notificationStartsAResponseAndSteersDoNot() {
+        val reply = ConversationMessage("a", "assistant", "Done", runId = "r", ordinal = 3, createdAt = "2026-01-01T12:00:10Z", updatedAt = "2026-01-01T12:00:10Z")
+        val tool = ToolActivity("t", "Read", kind = "file_read", status = "completed", runId = "r", ordinal = 2, startedAt = "2026-01-01T12:00:08Z")
+        val notified = foldConversationTimeline(conversationTimeline(listOf(reply), listOf(
+            ToolActivity("n", "Notice", kind = "notification", status = "completed", runId = "r", ordinal = 1, startedAt = "2026-01-01T12:00:00Z"), tool)))
+        assertEquals(listOf("activity:n", "run:r", "message:a"), notified.map { it.key })
+        assertEquals("Worked for 10s", (notified[1] as ConversationEntry.Work).label)
+        val steered = foldConversationTimeline(conversationTimeline(listOf(
+            ConversationMessage("u", "user", "Go", runId = "r", ordinal = 0, createdAt = "2026-01-01T12:00:00Z"),
+            ConversationMessage("s", "user", "Also this", runId = "r", ordinal = 1, createdAt = "2026-01-01T12:00:03Z", inputIntent = "steer"),
+            reply), listOf(tool)))
+        assertEquals("Worked for 10s", steered.filterIsInstance<ConversationEntry.Work>().single().label)
+    }
+
+    @Test fun labelFallsBackToEntryTimesWhenThePromptHasNone() {
+        val reply = ConversationMessage("a", "assistant", "Done", runId = "r", ordinal = 2, updatedAt = "2026-01-01T12:00:04Z")
+        fun label(tool: ToolActivity) = foldConversationTimeline(conversationTimeline(
+            listOf(ConversationMessage("u", "user", "Go", runId = "r", ordinal = 0), reply), listOf(tool)))
+            .filterIsInstance<ConversationEntry.Work>().single().label
+        val base = ToolActivity("t", "Read", kind = "file_read", status = "completed", runId = "r", ordinal = 1)
+        assertEquals("Worked for 3s", label(base.copy(startedAt = "2026-01-01T12:00:01Z")))
+        // T3 times work from startedAt ?? updatedAt.
+        assertEquals("Worked for 2s", label(base.copy(updatedAt = "2026-01-01T12:00:02Z", completedAt = "2026-01-01T12:00:03Z")))
+        // No start anywhere: no invented duration.
+        assertEquals("Worked", label(base))
+    }
+
     @Test fun htmlRenderWithoutOrdinalFallsBackToTimestampPosition() {
         val unordered = htmlActivity("h", 0).copy(ordinal = null, startedAt = "2026-01-01T12:00:02Z")
         val mixed = conversationTimeline(listOf(

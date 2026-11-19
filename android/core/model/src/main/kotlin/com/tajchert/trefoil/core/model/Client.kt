@@ -50,6 +50,8 @@ data class ConversationMessage(
     val runId: String? = null, val ordinal: Int? = null,
     val runAttemptId: String? = null, val nodeId: String? = null, val providerTurnId: String? = null,
     val attachments: List<RemoteFileReference> = emptyList(),
+    /** User messages only: T3 `inputIntent` (`steer`, `promoted_queued_to_steer`, `queued_turn`, ...), when sent. */
+    val inputIntent: String? = null,
 )
 data class ToolActivity(
     val id: String, val title: String, val detail: String = "",
@@ -70,6 +72,8 @@ data class ToolActivity(
     val htmlRender: HtmlRenderReference? = null,
     /** `subagent` items only: the projection's `subagents[].id` this item reports on. */
     val subagentId: String? = null,
+    /** The turn item's last update; T3 times a work entry from `startedAt ?? updatedAt`. */
+    val updatedAt: String? = null,
 )
 data class ConversationRun(
     val id: String, val status: String,
@@ -79,6 +83,10 @@ data class ConversationRun(
     val providerInstanceId: String? = null, val modelInstanceId: String? = null, val model: String? = null,
     /** T3 `ThreadRunSummary.turnEnded`: the active attempt's latest provider turn is no longer pending or running. */
     val turnEnded: Boolean = false,
+    /** T3 `queueHeld`: a queued run held back from starting. */
+    val queueHeld: Boolean = false,
+    /** T3 `usageLimitRunPresentedAsLatest`: this usage-limited run stays the thread's latest run. */
+    val presentedAsLatest: Boolean = false,
 )
 data class RunAttempt(
     val id: String, val runId: String, val status: String,

@@ -99,6 +99,28 @@ class BackgroundWorkProjectionTest {
         assertTrue(pendingBackgroundWork(projection(runs, roster + failure.replace("usage_limit", "provider_error"))).isEmpty())
     }
 
+    @Test fun conversationRunsCarryQueueHoldAndUsageLimitPresentation() {
+        val failure = ""","turnItems":[{"id":"e1","type":"error","status":"failed","runId":"r1","nodeId":"root","ordinal":5,
+            "updatedAt":"2026-01-01T10:00:00Z","failure":{"class":"usage_limit","message":"Usage limit reached"}}]"""
+        val runs = """{"id":"r1","ordinal":1,"status":"failed","rootNodeId":"root","startedAt":"2026-01-01T09:00:00Z","completedAt":"2026-01-01T10:00:00Z"},
+            {"id":"r2","ordinal":2,"status":"queued","queueHeld":true}"""
+        val projected = conversationRuns(projection(runs, failure)).associateBy { it.id }
+        assertTrue(projected.getValue("r1").presentedAsLatest)
+        assertTrue(projected.getValue("r2").queueHeld)
+        assertFalse(projected.getValue("r2").presentedAsLatest)
+        val plain = conversationRuns(projection(runs, failure.replace("usage_limit", "provider_error"))).associateBy { it.id }
+        assertFalse(plain.getValue("r1").presentedAsLatest)
+        assertFalse(conversationRuns(projection("""{"id":"r","status":"queued"}""")).single().queueHeld)
+    }
+
+    @Test fun messagesAndActivitiesCarryInputIntentAndUpdatedAt() {
+        val projection = fixture("""{"messages":[{"id":"m","role":"user","text":"x"},{"id":"n","role":"user","text":"y"}],
+            "turnItems":[{"id":"i","type":"user_message","messageId":"m","inputIntent":"steer"},{"id":"j","type":"user_message","messageId":"n"},
+            {"id":"c","type":"command_execution","status":"completed","updatedAt":"2026-01-01T00:00:01Z"}]}""")
+        assertEquals(listOf("steer", null), conversationMessages(projection).map { it.inputIntent })
+        assertEquals("2026-01-01T00:00:01Z", toolActivities(projection).single().updatedAt)
+    }
+
     @Test fun steerCancelledRunIsSkippedAsLatest() {
         val runs = """{"id":"r1","ordinal":1,"status":"completed","completedAt":"2026-01-01T10:05:00Z"},
             {"id":"r2","ordinal":2,"status":"cancelled","startedAt":null,"completedAt":"2026-01-01T10:01:00Z"}"""
