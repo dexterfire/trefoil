@@ -37,7 +37,8 @@ internal fun conversationTimeline(messages: List<ConversationMessage>, activitie
         val ordinal get() = message?.ordinal ?: activity?.ordinal
         val time get() = timelineInstant(message?.createdAt ?: activity?.startedAt)
     }
-    val all = messages.map { Item(message = it) } + activities.map { Item(activity = it) }
+    // T3 `deriveTimelineEntriesFromVisibleTurnItems` never shows checkpoint items in the timeline.
+    val all = messages.map { Item(message = it) } + activities.filter { it.kind != "checkpoint" }.map { Item(activity = it) }
     val ordered = if (all.any { it.ordinal != null }) {
         val known = all.filter { it.ordinal != null }.sortedBy { it.ordinal }.toMutableList()
         // A legacy/unmatched row must not discard the authoritative order of other rows.
@@ -143,19 +144,67 @@ internal fun foldConversationTimeline(
     }.maxOrNull()
     fun workLabel(start: Instant?, end: Instant?): String =
         if (start != null && end != null) "Worked for ${workDuration(Duration.between(start, end).toMillis().coerceAtLeast(0))}" else "Worked"
-    // A run folded into one row covers the whole run; a run split by a render or standalone entry labels each row from its own entries.
+    // T3 `deriveTurnFolds` timing. A response starts at a user message or a notification; the run group created next takes
+    // that prompt's time as its start boundary. Group entries are assistant messages and work, never renders.
+    fun startsResponse(entry: ConversationEntry) = (entry is ConversationEntry.Message && entry.message.role == "user") ||
+        (entry is ConversationEntry.Activities && entry.activities.first().kind == "notification")
+    fun groupRunId(entry: ConversationEntry): String? = when (entry) {
+        is ConversationEntry.Message -> entry.message.runId.takeIf { entry.message.role == "assistant" }
+        is ConversationEntry.Activities -> entry.activities.first().runId.takeIf { entry.activities.first().kind != "system_notice" }
+        is ConversationEntry.HtmlRender, is ConversationEntry.Work -> null
+    }
+    // T3 `timelineEntryEnd`: a message ends at its last update, a work entry at its creation (start) time.
+    fun entryStart(entry: ConversationEntry): Instant? = when (entry) {
+        is ConversationEntry.Message -> timelineInstant(entry.message.createdAt)
+        is ConversationEntry.Activities -> entry.activities.first().let { timelineInstant(it.startedAt ?: it.completedAt) }
+        else -> null
+    }
+    fun entryEnd(entry: ConversationEntry): Instant? = when (entry) {
+        is ConversationEntry.Message -> timelineInstant(entry.message.updatedAt ?: entry.message.createdAt)
+        is ConversationEntry.Activities -> entry.activities.last().let { timelineInstant(it.startedAt ?: it.completedAt) }
+        else -> null
+    }
+    val startBoundary = mutableMapOf<String, Instant?>()
+    val groupEntries = mutableMapOf<String, MutableList<ConversationEntry>>()
+    var pendingBoundary: Instant? = null
+    for (entry in entries) {
+        if (startsResponse(entry)) {
+            pendingBoundary = entryStart(entry)
+            continue
+        }
+        val runId = groupRunId(entry) ?: continue
+        if (runId !in groupEntries) {
+            startBoundary[runId] = pendingBoundary
+            pendingBoundary = null
+        }
+        groupEntries.getOrPut(runId) { mutableListOf() } += entry
+    }
+    // T3 passes the thread's activity run (`deriveThreadActivityRun`) as `latestRun`: only that run is timed by its own start
+    // and completion, every other turn from its prompt to the later of its final reply and its last entry.
+    val latestRun = runs.filter { it.status in liveRunStatuses }.maxByOrNull { it.ordinal ?: Int.MIN_VALUE }
+        ?: runs.filterNot { outlivedBeforeStart(it, runs) }.maxByOrNull { it.ordinal ?: Int.MIN_VALUE }
     fun label(runId: String): String {
         val run = runById[runId]
-        val runEntries = entries.filter { it.runId == runId }
-        val final = finalByRun[runId]?.message
-        val prompt = entries.filterIsInstance<ConversationEntry.Message>().lastOrNull { it.message.role == "user" && it.message.runId == runId }?.message
-        val start = timelineInstant(run?.startedAt) ?: timelineInstant(prompt?.createdAt) ?: firstStart(runEntries)
-        val end = timelineInstant(run?.completedAt) ?: lastEnd(runEntries) ?: timelineInstant(final?.updatedAt)
+        if (run != null && run.id == latestRun?.id) {
+            val start = timelineInstant(run.startedAt)
+            val end = timelineInstant(run.completedAt)
+            if (start != null && end != null) return workLabel(start, end)
+        }
+        val group = groupEntries[runId].orEmpty()
+        val start = startBoundary[runId] ?: group.firstOrNull()?.let(::entryStart)
+        val end = listOfNotNull(finalByRun[runId]?.let(::entryEnd), group.lastOrNull()?.let(::entryEnd)).maxOrNull()
         return workLabel(start, end)
     }
+
+    // T3 folds a turn into one row that also hides settled work after the final reply; failed trailing work stays visible.
+    val terminalIndex = finalByRun.mapValues { (_, final) -> entries.indexOf(final) }
+    fun trailing(index: Int, entry: ConversationEntry) = index > (terminalIndex[entry.runId] ?: Int.MAX_VALUE)
+    fun hiddenAt(index: Int, entry: ConversationEntry): Boolean = hidden(entry) &&
+        !(trailing(index, entry) && entry is ConversationEntry.Activities && entry.activities.any { it.displayFailure })
     val result = mutableListOf<ConversationEntry>()
     var pending = mutableListOf<ConversationEntry>()
     val parts = mutableMapOf<String, Int>()
+    val trailingByRun = linkedMapOf<String, MutableList<ConversationEntry>>()
     fun flush() {
         if (pending.isEmpty()) return
         val runId = pending.first().runId!!
@@ -164,8 +213,12 @@ internal fun foldConversationTimeline(
         result += ConversationEntry.Work(runId, pending.toList(), label(runId), part)
         pending = mutableListOf()
     }
-    for (entry in entries) {
-        if (hidden(entry)) {
+    for ((index, entry) in entries.withIndex()) {
+        if (hiddenAt(index, entry)) {
+            if (trailing(index, entry)) {
+                trailingByRun.getOrPut(entry.runId!!) { mutableListOf() } += entry
+                continue
+            }
             if (pending.isNotEmpty() && pending.first().runId != entry.runId) flush()
             pending += entry
         } else {
@@ -174,6 +227,19 @@ internal fun foldConversationTimeline(
         }
     }
     flush()
+    for ((runId, trailingEntries) in trailingByRun) {
+        val first = result.indexOfFirst { it is ConversationEntry.Work && it.runId == runId && it.part == 0 }
+        if (first >= 0) {
+            val work = result[first] as ConversationEntry.Work
+            result[first] = work.copy(entries = work.entries + trailingEntries)
+        } else {
+            // No earlier fold: T3 anchors the row at the turn's first entry after its prompt.
+            val anchor = result.indexOfFirst { it.runId == runId && !(it is ConversationEntry.Message && it.message.role == "user") }
+            val work = ConversationEntry.Work(runId, trailingEntries, label(runId))
+            if (anchor >= 0) result.add(anchor, work) else result += work
+        }
+    }
+    // A run split by a render or standalone entry labels each row from its own entries.
     val splitRuns = result.filterIsInstance<ConversationEntry.Work>().groupingBy { it.runId }.eachCount().filterValues { it > 1 }.keys
     if (splitRuns.isEmpty()) return result
     return result.map { entry ->
@@ -186,13 +252,32 @@ internal fun foldConversationTimeline(
     }
 }
 
-/** Mirrors T3 shared/orchestrationTiming's rounding at unit boundaries. */
+private val liveRunStatuses = setOf("preparing", "starting", "running", "waiting")
+
+/** T3 `latestUnheldRun` skips a run that a steer cancelled before it started. */
+private fun outlivedBeforeStart(run: ConversationRun, runs: List<ConversationRun>): Boolean {
+    if (run.status != "cancelled" || !run.startedAt.isNullOrBlank()) return false
+    val cancelledAt = timelineInstant(run.completedAt) ?: return false
+    return runs.any { earlier ->
+        (earlier.ordinal ?: 0) < (run.ordinal ?: 0) && earlier.status != "queued" &&
+            (timelineInstant(earlier.completedAt)?.let { it >= cancelledAt } ?: true)
+    }
+}
+
+/** T3 shared/orchestrationTiming `formatDuration`, including its rounding at unit boundaries ("1m 0s"). */
 internal fun workDuration(milliseconds: Long): String {
-    val ms = milliseconds.coerceAtLeast(0)
+    if (milliseconds < 0) return "0ms"
+    val ms = milliseconds
     if (ms < 1000) return "${ms.coerceAtLeast(1)}ms"
     if (ms < 10000) return "${(ms / 100.0).roundToLong() / 10.0}".removeSuffix(".0") + "s"
     val total = (ms / 1000.0).roundToLong()
     if (total < 60) return "${total}s"
-    return listOf(total / 3600 to "h", (total % 3600) / 60 to "m", total % 60 to "s")
-        .filter { it.first > 0 }.joinToString(" ") { "${it.first}${it.second}" }
+    val hours = total / 3600
+    val minutes = (total % 3600) / 60
+    val seconds = total % 60
+    return buildList {
+        if (hours > 0) add("${hours}h")
+        if (minutes > 0) add("${minutes}m")
+        if (seconds > 0 || minutes > 0) add("${seconds}s")
+    }.joinToString(" ")
 }

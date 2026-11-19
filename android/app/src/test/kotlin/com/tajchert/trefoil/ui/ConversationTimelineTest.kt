@@ -107,8 +107,14 @@ class ConversationTimelineTest {
     @Test fun durationMatchesMobileRoundingAndDoesNotInventMissingTimes() {
         assertEquals("1ms", workDuration(0))
         assertEquals("1.5s", workDuration(1500))
-        assertEquals("1m", workDuration(59500))
+        assertEquals("6.3s", workDuration(6346))
+        assertEquals("10s", workDuration(9950))
+        // T3 formatDuration keeps zero seconds once minutes show, and picks the unit after rounding.
+        assertEquals("1m 0s", workDuration(59500))
+        assertEquals("2m 5s", workDuration(125000))
+        assertEquals("1h", workDuration(3600000))
         assertEquals("1h 1m 1s", workDuration(3661000))
+        assertEquals("0ms", workDuration(-1))
         val entries = conversationTimeline(listOf(ConversationMessage("a", "assistant", "Answer", runId = "r", ordinal = 1)), listOf(ToolActivity("t", "Tool", status = "completed", runId = "r", ordinal = 0)))
         assertEquals("Worked", (foldConversationTimeline(entries).first() as ConversationEntry.Work).label)
     }
@@ -125,7 +131,7 @@ class ConversationTimelineTest {
         for (status in listOf("failed", "interrupted", "cancelled", "waiting", "running"))
             assertEquals(entries, foldConversationTimeline(entries, runs = listOf(ConversationRun("r", status, startedAt = "2026-01-01T12:00:00Z", completedAt = "2026-01-01T12:01:00Z"))))
         val work = foldConversationTimeline(entries, runs = listOf(ConversationRun("r", "completed", startedAt = "2026-01-01T12:00:00Z", completedAt = "2026-01-01T12:01:00Z"))).first() as ConversationEntry.Work
-        assertEquals("Worked for 1m", work.label)
+        assertEquals("Worked for 1m 0s", work.label)
     }
     @Test fun toolFailuresFoldInSuccessfulRunButOngoingChildOrInterruptDoesNot() {
         val messages = listOf(ConversationMessage("a", "assistant", "Answer", runId = "r", ordinal = 2))
@@ -225,7 +231,62 @@ class ConversationTimelineTest {
             ConversationMessage("u", "user", "Draw", runId = "r", ordinal = 0, createdAt = "2026-01-01T12:00:00Z"),
             ConversationMessage("a", "assistant", "Done", runId = "r", ordinal = 6, createdAt = "2026-01-01T12:10:00Z")),
             listOf(timed("t1", 1, "2026-01-01T12:00:01Z", "2026-01-01T12:00:05Z"))), runs = listOf(run))
-        assertEquals("Worked for 10m", single.filterIsInstance<ConversationEntry.Work>().single().label)
+        assertEquals("Worked for 10m 0s", single.filterIsInstance<ConversationEntry.Work>().single().label)
+    }
+
+    // Two settled turns, each: prompt, one command, reasoning, final reply, then the turn's checkpoint item.
+    private fun twoTurnThread(): List<ConversationEntry> {
+        fun work(id: String, kind: String, run: String, ordinal: Int, start: String, end: String) =
+            ToolActivity(id, kind, kind = kind, status = "completed", runId = run, ordinal = ordinal, startedAt = start, completedAt = end)
+        return conversationTimeline(listOf(
+            ConversationMessage("u1", "user", "Fix it", runId = "r1", ordinal = 10, createdAt = "2026-01-01T11:59:00.000Z", updatedAt = "2026-01-01T11:59:00.000Z"),
+            ConversationMessage("a1", "assistant", "Fixed", runId = "r1", ordinal = 13, createdAt = "2026-01-01T11:59:09.170Z", updatedAt = "2026-01-01T11:59:09.179Z"),
+            ConversationMessage("u2", "user", "Check now", runId = "r2", ordinal = 20, createdAt = "2026-01-01T12:00:00.000Z", updatedAt = "2026-01-01T12:00:00.000Z"),
+            ConversationMessage("a2", "assistant", "Done", runId = "r2", ordinal = 23, createdAt = "2026-01-01T12:00:06.330Z", updatedAt = "2026-01-01T12:00:06.333Z"),
+        ), listOf(
+            work("c1", "command_execution", "r1", 11, "2026-01-01T11:59:03.000Z", "2026-01-01T11:59:03.040Z"),
+            work("t1", "reasoning", "r1", 12, "2026-01-01T11:59:05.000Z", "2026-01-01T11:59:09.170Z"),
+            work("k1", "checkpoint", "r1", 14, "2026-01-01T11:59:09.209Z", "2026-01-01T11:59:09.209Z"),
+            work("c2", "command_execution", "r2", 21, "2026-01-01T12:00:02.950Z", "2026-01-01T12:00:03.200Z"),
+            work("t2", "reasoning", "r2", 22, "2026-01-01T12:00:04.958Z", "2026-01-01T12:00:06.330Z"),
+            work("k2", "checkpoint", "r2", 24, "2026-01-01T12:00:06.369Z", "2026-01-01T12:00:06.369Z"),
+        ))
+    }
+    private val twoTurnRuns = listOf(
+        ConversationRun("r1", "completed", ordinal = 1, startedAt = "2026-01-01T11:59:00.500Z", completedAt = "2026-01-01T11:59:09.900Z"),
+        ConversationRun("r2", "completed", ordinal = 2, startedAt = "2026-01-01T12:00:00.026Z", completedAt = "2026-01-01T12:00:06.369Z"))
+
+    @Test fun checkpointsAddNoWorkRowAfterAReplyOrBeforeTheNextPrompt() {
+        val folded = foldConversationTimeline(twoTurnThread(), runs = twoTurnRuns)
+        // No trailing "Worked" row after the last reply, nor between a reply and the next prompt.
+        assertEquals(listOf("message:u1", "run:r1", "message:a1", "message:u2", "run:r2", "message:a2"), folded.map { it.key })
+        assertTrue(folded.filterIsInstance<ConversationEntry.Work>().flatMap { it.entries }
+            .filterIsInstance<ConversationEntry.Activities>().flatMap { it.activities }.none { it.kind == "checkpoint" })
+    }
+
+    @Test fun latestRunIsTimedByItsRunAndEarlierTurnsFromPromptToFinalReply() {
+        val labels = foldConversationTimeline(twoTurnThread(), runs = twoTurnRuns).filterIsInstance<ConversationEntry.Work>().associate { it.runId to it.label }
+        // Latest run: run start to completion (6.343s), not first command to reply (3.4s).
+        assertEquals("Worked for 6.3s", labels["r2"])
+        // Earlier turn: prompt to final reply update (9.179s), not its run timestamps (9.4s).
+        assertEquals("Worked for 9.2s", labels["r1"])
+    }
+
+    @Test fun settledWorkAfterTheFinalReplyJoinsTheTurnFoldButFailedWorkStays() {
+        fun tool(id: String, ordinal: Int, exitCode: Int? = null) =
+            ToolActivity(id, "Command", kind = "command_execution", status = "completed", runId = "r", ordinal = ordinal, exitCode = exitCode)
+        val messages = listOf(ConversationMessage("u", "user", "Go", runId = "r", ordinal = 0), ConversationMessage("a", "assistant", "Done", runId = "r", ordinal = 2))
+        val run = listOf(ConversationRun("r", "completed", startedAt = "2026-01-01T12:00:00Z", completedAt = "2026-01-01T12:00:30Z"))
+        val folded = foldConversationTimeline(conversationTimeline(messages, listOf(tool("t1", 1), tool("t2", 3))), runs = run)
+        assertEquals(listOf("message:u", "run:r", "message:a"), folded.map { it.key })
+        assertEquals(listOf("t1", "t2"), (folded[1] as ConversationEntry.Work).entries.flatMap { (it as ConversationEntry.Activities).activities }.map { it.id })
+        assertEquals("Worked for 30s", (folded[1] as ConversationEntry.Work).label)
+        // Only trailing work: the fold still sits before the reply.
+        val onlyTrailing = foldConversationTimeline(conversationTimeline(messages, listOf(tool("t2", 3))), runs = run)
+        assertEquals(listOf("message:u", "run:r", "message:a"), onlyTrailing.map { it.key })
+        // A failed command after the reply stays inspectable.
+        val failed = foldConversationTimeline(conversationTimeline(messages, listOf(tool("t1", 1), tool("t2", 3, exitCode = 1))), runs = run)
+        assertEquals(listOf("message:u", "run:r", "message:a", "activity:t2"), failed.map { it.key })
     }
 
     @Test fun htmlRenderWithoutOrdinalFallsBackToTimestampPosition() {
