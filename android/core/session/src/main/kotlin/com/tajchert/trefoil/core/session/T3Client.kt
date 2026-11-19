@@ -65,6 +65,9 @@ class T3Client(
     @Volatile private var generation = 0L
     private var heartbeat: Job? = null
     private var threadSubscription: String? = null
+    private val visits = ThreadVisitTracker()
+    private var visitTimer: Job? = null
+    private var threadViewing = true
     private var shellReady = false
     private var threadReady = false
     private var authorized = false
@@ -526,6 +529,7 @@ class T3Client(
         threadSubscription?.let { streams.remove(it); send(EffectRpc.signal("Interrupt", it)) }
         threadReady = false
         val selection = ++threadGeneration
+        visits.reset(threadId); visitTimer?.cancel()
         projection = JsonObject(emptyMap())
         val cached = state.value.environment?.id?.let { threadProjections[it to threadId] }
         if (cached != null) applyProjection(cached, threadId)
@@ -562,7 +566,26 @@ class T3Client(
             }
         }
     }
-    private fun writable() = update {
+    override fun setThreadViewing(viewing: Boolean) = synchronized(lifecycleLock) { threadViewing = viewing; noteThreadVisit() }
+    /** Records a visit (T3 `thread.visit`) once, fire-and-forget: a failure is dropped, never retried or surfaced. */
+    private fun noteThreadVisit() {
+        val current = state.value; val threadId = current.selectedThreadId
+        val eligible = threadViewing && current.connection == ConnectionStatus.Connected && current.canWrite
+        when (val action = visits.evaluate(threadId, eligible, projectionRevision, System.nanoTime() / 1_000_000)) {
+            ThreadVisitTracker.Action.None -> Unit
+            is ThreadVisitTracker.Action.Wait -> if (visitTimer?.isActive != true) {
+                val epoch = generation
+                visitTimer = scope.launch { delay(action.millis); synchronized(lifecycleLock) { if (epoch == generation) noteThreadVisit() } }
+            }
+            is ThreadVisitTracker.Action.Send -> {
+                val epoch = generation
+                val payload = ThreadVisitTracker.command(threadId!!, projection, action.opened)
+                scope.launch { try { rpc("orchestration.dispatchCommand", payload, epoch) } catch (error: CancellationException) { throw error } catch (_: Exception) {} }
+            }
+        }
+    }
+    private fun writable() { updateWritable(); noteThreadVisit() }
+    private fun updateWritable() = update {
         val fresh = shellReady && (it.selectedThreadId == null || threadReady) && it.connection == ConnectionStatus.Connected
         it.copy(canRead = fresh, canWrite = authorized && fresh,
             canWriteThreads = authorized && shellReady && it.connection == ConnectionStatus.Connected)

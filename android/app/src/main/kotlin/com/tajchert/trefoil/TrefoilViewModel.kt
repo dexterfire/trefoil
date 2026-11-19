@@ -511,6 +511,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         if (!foreground) return
         screenSessions.pause()
         foreground = false
+        client.setThreadViewing(false)
         // Route switches and machine probes wait for the foreground.
         refreshRouteMonitor()
         probeJob?.cancel(); probeJob = null
@@ -543,6 +544,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     }
     fun resume() {
         foreground = true
+        client.setThreadViewing(true)
         backgroundDisconnectJob?.cancel(); backgroundDisconnectJob = null
         postKeepAliveCheck()
         screenSessions.resume()

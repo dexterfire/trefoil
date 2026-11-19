@@ -227,6 +227,8 @@ interface TrefoilClient {
     suspend fun verifyLink(timeoutMillis: Long): Boolean = true
     suspend fun disconnect()
     suspend fun selectThread(threadId: String)
+    /** False while the app is in the background: the open thread is then not being looked at, so no visit is recorded. */
+    fun setThreadViewing(viewing: Boolean) {}
     suspend fun refreshScreens() { error("Remote screens are unavailable") }
     suspend fun screenAccess(target: ScreenTarget): ScreenAccess { error("Remote screens are unavailable") }
     fun isScreenAccessCurrent(access: ScreenAccess): Boolean = false
