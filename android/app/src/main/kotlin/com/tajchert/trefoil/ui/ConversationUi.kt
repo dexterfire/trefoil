@@ -125,16 +125,15 @@ internal fun Conversation(
     val backgroundWork = remember(state.backgroundWork, liveTurn.thinkingLabel, state.requests.isNotEmpty(), draft) {
         if (draft == null) backgroundWorkStatus(state.backgroundWork, liveTurn.thinkingLabel, state.requests.isNotEmpty()) else null
     }
-    // Client-side window over the fully loaded timeline; switching threads resets it to the latest turns.
-    var requestedTurns by rememberSaveable(state.environment?.id, composerKey) { mutableIntStateOf(TURN_WINDOW_PAGE) }
-    // Turn count when the thread first loaded (-1 until then); later prompts widen the window instead of sliding it.
-    var seenTurns by rememberSaveable(state.environment?.id, composerKey) { mutableIntStateOf(-1) }
+    // Client-side window over the fully loaded timeline. Deliberately not saveable (like T3, expanded history is not
+    // persisted): the shell's per-thread SaveableStateProvider would otherwise reopen a thread with old pages showing, so
+    // entering or re-entering a thread starts from the latest turns.
+    var turnWindow by remember(state.environment?.id, composerKey) { mutableStateOf(TurnWindowState()) }
     val turnCount = remember(entries) { entries.count { it.startsUserTurn } }
-    LaunchedEffect(turnCount > 0) { if (seenTurns < 0 && turnCount > 0) seenTurns = turnCount }
-    val visibleTurns = grownVisibleTurns(requestedTurns, seenTurns.takeIf { it >= 0 }, turnCount)
-    val window = remember(entries, visibleTurns, liveTurn.headerIndex, state.activeRunId) {
-        windowConversationTimeline(entries, visibleTurns, liveTimelineIndex(entries, state.activeRunId, liveTurn.headerIndex))
-    }
+    val liveIndex = liveTimelineIndex(entries, state.activeRunId, liveTurn.headerIndex)
+    val window = remember(entries, turnWindow, turnCount, liveIndex) { windowConversationTimeline(entries, turnWindow.visibleTurns(turnCount), liveIndex) }
+    // Record what is on screen: the first load, rewinds, and live work that widened the window (so it stays put after).
+    SideEffect { turnWindow.settled(turnCount, window).let { if (it != turnWindow) turnWindow = it } }
     val shown = window.visible
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -176,8 +175,9 @@ internal fun Conversation(
     /** Reveals [TURN_WINDOW_PAGE] more turns and keeps the entry the reader was looking at in place (prepend anchoring). */
     fun loadEarlier() {
         val anchor = list.layoutInfo.visibleItemsInfo.firstOrNull { it.key != LOAD_EARLIER_KEY }
-        val next = windowConversationTimeline(entries, visibleTurns + TURN_WINDOW_PAGE, liveTimelineIndex(entries, state.activeRunId, liveTurn.headerIndex))
-        requestedTurns += TURN_WINDOW_PAGE
+        val expanded = turnWindow.expanded(turnCount, window)
+        val next = windowConversationTimeline(entries, expanded.visibleTurns(turnCount), liveIndex)
+        turnWindow = expanded
         if (anchor == null) return
         // Applied on the next measure together with the revealed rows, instead of LazyColumn's key tracking, which would
         // keep the (still first) "Load earlier turns" row in place and push the reader's entry down. `following` is left
@@ -185,6 +185,9 @@ internal fun Conversation(
         // isScrollInProgress observer above sees nothing and only real user scrolls change it.
         list.requestScrollToItem(prependedAnchorIndex(anchor.index, window, next), -anchor.offset)
     }
+    // One stable callback, so the row does not recompose on every streaming delta.
+    val latestLoadEarlier by rememberUpdatedState(::loadEarlier)
+    val onLoadEarlier = remember { { latestLoadEarlier() } }
     CompositionLocalProvider(LocalFileDownloadUi provides fileDownloadUi, LocalContentColor provides c.text) {
         Column(Modifier.fillMaxSize()) {
             ConversationHeader(
@@ -215,7 +218,7 @@ internal fun Conversation(
                             is ConversationEntry.Work -> CompletedWork(entry, canLoadActivity, onLoadActivity, subagents = state.subagents, onOpenThread = onOpenThread, onOpenAgents = onOpenAgents)
                         }
                     }
-                    if (window.hasEarlier) item(key = LOAD_EARLIER_KEY) { LoadEarlierTurnsRow(::loadEarlier) }
+                    if (window.hasEarlier) item(key = LOAD_EARLIER_KEY) { LoadEarlierTurnsRow(onLoadEarlier) }
                     // The active turn opens with its "Working for" header, right after the prompt that started it.
                     // The window always keeps the header's turn, so its index maps into the visible tail.
                     val headerAt = liveTurn.headerIndex?.minus(window.hiddenCount)?.coerceIn(0, shown.size)

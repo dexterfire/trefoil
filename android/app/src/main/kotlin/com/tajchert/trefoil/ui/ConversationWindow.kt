@@ -64,9 +64,32 @@ internal fun prependedAnchorIndex(anchorIndex: Int, before: TimelineWindow, afte
     anchorIndex + (before.hiddenCount - after.hiddenCount) - (if (before.hasEarlier && !after.hasEarlier) 1 else 0)
 
 /**
- * The window size to use when [turnCount] turns are loaded: [requested] (the initial page plus taps), widened by every
- * turn that arrived since the thread first loaded with [seenTurns], so a new prompt never pushes the oldest visible turn
- * out. Null [seenTurns] means the thread has not loaded yet.
+ * The "Load earlier turns" window state. [requested] is the window size (initial page, taps, and any widening live work
+ * forced) as of when the thread loaded with [seenTurns] turns; every turn that arrives later widens the window by one, so
+ * a new prompt never pushes the oldest visible turn out. Null [seenTurns] means the thread has not loaded yet.
  */
-internal fun grownVisibleTurns(requested: Int, seenTurns: Int?, turnCount: Int): Int =
-    requested + (turnCount - (seenTurns ?: turnCount)).coerceAtLeast(0)
+internal data class TurnWindowState(val requested: Int = TURN_WINDOW_PAGE, val seenTurns: Int? = null) {
+    private fun growth(turnCount: Int) = (turnCount - (seenTurns ?: turnCount)).coerceAtLeast(0)
+
+    fun visibleTurns(turnCount: Int): Int = requested + growth(turnCount)
+
+    /**
+     * Records the shown [window] over [turnCount] turns: the first load sets [seenTurns], a rewind lowers it (so later
+     * prompts widen from the shorter thread instead of sliding), and turns that live work pulled in become the floor,
+     * so the window does not snap back when that work ends.
+     */
+    fun settled(turnCount: Int, window: TimelineWindow): TurnWindowState {
+        val seen = when {
+            turnCount <= 0 -> seenTurns // an empty refresh says nothing about the thread
+            seenTurns == null -> turnCount
+            else -> minOf(seenTurns, turnCount)
+        }
+        val next = copy(seenTurns = seen)
+        val shown = turnCount - window.hiddenTurns
+        return next.copy(requested = maxOf(requested, shown - next.growth(turnCount)))
+    }
+
+    /** One tap: [TURN_WINDOW_PAGE] more turns than are shown now (which may already exceed [requested]). */
+    fun expanded(turnCount: Int, window: TimelineWindow): TurnWindowState =
+        settled(turnCount, window).let { it.copy(requested = it.requested + TURN_WINDOW_PAGE) }
+}

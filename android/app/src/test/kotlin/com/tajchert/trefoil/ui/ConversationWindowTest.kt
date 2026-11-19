@@ -101,19 +101,52 @@ class ConversationWindowTest {
         assertEquals(1 + 15 - 1, prependedAnchorIndex(1, second, third))
     }
 
+    /** Renders [entries] with [state] the way the conversation does, then settles the state on what was shown. */
+    private fun show(state: TurnWindowState, entries: List<ConversationEntry>, keepFrom: Int? = null): Pair<TurnWindowState, TimelineWindow> {
+        val turns = entries.count { it.startsUserTurn }
+        val window = windowConversationTimeline(entries, state.visibleTurns(turns), keepFrom)
+        return state.settled(turns, window) to window
+    }
+
     @Test fun newPromptsWidenTheWindowInsteadOfDroppingTheOldestVisibleTurn() {
-        assertEquals(TURN_WINDOW_PAGE, grownVisibleTurns(TURN_WINDOW_PAGE, seenTurns = null, turnCount = 0))
-        assertEquals(TURN_WINDOW_PAGE, grownVisibleTurns(TURN_WINDOW_PAGE, seenTurns = null, turnCount = 11)) // first load
-        val opened = windowConversationTimeline(thread(11), grownVisibleTurns(TURN_WINDOW_PAGE, 11, 11))
-        assertEquals("u1", opened.firstPrompt())
+        assertEquals(TURN_WINDOW_PAGE, TurnWindowState().visibleTurns(0))
+        val (opened, first) = show(TurnWindowState(), thread(11))
+        assertEquals(11, opened.seenTurns)
+        assertEquals("u1", first.firstPrompt())
         // Two prompts arrive: the window widens by two, so u1 stays the oldest visible turn.
-        val grown = windowConversationTimeline(thread(13), grownVisibleTurns(TURN_WINDOW_PAGE, 11, 13))
+        val (_, grown) = show(opened, thread(13))
         assertEquals("u1", grown.firstPrompt())
         assertEquals(1, grown.hiddenTurns)
-        // Expanded windows keep their start too, and a later tap still reveals the rest.
-        assertEquals(22, grownVisibleTurns(TURN_WINDOW_PAGE * 2, 11, 13))
-        assertFalse(windowConversationTimeline(thread(13), grownVisibleTurns(TURN_WINDOW_PAGE * 2, 11, 13)).hasEarlier)
-        // A shrinking thread (rewind) never narrows the window below the requested size.
-        assertEquals(TURN_WINDOW_PAGE, grownVisibleTurns(TURN_WINDOW_PAGE, 11, 8))
+        // An empty refresh does not reset what the thread loaded with.
+        assertEquals(opened, show(opened, emptyList()).first)
+    }
+
+    @Test fun tapRevealsAPageBeyondTurnsLiveWorkAlreadyPulledIn() {
+        val entries = thread(25)
+        val live = entries.indexOfFirst { it.key == "message:u5" } // live run in turn 5: 20 turns shown, not 10
+        val (state, window) = show(TurnWindowState(), entries, keepFrom = live)
+        assertEquals("u5", window.firstPrompt())
+        val tapped = state.expanded(25, window)
+        assertEquals(30, tapped.visibleTurns(25))
+        assertFalse(windowConversationTimeline(entries, tapped.visibleTurns(25), live).hasEarlier)
+    }
+
+    @Test fun windowKeepsTurnsLiveWorkPulledInAfterThatWorkEnds() {
+        val entries = thread(25)
+        val (state, _) = show(TurnWindowState(), entries, keepFrom = entries.indexOfFirst { it.key == "message:u5" })
+        val (_, settled) = show(state, entries, keepFrom = null) // the run finished
+        assertEquals("u5", settled.firstPrompt())
+    }
+
+    @Test fun rewindThenNewPromptsDoNotSlideTheWindow() {
+        val (opened, first) = show(TurnWindowState(), thread(11))
+        assertEquals("u1", first.firstPrompt())
+        val (rewound, all) = show(opened, thread(8))
+        assertEquals(8, rewound.seenTurns)
+        assertFalse(all.hasEarlier)
+        // Four prompts after the rewind: u0 was visible and stays visible.
+        val (_, after) = show(rewound, thread(12))
+        assertFalse(after.hasEarlier)
+        assertEquals("u0", after.firstPrompt())
     }
 }
