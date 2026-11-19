@@ -19,6 +19,17 @@ class LimitChipTest {
         assertEquals(80, tightestLimitPercent(listOf(provider("a", 20.0), provider("off", 99.0, enabled = false))))
     }
 
+    @Test fun ignoresClaudeModelScopedWeeklyWindows() {
+        val claude = ProviderInstance("c", "claudeAgent", usageLimits = ProviderUsageLimits("", listOf(
+            UsageLimitWindow("five_hour", "session", "Session", 40.0),
+            UsageLimitWindow("seven_day", "weekly", "Weekly", 30.0),
+            UsageLimitWindow("seven_day_fable", "weekly", "Weekly · Fable", 100.0),
+        )))
+        assertEquals(60, tightestLimitPercent(listOf(claude)))
+        val fableOnly = claude.copy(usageLimits = ProviderUsageLimits("", listOf(UsageLimitWindow("seven_day_fable", "weekly", "Weekly · Fable", 100.0))))
+        assertNull(tightestLimitPercent(listOf(fableOnly)))
+    }
+
     @Test fun noWindowsMeansNoLimit() {
         assertNull(tightestLimitPercent(emptyList()))
         assertNull(tightestLimitPercent(listOf(ProviderInstance("a", "codex"), ProviderInstance("b", "codex", usageLimits = ProviderUsageLimits("")))))

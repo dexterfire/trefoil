@@ -20,6 +20,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.tajchert.trefoil.core.model.ProviderInstance
+import com.tajchert.trefoil.core.model.UsageLimitWindow
 
 /** Severity of a "% left" value; one set of thresholds for the chip and the Limits tab. */
 internal enum class LimitSeverity { Critical, Low, Healthy }
@@ -37,9 +38,19 @@ internal fun LimitSeverity.color(c: TrefoilColors): Color = when (this) {
     LimitSeverity.Healthy -> c.green
 }
 
-/** Lowest `remainingPercent` over all windows of all enabled providers; null when nothing reports a limit. */
+/**
+ * Lowest `remainingPercent` over the account-wide windows of all enabled providers; null when nothing reports a limit.
+ * Claude's model-scoped weekly allowances (`seven_day_<model>`, such as Fable) block only their own model, so they
+ * would overstate how close the account is to its limit; only the 5h session and overall weekly windows count.
+ */
 internal fun tightestLimitPercent(providers: List<ProviderInstance>): Int? =
-    providers.filter { it.enabled }.flatMap { it.usageLimits?.windows.orEmpty() }.minOfOrNull { it.remainingPercent }
+    providers.filter { it.enabled }
+        .flatMap { p -> p.usageLimits?.windows.orEmpty().filterNot { isModelScopedWindow(p.driver, it) } }
+        .minOfOrNull { it.remainingPercent }
+
+// Mirrors T3 `windowLimitsModel` in apps/server/src/provider/claudeUsageLimits.ts (MIT; see protocol/T3-LICENSE.txt).
+private fun isModelScopedWindow(driver: String, window: UsageLimitWindow): Boolean =
+    driver == "claudeAgent" && window.id.startsWith("seven_day_")
 
 internal fun limitChipDescription(percent: Int?): String =
     if (percent == null) "Limits and usage" else "Limits and usage, lowest limit $percent% left"
