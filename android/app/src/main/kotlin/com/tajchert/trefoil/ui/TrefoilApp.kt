@@ -67,6 +67,8 @@ fun TrefoilApp(
     usageOpenRequest: Pair<Long, com.tajchert.trefoil.widget.UsageWidgetTab>? = null,
     pairLinkRequest: Pair<Long, String>? = null,
     onAllowLocalNetworkHttp: (String, Boolean) -> Unit = { _, _ -> },
+    isRefreshing: Boolean = false,
+    onRefresh: () -> Unit = {},
 ) {
     TrefoilTheme {
         val conversationState = rememberSaveableStateHolder()
@@ -233,6 +235,7 @@ fun TrefoilApp(
                                             ThreadList(state, select, { creating = true }, onThreadAction,
                                                 selectedId = if (twoPane && draft == null) state.selectedThreadId else null,
                                                 shell = shell, railLayout = layout == ShellLayout.Rail,
+                                                isRefreshing = isRefreshing, onRefresh = onRefresh,
                                                 banner = { ConnectionBanner(state, onReconnect) })
                                         }
                                     }

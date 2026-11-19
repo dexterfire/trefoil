@@ -21,6 +21,13 @@ fun ThreadList_Populated_Dark() {
     TrefoilTheme(darkTheme = true) { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}) }
 }
 
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, heightDp = 800)
+@Composable
+fun ThreadList_Refreshing_Light() {
+    TrefoilTheme(darkTheme = false) { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, isRefreshing = true) }
+}
+
 /** Waiting threads name what they want: amber kind label, then the preview; a long preview gives way, the label never does. */
 @PreviewTest
 @Preview(showBackground = true, widthDp = 400, heightDp = 420)

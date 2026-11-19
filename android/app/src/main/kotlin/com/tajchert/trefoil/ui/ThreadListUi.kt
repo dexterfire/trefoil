@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -178,6 +179,7 @@ private val defaultExpanded = listOf("Needs you", "Pinned", "Working", "Recent")
  * Threads list: header (machine pill or machine title on the rail layout), inline search, filter chips,
  * grouped rows and the New action. [selectedId] highlights a row only where the detail pane is visible.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ThreadList(
     state: ClientState, select: (String) -> Unit, create: () -> Unit,
@@ -186,6 +188,8 @@ internal fun ThreadList(
     shell: ShellActions? = null,
     railLayout: Boolean = false,
     banner: @Composable () -> Unit = {},
+    isRefreshing: Boolean = false,
+    onRefresh: () -> Unit = {},
 ) {
     var query by rememberSaveable(state.environment?.id) { mutableStateOf("") }
     var searching by rememberSaveable(state.environment?.id) { mutableStateOf(false) }
@@ -226,7 +230,7 @@ internal fun ThreadList(
         if (searching || query.isNotEmpty()) ThreadSearchField(query, { query = it }) { query = ""; searching = false }
         ThreadFilterChips(filter, counts, state.projects, projects[projectId], { filter = it }, { projectId = it })
         if (state.busy && state.threads.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp).height(2.dp), color = c.accent, trackColor = c.s2)
-        Box(Modifier.weight(1f).fillMaxWidth()) {
+        PullToRefreshBox(isRefreshing, onRefresh, Modifier.weight(1f).fillMaxWidth()) {
             val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottomInset + if (railLayout) 24.dp else 96.dp)) {
                 if (sections.isEmpty() && !state.busy) item(key = "empty") {

@@ -54,6 +54,20 @@ class ThreadListUiTest {
         compose.onNodeWithText("Keep activity in the right order").assertExists()
         compose.onNodeWithText("Review the connection flow").assertDoesNotExist()
     }
+    @Test fun pullingDownTheListRequestsARefresh() {
+        var refreshes = 0
+        compose.setContent { TrefoilTheme { ThreadList(fixture, {}, {}, onRefresh = { refreshes++ }) } }
+        compose.onRoot().performTouchInput { swipeDown(startY = height * 0.4f, endY = height * 0.9f) }
+        compose.waitForIdle()
+        assertTrue("refresh requested", refreshes >= 1)
+    }
+    @Test fun pullingAnEmptyListRequestsARefresh() {
+        var refreshes = 0
+        compose.setContent { TrefoilTheme { ThreadList(fixture.copy(threads = emptyList()), {}, {}, onRefresh = { refreshes++ }) } }
+        compose.onRoot().performTouchInput { swipeDown(startY = height * 0.4f, endY = height * 0.9f) }
+        compose.waitForIdle()
+        assertTrue("refresh requested", refreshes >= 1)
+    }
     @Test fun needsYouIsPulledToTopAndSettledFoldsIntoAnExpandableRow() {
         compose.setContent { TrefoilTheme { ThreadList(fixture, {}, {}) } }
         compose.onNodeWithContentDescription("Needs you shelf").assertExists()

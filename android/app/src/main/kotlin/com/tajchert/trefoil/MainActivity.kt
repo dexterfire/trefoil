@@ -123,6 +123,7 @@ class MainActivity : ComponentActivity() {
             val machineProbes by model.machineProbes.collectAsStateWithLifecycle()
             val usage by model.usage.collectAsStateWithLifecycle()
             val keepConnected by model.keepConnected.collectAsStateWithLifecycle()
+            val refreshing by model.isRefreshing.collectAsStateWithLifecycle()
             TrefoilApp(
                 onThreadShown = model::setThreadShown,
                 usageOpenRequest = usageRequest,
@@ -141,6 +142,8 @@ class MainActivity : ComponentActivity() {
                 onInterrupt = model::interrupt,
                 onStopSubagent = model::stopSubagent,
                 onThreadAction = model::threadAction,
+                isRefreshing = refreshing,
+                onRefresh = model::refresh,
                 onUndoSettlement = model::undoSettlement,
                 onLoadActivity = model::loadActivity,
                 screenViewer = screenViewer,
