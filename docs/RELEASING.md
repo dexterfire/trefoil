@@ -1,5 +1,12 @@
 # Android releases
 
+Release `0.19.0` (`versionCode = 36`) adds pull to refresh to the thread list, and rows whose turn ended
+while subagents still run show a Waiting spinner. Reconnects resume the shell from its cursor, so the server
+replays missed deltas and skips the full snapshot. Hosts that advertise access-token renewal get device-bound
+DPoP tokens, renewed with the device key. Opening a thread records a `thread.visit`. Long threads load earlier
+turns on demand. The baseline profile is regenerated. Check pull to refresh, reconnect and DPoP renewal against
+a real environment on a device.
+
 Release `0.18.5` (`versionCode = 35`) shows a "Waiting on N subagents" row in the thread screen when the
 parent's turn has ended but subagents or awaited background tasks are still running, following T3's
 pending background work rules (including a usage-limited run kept as latest). An ended turn no longer shows
