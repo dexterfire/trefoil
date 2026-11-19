@@ -79,14 +79,52 @@ class ShellRefreshTest {
         } finally { f.close() }
     }
 
-    @Test fun refreshThatNeverSynchronizesFailsTheConnectionInsteadOfLeavingAStaleList() = runBlocking<Unit> {
+    private fun T3Client.ageLink(millis: Long) = listOf("pongAt", "frameAt").forEach {
+        T3Client::class.java.getDeclaredField(it).apply { isAccessible = true }.setLong(this, System.currentTimeMillis() - millis)
+    }
+
+    @Test fun slowSnapshotOnAHealthyLinkReportsTheRefreshButKeepsTheConnection() = runBlocking<Unit> {
+        val shellIds = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val f = fixture { n, id -> shellIds += id; if (n == 0) "${snapshot(row("completed"))}, {\"kind\":\"synchronized\"}" else null }
+        try {
+            f.connect()
+            try { f.client.refreshThreads(); fail("An unsynchronized refresh must not look done") } catch (_: T3Client.RequestTimedOut) { }
+            assertEquals("Heartbeat is fresh: in-flight work stays certain", ConnectionStatus.Connected, f.client.state.value.connection)
+            assertTrue(f.client.state.value.canWriteThreads)
+            // A retry joins the pending refresh rather than restarting the snapshot.
+            try { f.client.refreshThreads(); fail("Still unsynchronized") } catch (_: T3Client.RequestTimedOut) { }
+            assertEquals(2, shellIds.size)
+            // The slow snapshot finally lands on the still-open stream.
+            f.socket()!!.send("""{"_tag":"Chunk","requestId":"${shellIds.last()}","values":[${snapshot(row("running", ""","activityRunStatus":"running""""))},{"kind":"synchronized"}]}""")
+            withTimeout(5_000) { f.client.state.first { it.threads.single().status == "running" } }
+        } finally { f.close() }
+    }
+
+    @Test fun refreshTimeoutOnAStaleLinkFailsTheConnection() = runBlocking<Unit> {
         val f = fixture { n, _ -> if (n == 0) "${snapshot(row("completed"))}, {\"kind\":\"synchronized\"}" else null }
         try {
             f.connect()
-            try { f.client.refreshThreads(); fail("A silent shell must not look refreshed") } catch (_: Exception) { }
+            f.client.ageLink(SHELL_REFRESH_STALE_LINK_MS + 5_000)
+            try { f.client.refreshThreads(); fail("A silent shell must not look refreshed") } catch (_: T3Client.RequestTimedOut) { }
             assertEquals(ConnectionStatus.Error, f.client.state.value.connection)
             assertFalse(f.client.state.value.canWrite)
             try { f.client.refreshThreads(); fail("Refresh needs a live connection") } catch (_: IllegalStateException) { }
+        } finally { f.close() }
+    }
+
+    @Test fun refreshDuringTheFirstSnapshotWaitsForItInsteadOfResubscribing() = runBlocking<Unit> {
+        val shellIds = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val f = fixture { _, id -> shellIds += id; null }
+        try {
+            f.client.connect(SavedEnvironment("env-1", "Test", f.server.url("/").toString(), "bearer"))
+            withTimeout(5_000) { while (shellIds.isEmpty()) delay(20) }
+            val pull = async { f.client.refreshThreads() }
+            delay(200)
+            assertFalse("Waits for the first snapshot", pull.isCompleted)
+            f.socket()!!.send("""{"_tag":"Chunk","requestId":"${shellIds.single()}","values":[${snapshot(row("completed"))},{"kind":"synchronized"}]}""")
+            withTimeout(5_000) { pull.await() }
+            assertEquals(1, shellIds.size)
+            assertEquals("t", f.client.state.value.threads.single().id)
         } finally { f.close() }
     }
 

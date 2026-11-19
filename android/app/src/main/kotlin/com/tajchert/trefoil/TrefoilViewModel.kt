@@ -26,6 +26,8 @@ import kotlin.coroutines.coroutineContext
 
 internal const val BACKGROUND_CONNECTION_GRACE_MS = 60_000L
 internal const val RETAINED_CONNECTION_FRESHNESS_MS = 20_000L
+/** A resume re-reads the thread list only after at least this long in the background (not rotation or a quick switch). */
+internal const val RESUME_SHELL_REFRESH_MIN_BACKGROUND_MS = 30_000L
 /** Waits before each automatic reconnect attempt after an unexpected drop; one episode per drop. */
 internal val AUTO_RECONNECT_BACKOFF_MS = listOf(2_000L, 5_000L, 15_000L)
 /** After a default-network change, the live connection must answer a ping within this or it is dropped and reconnected. */
@@ -84,6 +86,9 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     private var selectedEnvironment: SavedEnvironment? = null
     private var resumeEnvironment: SavedEnvironment? = null
     private var foreground = true
+    /** `SystemClock.elapsedRealtime()` of the last [pause]; null until the first one. */
+    private var backgroundedAt: Long? = null
+    private var silentShellRefresh: Job? = null
     private var connectionEpoch = 0L
     var sshFilePickerActive = false
     private val prefs = application.getSharedPreferences("trefoil.ui", android.content.Context.MODE_PRIVATE)
@@ -493,7 +498,9 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         _isRefreshing.value = true
         viewModelScope.launch {
             try {
-                if (live) client.refreshThreads() else _working.first { !it }
+                // A reconnect that stops at a host-key or login prompt is the user's turn, not a refresh in progress.
+                if (live) client.refreshThreads()
+                else combine(_working, _sshHostKey, _sshLogin) { working, hostKey, login -> !working || hostKey != null || login != null }.first { it }
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) { _notice.value = "Could not refresh threads. Check the connection and try again." }
             finally { _isRefreshing.value = false }
@@ -502,8 +509,10 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
 
     /** Resuming on a retained live session re-reads the shell, so rows never show statuses from before the background. */
     private fun refreshRetainedShell() {
+        val away = backgroundedAt?.let { android.os.SystemClock.elapsedRealtime() - it } ?: return
+        if (away < RESUME_SHELL_REFRESH_MIN_BACKGROUND_MS || silentShellRefresh?.isActive == true || _isRefreshing.value) return
         if (state.value.connection != ConnectionStatus.Connected || _working.value) return
-        viewModelScope.launch {
+        silentShellRefresh = viewModelScope.launch {
             try { client.refreshThreads() } catch (e: CancellationException) { throw e } catch (_: Exception) { /* A failed refresh fails the connection; drop handling reconnects. */ }
         }
     }
@@ -566,6 +575,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         screenSessions.pause()
         foreground = false
         updateThreadViewing()
+        backgroundedAt = android.os.SystemClock.elapsedRealtime()
         // Route switches and machine probes wait for the foreground.
         refreshRouteMonitor()
         probeJob?.cancel(); probeJob = null

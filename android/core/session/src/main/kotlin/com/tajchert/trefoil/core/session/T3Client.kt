@@ -93,6 +93,8 @@ class T3Client(
     private var deviceScreenSubscription: String? = null
     private val optionalScreenStreams = mutableSetOf<String>()
     @Volatile private var pongAt = 0L
+    /** Arrival of the live connection's latest frame of any kind; a large snapshot in transit keeps it fresh. */
+    @Volatile private var frameAt = 0L
     /** Counts pongs of the live connection, so [verifyLink] can wait for one newer than its ping. */
     private val pongs = MutableStateFlow(0L)
     private val serial = AtomicLong()
@@ -222,7 +224,7 @@ class T3Client(
     /** The server answered with an interrupted Exit: it stopped handling the request, so the outcome is unknown. */
     private class RequestInterrupted : IllegalStateException("Server interrupted the request; the outcome is uncertain")
     /** No reply in time. Deliberately not a CancellationException, so callers cannot swallow it as cancellation. */
-    private class RequestTimedOut : IllegalStateException("Server did not answer in time; the outcome is uncertain")
+    internal class RequestTimedOut : IllegalStateException("Server did not answer in time; the outcome is uncertain")
     /** Credential-free: the public descriptor never receives a token. */
     private suspend fun descriptor(base: HttpUrl, timeoutMillis: Long? = null): JsonObject = fetch(Request.Builder().url(base.resolve("/.well-known/t3/environment")!!).build(), timeoutMillis).also {
         if (it["orchestrationProtocolVersion"]?.jsonPrimitive?.intOrNull != 2) throw PairingException("This environment does not support orchestration protocol 2")
@@ -341,6 +343,7 @@ class T3Client(
                 override fun onOpen(webSocket: WebSocket, response: Response) { synchronized(lifecycleLock) { if (epoch == generation) opened.complete(Unit) else webSocket.cancel() } }
                 override fun onMessage(webSocket: WebSocket, text: String) {
                     synchronized(lifecycleLock) {
+                        if (epoch == generation) frameAt = System.currentTimeMillis()
                         if (epoch == generation) try { EffectRpc.decode(text).forEach { if (epoch == generation) receive(it) } } catch (_: Exception) { fail(epoch, "Invalid server RPC response") }
                     }
                 }
@@ -692,10 +695,12 @@ class T3Client(
     }
     override suspend fun refreshThreads() {
         val (epoch, done) = synchronized(lifecycleLock) {
-            check(state.value.connection == ConnectionStatus.Connected && socket != null && shellSubscription != null) { "Connect before refreshing threads" }
+            check(state.value.connection == ConnectionStatus.Connected && socket != null) { "Connect before refreshing threads" }
             shellRefresh?.let { return@synchronized generation to it }
             val done = CompletableDeferred<Unit>()
             shellRefresh = done
+            // The first shell snapshot of this connection is still on its way: wait for it instead of restarting it.
+            if (!shellReady || shellSubscription == null) return@synchronized generation to done
             // Stop the old stream first: its late frames are dropped, and the new snapshot is authoritative.
             shellSubscription?.let { old -> streams.remove(old); runCatching { send(EffectRpc.signal("Interrupt", old)) } }
             try { subscribeFullShell() } catch (error: Exception) {
@@ -707,11 +712,14 @@ class T3Client(
         }
         val synced = withTimeoutOrNull(requestTimeoutMillis) { done.await() }
         if (synced == null) {
-            // Without a synchronized shell stream the list would silently stop updating; let reconnect handling take over.
-            fail(epoch, "Thread list refresh timed out; reconnect to refresh")
+            // A slow snapshot on a healthy link keeps streaming into the list; only report this refresh. The pending
+            // refresh stays, so a retry joins it instead of restarting the snapshot. A dead link is dropped so reconnect
+            // handling runs, rather than leaving a list that silently stops updating.
+            if (linkStale()) fail(epoch, "Thread list refresh timed out; reconnect to refresh")
             throw RequestTimedOut()
         }
     }
+    private fun linkStale(): Boolean = System.currentTimeMillis() - maxOf(pongAt, frameAt) > SHELL_REFRESH_STALE_LINK_MS
     private fun writable() { updateWritable(); noteThreadVisit() }
     private fun updateWritable() = update {
         val fresh = shellReady && (it.selectedThreadId == null || threadReady) && it.connection == ConnectionStatus.Connected
@@ -757,7 +765,7 @@ class T3Client(
             // Archive moves send `thread.removed` for the old location; it must not drop the row now in the other one.
             "thread.removed" -> {
                 val archived = when (item.string("location")) { "archive" -> true; "active" -> false; else -> null }
-                update { it.copy(threads = it.threads.filterNot { t -> t.id == item.string("threadId") && (archived == null || t.archived == archived) }) }
+                update { it.copy(threads = it.threads.filterNot { t -> t.id == item.string("threadId") && (archived == null || (t.archived || t.archivedAt != null) == archived) }) }
             }
             "synchronized" -> {
                 shellReady = true; writable()
@@ -1360,6 +1368,8 @@ class T3Client(
 }
 
 private const val CREATION_SOURCE = "mobile"
+/** No pong or frame for this long (two missed 15 s heartbeats) means a timed-out shell refresh sits on a dead link. */
+internal const val SHELL_REFRESH_STALE_LINK_MS = 30_000L
 
 /** Stable per launch command, so an explicit resend of the same draft names the same first message. */
 internal fun initialMessageId(commandId: String): String = UUID.nameUUIDFromBytes("$commandId:initial-message".toByteArray()).toString()

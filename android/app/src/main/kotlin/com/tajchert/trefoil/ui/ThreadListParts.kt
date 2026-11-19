@@ -181,7 +181,8 @@ internal enum class RowMark { None, Working, Waiting, Done, Error }
  */
 internal fun threadAwaitsWork(thread: ThreadSummary): Boolean =
     thread.completionHeldBackgroundWork && thread.status != "failed" ||
-        thread.blockedOnThreadWait == true && (thread.activityRunStatus ?: thread.status) == "running"
+        thread.blockedOnThreadWait == true && (thread.activityRunStatus ?: thread.status).lowercase(java.util.Locale.ROOT) in
+            setOf("preparing", "queued", "starting", "running", "waiting", "working", "streaming")
 
 internal fun threadRowMark(thread: ThreadSummary): RowMark = when (threadIndicator(thread).kind) {
     "working" -> RowMark.Working

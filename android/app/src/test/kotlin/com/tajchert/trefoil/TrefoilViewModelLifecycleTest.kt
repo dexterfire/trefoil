@@ -234,7 +234,10 @@ class TrefoilViewModelLifecycleTest {
     }
 
     private fun shellSubscribes() = sent.mapNotNull { Regex(""""id":"(\d+)","tag":"orchestration.subscribeShell"""").find(it)?.groupValues?.get(1) }
-    private fun seedShellStream() = T3Client::class.java.getDeclaredField("shellSubscription").apply { isAccessible = true }.set(client, "shell-0")
+    private fun seedShellStream() {
+        T3Client::class.java.getDeclaredField("shellSubscription").apply { isAccessible = true }.set(client, "shell-0")
+        T3Client::class.java.getDeclaredField("shellReady").apply { isAccessible = true }.setBoolean(client, true)
+    }
     private fun receive(frame: String) = T3Client::class.java.getDeclaredMethod("receive", kotlinx.serialization.json.JsonObject::class.java).apply { isAccessible = true }
         .invoke(client, kotlinx.serialization.json.Json.parseToJsonElement(frame) as kotlinx.serialization.json.JsonObject)
 
@@ -264,10 +267,19 @@ class TrefoilViewModelLifecycleTest {
 
     @Test fun resumeOnARetainedSessionSilentlyRereadsTheShell() {
         seedShellStream()
+        // A quick app switch keeps the live stream as is.
         model.pause(); advance(5_000)
+        model.resume(); advance(0)
+        assertEquals(0, shellSubscribes().size)
+        // A longer stay in the background re-reads the shell once.
+        model.pause(); advance(RESUME_SHELL_REFRESH_MIN_BACKGROUND_MS + 1_000)
         model.resume(); advance(0)
         assertEquals(1, shellSubscribes().size)
         assertFalse(model.isRefreshing.value)
+        // A repeat while that re-read is still pending does not stack another one.
+        model.pause(); advance(RESUME_SHELL_REFRESH_MIN_BACKGROUND_MS + 1_000)
+        model.resume(); advance(0)
+        assertEquals(1, shellSubscribes().size)
         assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
     }
 }

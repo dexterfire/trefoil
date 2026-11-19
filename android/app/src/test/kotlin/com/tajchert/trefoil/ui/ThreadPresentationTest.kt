@@ -169,6 +169,9 @@ class ThreadPresentationTest {
         // A run blocked on another thread waits; a stale flag on a finished run does not.
         val blocked = ThreadSummary("b", "p", "B", "running", activityRunStatus = "running", blockedOnThreadWait = true, latestRunCompletedAt = "2026-11-07T11:00:00Z")
         assertEquals(RowMark.Waiting, threadRowMark(blocked))
+        for (run in listOf("preparing", "queued", "starting", "waiting", "streaming")) {
+            assertEquals(run, RowMark.Waiting, threadRowMark(blocked.copy(activityRunStatus = run)))
+        }
         assertEquals(RowMark.Done, threadRowMark(blocked.copy(status = "completed", activityRunStatus = null)))
     }
     @Test fun shellLayoutBreakpoints() {
