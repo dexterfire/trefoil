@@ -12,6 +12,9 @@ import org.junit.Test
 
 class ShellResumeTest {
     private val origin = ShellOrigin("env", "1.2.3", 40)
+    /** Rows as the client hands them over: compared by identity, so equal but different lists never resume. */
+    private val rows = ShellRows(mutableListOf<Any>(), mutableListOf<Any>())
+    private fun ShellResume.record(item: JsonObject) = applied(item, rows)
     private fun item(text: String) = Json.parseToJsonElement(text).jsonObject
     private fun snapshot(sequence: Long) = item("""{"kind":"snapshot","snapshot":{"snapshotSequence":$sequence,"projects":[],"threads":[]}}""")
     private fun delta(sequence: Long) = item("""{"kind":"thread.removed","sequence":$sequence,"location":"active","threadId":"t"}""")
@@ -37,49 +40,62 @@ class ShellResumeTest {
 
     @Test fun cursorFollowsAuthoritativeSnapshotsAndDeltasButNotEnrichment() {
         val resume = ShellResume { 1_000 }
-        assertNull(resume.begin("env", origin, rowsRetained = true, retainedEnvironments = setOf("env")))
-        resume.applied(snapshot(10))
+        assertNull(resume.begin("env", origin, rows, retainedEnvironments = setOf("env")))
+        resume.record(snapshot(10))
         assertEquals(10L, resume.cursor("env")?.sequence)
-        resume.applied(delta(14)); resume.applied(delta(12))
+        resume.record(delta(14)); resume.record(delta(12))
         assertEquals(14L, resume.cursor("env")?.sequence)
-        resume.applied(item("""{"kind":"snapshot","resolvedRepositoryIdentityRoots":["/r"],"snapshot":{"snapshotSequence":99,"projects":[],"threads":[]}}"""))
-        resume.applied(item("""{"kind":"synchronized"}"""))
+        resume.record(item("""{"kind":"snapshot","resolvedRepositoryIdentityRoots":["/r"],"snapshot":{"snapshotSequence":99,"projects":[],"threads":[]}}"""))
+        resume.record(item("""{"kind":"synchronized"}"""))
         assertEquals(14L, resume.cursor("env")?.sequence)
-        assertEquals(14L, resume.begin("env", origin, rowsRetained = true, retainedEnvironments = setOf("env")))
-        resume.applied(snapshot(3))
+        assertEquals(14L, resume.begin("env", origin, rows, retainedEnvironments = setOf("env")))
+        resume.record(snapshot(3))
         assertEquals(3L, resume.cursor("env")?.sequence)
     }
 
     @Test fun anythingUnaccountedDropsTheCursor() {
         val resume = ShellResume { 1_000 }
-        fun started(): ShellResume { resume.begin("env", origin, true, setOf("env")); resume.applied(snapshot(10)); return resume }
-        started().applied(item("""{"kind":"thread.updated","location":"active","thread":{"id":"t"}}"""))
+        fun started(): ShellResume { resume.begin("env", origin, rows, setOf("env")); resume.record(snapshot(10)); return resume }
+        started().record(item("""{"kind":"thread.updated","location":"active","thread":{"id":"t"}}"""))
         assertNull(resume.cursor("env"))
-        started().applied(item("""{"kind":"snapshot","snapshot":{"projects":[],"threads":[]}}"""))
+        started().record(item("""{"kind":"snapshot","snapshot":{"projects":[],"threads":[]}}"""))
         assertNull(resume.cursor("env"))
-        started().applied(item("""{"kind":"snapshot-required"}"""))
+        started().record(item("""{"kind":"snapshot-required"}"""))
         assertNull(resume.cursor("env"))
-        resume.begin("env", null, true, setOf("env")); resume.applied(snapshot(10))
+        resume.begin("env", null, rows, setOf("env")); resume.record(snapshot(10))
         assertNull(resume.cursor("env"))
+    }
+
+    @Test fun cursorBelongsToTheExactRowsItWasRecordedWith() {
+        val resume = ShellResume { 1_000 }
+        resume.begin("env", origin, rows, setOf("env")); resume.record(snapshot(10))
+        val changed = ShellRows(rows.projects, mutableListOf<Any>("enriched"))
+        resume.applied(item("""{"kind":"snapshot","resolvedRepositoryIdentityRoots":[],"snapshot":{"snapshotSequence":99,"projects":[],"threads":[]}}"""), changed)
+        assertNull("Rows from before the last tracked item", resume.begin("env", origin, rows, setOf("env")))
+        resume.begin("env", origin, rows, setOf("env")); resume.record(snapshot(10))
+        resume.applied(item("""{"kind":"synchronized"}"""), changed)
+        assertEquals(10L, resume.begin("env", origin, changed, setOf("env")))
+        resume.forget("env")
+        assertNull(resume.begin("env", origin, changed, setOf("env")))
     }
 
     @Test fun resumesOnlyRetainedRowsOfTheSameRecentOrigin() {
         var now = 1_000L
         val resume = ShellResume { now }
-        fun cursorAt(sequence: Long) { resume.begin("env", origin, true, setOf("env")); resume.applied(snapshot(sequence)) }
+        fun cursorAt(sequence: Long) { resume.begin("env", origin, rows, setOf("env")); resume.record(snapshot(sequence)) }
         cursorAt(10)
-        assertNull(resume.begin("env", origin, rowsRetained = false, retainedEnvironments = emptySet()))
+        assertNull(resume.begin("env", origin, ShellRows(mutableListOf<Any>(), mutableListOf<Any>()), retainedEnvironments = setOf("env")))
         cursorAt(10)
-        assertNull(resume.begin("env", origin.copy(serverVersion = "1.2.4"), true, setOf("env")))
+        assertNull(resume.begin("env", origin.copy(serverVersion = "1.2.4"), rows, setOf("env")))
         cursorAt(10)
-        assertNull(resume.begin("env", origin.copy(databaseMigration = 41), true, setOf("env")))
+        assertNull(resume.begin("env", origin.copy(databaseMigration = 41), rows, setOf("env")))
         cursorAt(10)
-        assertNull(resume.begin("env", null, true, setOf("env")))
+        assertNull(resume.begin("env", null, rows, setOf("env")))
         cursorAt(10)
         now += SHELL_RESUME_MAX_AGE_MS
-        assertNull(resume.begin("env", origin, true, setOf("env")))
+        assertNull(resume.begin("env", origin, rows, setOf("env")))
         cursorAt(10)
-        resume.begin("other", origin.copy(environmentId = "other"), false, setOf("other"))
+        resume.begin("other", origin.copy(environmentId = "other"), rows, setOf("other"))
         assertNull("Evicted rows take their cursor along", resume.cursor("env"))
     }
 
@@ -92,10 +108,12 @@ class ShellResumeTest {
         val interrupts = Channel<String>(Channel.UNLIMITED)
         @Volatile var environmentId = "env"
         @Volatile var serverVersion: String? = "1.2.3"
+        @Volatile var sessionDown = false
         init {
             server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse = when {
                     request.path == "/.well-known/t3/environment" -> json("""{"environmentId":"$environmentId","orchestrationProtocolVersion":2}""")
+                    request.path == "/api/auth/session" && sessionDown -> MockResponse().setResponseCode(503)
                     request.path == "/api/auth/session" -> json("""{"authenticated":true,"permissions":["orchestration:read","orchestration:operate"]}""")
                     request.path.orEmpty().startsWith("/api/auth/websocket-ticket") -> json("""{"ticket":"fixture"}""")
                     request.path.orEmpty().startsWith("/ws?") -> MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
@@ -234,6 +252,40 @@ class ShellResumeTest {
             f.chunk(legacy, Fixture.shell(60, Fixture.project, Fixture.thread("a")))
             f.client.disconnect(); f.serverVersion = "1.2.3"
             assertNull("Rows from an unnamed build carry no cursor", f.connect().afterSequence)
+        }
+    }
+
+    @Test fun emptyRowsAfterForgettingNeverResumeTheOldCursor() = runBlocking {
+        Fixture().use { f ->
+            f.chunk(f.connect(), """${Fixture.shell(100, Fixture.project, "${Fixture.thread("a")},${Fixture.thread("b")}")}, {"kind":"synchronized"}""")
+            f.client.disconnect()
+            // Forget and re-pair the same environment id; the first attempt fails before the shell subscription.
+            f.client.forgetEnvironment("env")
+            f.sessionDown = true
+            assertTrue(runCatching { f.client.connect(f.environment()) }.isFailure)
+            assertTrue(f.client.state.value.threads.isEmpty())
+            f.sessionDown = false
+            val retry = f.connect()
+            assertNull("Empty rows must load a snapshot", retry.afterSequence)
+            assertFalse(f.client.state.value.canWrite)
+            f.chunk(retry, """${Fixture.shell(120, Fixture.project, Fixture.thread("c"))}, {"kind":"synchronized"}""")
+            assertEquals(listOf("c"), f.client.state.value.threads.map { it.id })
+            assertTrue(f.client.state.value.canWrite)
+        }
+    }
+
+    @Test fun evictedEnvironmentStartsFromASnapshot() = runBlocking {
+        Fixture().use { f ->
+            f.chunk(f.connect(), """${Fixture.shell(100, Fixture.project, Fixture.thread("a"))}, {"kind":"synchronized"}""")
+            for (id in listOf("e1", "e2", "e3", "e4")) {
+                f.client.disconnect(); f.environmentId = id
+                f.chunk(f.connect(), """${Fixture.shell(5, Fixture.project, Fixture.thread(id))}, {"kind":"synchronized"}""")
+            }
+            f.client.disconnect(); f.environmentId = "env"
+            assertNull(f.connect().afterSequence)
+            assertTrue(f.client.state.value.threads.isEmpty())
+            f.client.disconnect(); f.environmentId = "e4"
+            assertEquals(5L, f.connect().afterSequence)
         }
     }
 

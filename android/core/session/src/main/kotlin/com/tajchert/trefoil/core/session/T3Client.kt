@@ -127,6 +127,7 @@ class T3Client(
             while (environmentStates.size > 4) {
                 val evicted = environmentStates.keys.first()
                 environmentStates.remove(evicted)
+                shellResume.forget(evicted)
                 threadProjections.keys.removeAll { it.first == evicted }
             }
         }
@@ -597,7 +598,7 @@ class T3Client(
      */
     private fun subscribeShell(epoch: Long, environmentId: String, origin: ShellOrigin?) = synchronized(lifecycleLock) {
         check(epoch == generation && state.value.environment?.id == environmentId) { "Connection was cancelled" }
-        val afterSequence = shellResume.begin(environmentId, origin, environmentStates.containsKey(environmentId), environmentStates.keys.toSet())
+        val afterSequence = shellResume.begin(environmentId, origin, ShellRows(state.value.projects, state.value.threads), environmentStates.keys.toSet())
         shellSubscription = subscribe("orchestration.subscribeShell", shellSubscribeInput(afterSequence), ::shellItem)
     }
     private fun shellItem(item: JsonObject) {
@@ -628,7 +629,7 @@ class T3Client(
             "synchronized" -> { shellReady = true; writable() }
         }
         // After the rows changed: an item that failed to apply never moves the cursor.
-        shellResume.applied(item)
+        shellResume.applied(item, ShellRows(state.value.projects, state.value.threads))
     }
     private fun project(value: JsonObject) = Project(value.string("id"), value.string("title"), value.string("workspaceRoot"))
     private fun applyProjection(incoming: JsonObject, threadId: String? = state.value.selectedThreadId, authoritative: Boolean = true) {
@@ -1215,9 +1216,10 @@ class T3Client(
             mutable.value = ClientState()
         }
         environmentStates.remove(environmentId)
+        environmentId?.let(shellResume::forget)
         threadProjections.keys.removeAll { it.first == environmentId }
     }
-    override fun close() { disconnectNow(); environmentStates.clear(); threadProjections.clear(); http.connectionPool.evictAll() }
+    override fun close() { disconnectNow(); environmentStates.clear(); shellResume.forget(null); threadProjections.clear(); http.connectionPool.evictAll() }
 }
 
 private const val CREATION_SOURCE = "mobile"
