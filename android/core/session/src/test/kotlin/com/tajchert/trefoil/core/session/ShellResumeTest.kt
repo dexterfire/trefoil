@@ -214,6 +214,26 @@ class ShellResumeTest {
         }
     }
 
+    @Test fun userRefreshDropsTheCursorForAFullSnapshotThatSeedsTheNextResume() = runBlocking {
+        Fixture().use { f ->
+            val first = f.connect()
+            f.chunk(first, """${Fixture.shell(10, Fixture.project, Fixture.thread("a"))}, {"kind":"synchronized"}""")
+            f.chunk(first, """{"kind":"thread.updated","sequence":12,"location":"active","thread":${Fixture.thread("a", "A1")}}""")
+            val refresh = async { f.client.refreshThreads() }
+            val full = f.nextShell()
+            assertNull("A refresh never resumes from the cursor", full.afterSequence)
+            assertEquals(first.second, withTimeout(5000) { f.interrupts.receive() })
+            f.chunk(full, """${Fixture.shell(20, Fixture.project, Fixture.thread("a", "A2", "running"))}, {"kind":"synchronized"}""")
+            withTimeout(5000) { refresh.await() }
+            assertEquals("A2", f.client.state.value.threads.single().title)
+            // Late frames of the replaced stream move neither the rows nor the cursor.
+            first.first.send("""{"_tag":"Chunk","requestId":"${first.second}","values":[{"kind":"thread.updated","sequence":30,"location":"active","thread":${Fixture.thread("a", "Stale")}}]}""")
+            f.client.disconnect()
+            assertEquals(20L, f.connect().afterSequence)
+            assertEquals("A2", f.client.state.value.threads.single().title)
+        }
+    }
+
     @Test fun lostConnectionMidReplayResumesFromTheLastAppliedDelta() = runBlocking {
         Fixture().use { f ->
             val first = f.connect()

@@ -237,9 +237,9 @@ interface TrefoilClient {
     fun setThreadViewing(viewing: Boolean) {}
     /**
      * Re-reads the live environment's shell (projects and thread rows, including run status and background work):
-     * the shell stream is resubscribed and its fresh snapshot replaces the list. Returns once that snapshot is
-     * synchronized. Read-only: never sends or replays a mutation. Throws when there is no live connection; a refresh
-     * that does not synchronize fails the connection so its normal reconnect handling runs.
+     * the shell stream is resubscribed for a full snapshot (never a cursor resume) that replaces the list. Returns
+     * once that snapshot is synchronized. Read-only: never sends or replays a mutation. Throws when there is no live
+     * connection or the snapshot is late; a late refresh drops the connection only when its heartbeat is stale too.
      */
     suspend fun refreshThreads() { error("Thread refresh is unavailable") }
     suspend fun refreshScreens() { error("Remote screens are unavailable") }
