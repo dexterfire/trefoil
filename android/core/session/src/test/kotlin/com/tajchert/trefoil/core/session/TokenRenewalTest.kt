@@ -1,0 +1,189 @@
+package com.tajchert.trefoil.core.session
+
+import com.tajchert.trefoil.core.model.*
+import com.tajchert.trefoil.core.protocol.*
+import java.security.KeyPairGenerator
+import java.security.interfaces.ECPublicKey
+import java.security.spec.ECGenParameterSpec
+import java.util.Base64
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.first
+import kotlinx.serialization.json.*
+import okhttp3.*
+import okhttp3.mockwebserver.*
+import org.junit.Assert.*
+import org.junit.Test
+
+class TokenRenewalTest {
+    private val keyPair = KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair()
+    private val key = JcaDpopKey(keyPair.private, keyPair.public as ECPublicKey)
+    private val descriptor = """{"environmentId":"env-1","label":"Test","orchestrationProtocolVersion":2,"capabilities":{"accessTokenRenewal":true}}"""
+    private fun json(body: String) = MockResponse().setHeader("Content-Type", "application/json").setBody(body)
+    private fun renewal(token: String) = json("""{"access_token":"$token","issued_token_type":"urn:ietf:params:oauth:token-type:access_token","token_type":"DPoP","expires_in":3600,"scope":"orchestration:read"}""")
+    private fun part(proof: String, index: Int) = EffectRpc.json.parseToJsonElement(Base64.getUrlDecoder().decode(proof.split(".")[index]).decodeToString()).jsonObject
+    private fun form(request: RecordedRequest) = request.body.readUtf8().split("&").associate { it.substringBefore("=") to java.net.URLDecoder.decode(it.substringAfter("="), "UTF-8") }
+    private fun environment(url: String, expiresAt: Long?) =
+        SavedEnvironment("env-1", "Test", url, "old-secret", tokenType = AccessTokenType.DPoP, accessTokenExpiresAtMillis = expiresAt)
+    private class Saved(val renewed: SavedEnvironment, val replaces: Set<String>)
+
+    private val socketListener = object : WebSocketListener() {
+        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, null) }
+        override fun onMessage(webSocket: WebSocket, text: String) {
+            val frame = EffectRpc.decode(text).single(); if (frame.string("_tag") != "Request") return
+            val id = frame.string("id")
+            when (frame.string("tag")) {
+                "server.getConfig" -> webSocket.send("""{"_tag":"Exit","requestId":"$id","exit":{"_tag":"Success","value":{"providers":[]}}}""")
+                "orchestration.subscribeShell" -> webSocket.send("""{"_tag":"Chunk","requestId":"$id","values":[{"kind":"snapshot","snapshot":{"projects":[],"threads":[]}},{"kind":"synchronized"}]}""")
+            }
+        }
+    }
+
+    /** Requests until [path] arrives (link-state and others may interleave after connect). */
+    private fun MockWebServer.takeUntil(path: String): RecordedRequest {
+        while (true) { val request = takeRequest(5, TimeUnit.SECONDS) ?: error("No $path request"); if (request.path == path) return request }
+    }
+
+    @Test fun expiredTokenRenewsOnConnectWithT3RequestShapeAndPersists() = runBlocking {
+        val server = MockWebServer(); server.dispatcher = LinkStateTolerantQueue(); server.start()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val saved = CopyOnWriteArrayList<Saved>()
+        val tokens = EnvironmentTokenRenewer({ key }, onRenewed = { renewed, replaces -> saved += Saved(renewed, replaces) })
+        val client = T3Client(scope, tokens = tokens)
+        try {
+            server.enqueue(json(descriptor))
+            server.enqueue(renewal("new-secret"))
+            server.enqueue(json("""{"authenticated":true,"permissions":["orchestration:operate"]}"""))
+            server.enqueue(json("""{"ticket":"rpc-ticket"}"""))
+            server.enqueue(MockResponse().withWebSocketUpgrade(socketListener))
+            val before = System.currentTimeMillis()
+            // Expired an hour ago: the session still renews, so connect renews before using the token.
+            client.connect(environment(server.url("/").toString(), before - 3_600_000))
+            withTimeout(5000) { client.state.first { it.connection == ConnectionStatus.Connected } }
+            server.takeRequest()
+            val renew = server.takeRequest(5, TimeUnit.SECONDS)!!
+            assertEquals("POST", renew.method); assertEquals("/oauth/token", renew.path)
+            assertNull("The subject token travels in the body only", renew.getHeader("Authorization"))
+            val fields = form(renew)
+            assertEquals(mapOf(
+                "grant_type" to "urn:ietf:params:oauth:grant-type:token-exchange",
+                "subject_token" to "old-secret",
+                "subject_token_type" to "urn:ietf:params:oauth:token-type:access_token",
+                "requested_token_type" to "urn:ietf:params:oauth:token-type:access_token",
+            ), fields)
+            val proof = part(renew.getHeader("DPoP")!!, 1)
+            assertEquals("POST", proof.string("htm")); assertEquals(server.url("/oauth/token").toString(), proof.string("htu")); assertNull(proof["ath"])
+            assertEquals("DPoP new-secret", server.takeRequest(5, TimeUnit.SECONDS)!!.getHeader("Authorization"))
+            assertEquals("DPoP new-secret", server.takeRequest(5, TimeUnit.SECONDS)!!.getHeader("Authorization"))
+            val stored = saved.single()
+            assertEquals("new-secret", stored.renewed.accessToken); assertEquals(AccessTokenType.DPoP, stored.renewed.tokenType)
+            assertTrue(stored.renewed.accessTokenExpiresAtMillis!! >= before + 3_599_000)
+            assertTrue("old-secret" in stored.replaces); assertFalse("new-secret" in stored.replaces)
+            assertEquals("The live environment carries the renewed token", "new-secret", client.state.value.environment?.accessToken)
+            assertEquals("new-secret", tokens.current(environment("x", 0)).accessToken)
+        } finally { client.close(); scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun liveConnectionRenewsBeforeExpiryWithoutReconnecting() = runBlocking {
+        val server = MockWebServer(); server.dispatcher = LinkStateTolerantQueue(); server.start()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val client = T3Client(scope, dpopKey = { key })
+        try {
+            server.enqueue(json(descriptor))
+            server.enqueue(json("""{"authenticated":true,"permissions":["orchestration:operate"]}"""))
+            server.enqueue(json("""{"ticket":"rpc-ticket"}"""))
+            server.enqueue(MockResponse().withWebSocketUpgrade(socketListener))
+            server.enqueue(renewal("new-secret"))
+            // Not due at connect; due about a second later.
+            client.connect(environment(server.url("/").toString(), System.currentTimeMillis() + EnvironmentTokenRenewer.RENEW_BEFORE_EXPIRY_MS + 1_000))
+            withTimeout(5000) { client.state.first { it.connection == ConnectionStatus.Connected } }
+            assertEquals("DPoP old-secret", server.takeUntil("/api/auth/session").getHeader("Authorization"))
+            withTimeout(10_000) { client.state.first { it.environment?.accessToken == "new-secret" } }
+            assertEquals("old-secret", form(server.takeUntil("/oauth/token"))["subject_token"])
+            assertEquals("The socket keeps its session", ConnectionStatus.Connected, client.state.value.connection)
+        } finally { client.close(); scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun dpopRejectionRenewsOnceAndRetries() = runBlocking {
+        val server = MockWebServer(); server.start()
+        try {
+            server.enqueue(json(descriptor))
+            server.enqueue(json("""{"_tag":"EnvironmentAuthInvalidError","code":"auth_invalid","reason":"invalid_credential"}""").setResponseCode(401).setHeader("WWW-Authenticate", "DPoP"))
+            server.enqueue(renewal("new-secret"))
+            server.enqueue(json("""{"authenticated":true}"""))
+            // Unknown expiry: only the host's rejection renews it.
+            assertEquals(MachineProbe.Online, EnvironmentProbe(dpopKey = { key }).probe(environment(server.url("/").toString(), null)))
+            server.takeRequest()
+            assertEquals("DPoP old-secret", server.takeRequest().getHeader("Authorization"))
+            assertEquals("old-secret", form(server.takeRequest())["subject_token"])
+            assertEquals("DPoP new-secret", server.takeRequest().getHeader("Authorization"))
+        } finally { server.shutdown() }
+    }
+
+    @Test fun concurrentCallersShareOneRenewal() = runBlocking {
+        val server = MockWebServer(); server.start()
+        val saved = CopyOnWriteArrayList<Saved>()
+        val tokens = EnvironmentTokenRenewer({ key }, onRenewed = { renewed, replaces -> saved += Saved(renewed, replaces) })
+        try {
+            server.enqueue(renewal("new-secret").setBodyDelay(300, TimeUnit.MILLISECONDS))
+            server.enqueue(renewal("unexpected"))
+            val expired = environment(server.url("/").toString(), System.currentTimeMillis() - 1)
+            val results = (1..4).map { async(Dispatchers.Default) { tokens.fresh(expired, server.url("/")) } }.awaitAll()
+            assertEquals(List(4) { "new-secret" }, results.map { it.accessToken })
+            assertEquals("Callers behind the renewal reuse it", 1, server.requestCount); assertEquals(1, saved.size)
+            // Every caller rejected with the same old token also reuses the renewal instead of renewing again.
+            assertEquals("new-secret", tokens.fresh(expired, server.url("/"), rejectedToken = "old-secret").accessToken)
+            assertEquals(1, server.requestCount)
+            // A newer pairing's token is not mapped onto the old session's renewal.
+            assertEquals("paired-again", tokens.fresh(expired.copy(accessToken = "paired-again", accessTokenExpiresAtMillis = null), server.url("/")).accessToken)
+        } finally { server.shutdown() }
+    }
+
+    @Test fun refusalIsDefiniteAndNetworkFailureIsRetriable() = runBlocking {
+        val server = MockWebServer(); server.start()
+        val tokens = EnvironmentTokenRenewer({ key })
+        val expired = environment(server.url("/").toString(), System.currentTimeMillis() - 1)
+        try {
+            // Session expired or revoked: T3 answers invalid credential.
+            server.enqueue(json("""{"_tag":"EnvironmentAuthInvalidError","code":"auth_invalid","reason":"invalid_credential"}""").setResponseCode(401))
+            try { tokens.fresh(expired, server.url("/")); fail("Refused renewal") } catch (_: TokenRenewalRejected) { }
+            server.enqueue(MockResponse().setResponseCode(503))
+            try { tokens.fresh(expired, server.url("/")); fail("Server error") } catch (_: TokenRenewalUnavailable) { }
+            // Host unreachable (nothing listens on the port).
+            val gone = MockWebServer().apply { start() }; val goneUrl = gone.url("/"); gone.shutdown()
+            try { tokens.fresh(expired, goneUrl); fail("Unreachable host") } catch (_: TokenRenewalUnavailable) { }
+            // A failed attempt is not cached: the next one renews.
+            server.enqueue(renewal("new-secret"))
+            assertEquals("new-secret", tokens.fresh(expired, server.url("/")).accessToken)
+        } finally { server.shutdown() }
+    }
+
+    @Test fun connectKeepsUnexpiredTokenOnNetworkFailureAndAsksToPairOnlyWhenRefused() = runBlocking {
+        val server = MockWebServer(); server.dispatcher = LinkStateTolerantQueue(); server.start()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val client = T3Client(scope, dpopKey = { key })
+        try {
+            // Due but unexpired, renewal fails: the current token still connects.
+            server.enqueue(json(descriptor)); server.enqueue(MockResponse().setResponseCode(503))
+            server.enqueue(json("""{"authenticated":true,"permissions":[]}""")); server.enqueue(json("""{"ticket":"rpc-ticket"}"""))
+            server.enqueue(MockResponse().withWebSocketUpgrade(socketListener))
+            client.connect(environment(server.url("/").toString(), System.currentTimeMillis() + 30_000))
+            withTimeout(5000) { client.state.first { it.connection == ConnectionStatus.Connected } }
+            assertEquals("DPoP old-secret", server.takeUntil("/api/auth/session").getHeader("Authorization"))
+            client.disconnect(); server.close()
+
+            // Expired and the host is unreachable for renewal: retry later, not pair again.
+            val offline = MockWebServer(); offline.start()
+            try {
+                offline.enqueue(json(descriptor)); offline.enqueue(MockResponse().setResponseCode(502))
+                try { client.connect(environment(offline.url("/").toString(), System.currentTimeMillis() - 1)); fail("No usable token") }
+                catch (error: PairingException) { assertFalse(error.message.orEmpty().contains("pair again", ignoreCase = true)); assertTrue(error.message.orEmpty().contains("renew")) }
+                // Expired and refused: pair again.
+                offline.enqueue(json(descriptor)); offline.enqueue(json("""{"code":"auth_invalid"}""").setResponseCode(401))
+                try { client.connect(environment(offline.url("/").toString(), System.currentTimeMillis() - 1)); fail("Refused") }
+                catch (error: PairingException) { assertTrue(error.message.orEmpty().contains("pair again")) }
+            } finally { offline.shutdown() }
+        } finally { client.close(); scope.cancel(); runCatching { server.shutdown() } }
+    }
+}

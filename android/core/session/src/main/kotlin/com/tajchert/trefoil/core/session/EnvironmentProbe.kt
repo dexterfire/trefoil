@@ -1,5 +1,6 @@
 package com.tajchert.trefoil.core.session
 
+import com.tajchert.trefoil.core.model.AccessTokenType
 import com.tajchert.trefoil.core.model.EnvironmentRoute
 import com.tajchert.trefoil.core.model.MachineProbe
 import com.tajchert.trefoil.core.model.PairingException
@@ -29,8 +30,10 @@ class EnvironmentProbe(
     http: OkHttpClient = OkHttpClient(),
     /** This device's DPoP proof key, for environments paired with a DPoP-bound token. */
     dpopKey: (() -> DpopKey)? = null,
+    /** Renews an expired or rejected DPoP token before deciding; share the client's so renewals are serialized. */
+    private val tokens: EnvironmentTokenRenewer = EnvironmentTokenRenewer(dpopKey),
 ) {
-    private val authorizer = EnvironmentAuthorizer(dpopKey)
+    private val authorizer = tokens.authorizer
     private val http = http.newBuilder().followRedirects(false).followSslRedirects(false)
         .callTimeout(timeoutMillis, TimeUnit.MILLISECONDS).build()
 
@@ -77,11 +80,27 @@ class EnvironmentProbe(
                 if (info["orchestrationProtocolVersion"]?.jsonPrimitive?.intOrNull != 2 ||
                     info["environmentId"]?.jsonPrimitive?.contentOrNull != environment.id) return@withTimeoutOrNull MachineProbe.NeedsAttention
                 val sessionUrl = base.resolve("/api/auth/session")!!
-                suspend fun sessionRequest() = withContext(Dispatchers.IO) { authorizer.authorize(Request.Builder().url(sessionUrl), environment, "GET", sessionUrl).build() }
+                // Like the client's connect: a due DPoP token renews first, a renewal that cannot reach the host keeps an
+                // unexpired token, and a definite refusal is AuthFailed.
+                var current = try { tokens.fresh(environment, base) }
+                    catch (_: TokenRenewalUnavailable) { tokens.current(environment).takeUnless(tokens::isExpired) ?: return@withTimeoutOrNull MachineProbe.Unreachable }
+                    catch (_: TokenRenewalRejected) { return@withTimeoutOrNull MachineProbe.AuthFailed }
+                    catch (_: DpopKeyUnavailable) { return@withTimeoutOrNull MachineProbe.AuthFailed }
+                suspend fun sessionRequest() = withContext(Dispatchers.IO) { authorizer.authorize(Request.Builder().url(sessionUrl), current, "GET", sessionUrl).build() }
                 val first = try { get(sessionRequest()) } catch (_: DpopKeyUnavailable) { return@withTimeoutOrNull MachineProbe.AuthFailed }
                     ?: return@withTimeoutOrNull MachineProbe.Unreachable
-                // A DPoP `replay` or clock-skew answer gets one fresh proof, like the client's connect.
-                val (session, status) = (if (first.third) get(sessionRequest()) else first)
+                // A DPoP `replay` or clock-skew answer gets one fresh proof; any other DPoP 401 renews once.
+                val retry = when {
+                    first.third -> true
+                    first.second == 401 && current.tokenType == AccessTokenType.DPoP -> {
+                        current = try { tokens.fresh(current, base, rejectedToken = current.accessToken) }
+                            catch (_: TokenRenewalUnavailable) { return@withTimeoutOrNull MachineProbe.Unreachable }
+                            catch (_: TokenRenewalRejected) { return@withTimeoutOrNull MachineProbe.AuthFailed }
+                        true
+                    }
+                    else -> false
+                }
+                val (session, status) = (if (retry) get(sessionRequest()) else first)
                     ?: return@withTimeoutOrNull MachineProbe.Unreachable
                 when {
                     status == 401 || status == 403 -> MachineProbe.AuthFailed

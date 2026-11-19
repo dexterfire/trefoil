@@ -4,7 +4,9 @@ import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.tajchert.trefoil.core.model.*
+import com.tajchert.trefoil.core.session.EnvironmentTokenRenewer
 import com.tajchert.trefoil.core.session.T3Client
+import com.tajchert.trefoil.core.session.withTokenOf
 import com.tajchert.trefoil.core.ssh.SshTunnel
 import com.tajchert.trefoil.core.ssh.SshTunnelConnector
 import com.tajchert.trefoil.security.DeviceDpopKey
@@ -70,7 +72,14 @@ class UsageWidgetWorker(context: Context, parameters: WorkerParameters) : Corout
 
     private suspend fun refresh(environment: SavedEnvironment, keys: List<SshHostKey>, store: UsageWidgetStore) = coroutineScope {
         val connectionScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        val client = T3Client(connectionScope, dpopKey = DeviceDpopKey::loadOrCreate)
+        // A renewal made here goes straight to the vault, over the same session's token only.
+        val vault = EnvironmentVault(applicationContext)
+        val tokens = EnvironmentTokenRenewer(DeviceDpopKey::loadOrCreate, onRenewed = { renewed, replaces -> withContext(Dispatchers.IO) {
+            val saved = vault.read()
+            if (saved.any { it.id == renewed.id && it.accessToken in replaces })
+                vault.write(saved.map { if (it.id == renewed.id && it.accessToken in replaces) it.withTokenOf(renewed) else it })
+        } })
+        val client = T3Client(connectionScope, tokens = tokens)
         var tunnel: SshTunnel? = null
         try {
             withTimeout(30_000) {

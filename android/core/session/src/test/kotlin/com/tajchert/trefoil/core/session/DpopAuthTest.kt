@@ -27,6 +27,7 @@ class DpopAuthTest {
     private val keyPair = KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair()
     private val key = JcaDpopKey(keyPair.private, keyPair.public as ECPublicKey)
     private val descriptor = """{"environmentId":"env-1","label":"Test","orchestrationProtocolVersion":2,"capabilities":{}}"""
+    private val renewingDescriptor = """{"environmentId":"env-1","label":"Test","orchestrationProtocolVersion":2,"capabilities":{"accessTokenRenewal":true}}"""
     private fun json(body: String) = MockResponse().setHeader("Content-Type", "application/json").setBody(body)
     private fun dpopRejection(reason: String) = json("""{"_tag":"EnvironmentAuthInvalidError","code":"auth_invalid","reason":"invalid_credential","dpopFailureReason":"$reason","traceId":"t"}""")
         .setResponseCode(401).setHeader("WWW-Authenticate", "DPoP")
@@ -83,9 +84,9 @@ class DpopAuthTest {
     @Test fun dpopPairingSendsProofAndSavesBoundToken() = runBlocking {
         val server = MockWebServer(); server.start()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val client = T3Client(scope, dpopKey = { key }, pairWithDpop = true)
+        val client = T3Client(scope, dpopKey = { key })
         try {
-            server.enqueue(json(descriptor)); server.enqueue(json("""{"access_token":"dpop-secret","issued_token_type":"urn:ietf:params:oauth:token-type:access_token","token_type":"DPoP","expires_in":3600,"scope":"orchestration:read"}"""))
+            server.enqueue(json(renewingDescriptor)); server.enqueue(json("""{"access_token":"dpop-secret","issued_token_type":"urn:ietf:params:oauth:token-type:access_token","token_type":"DPoP","expires_in":3600,"scope":"orchestration:read"}"""))
             val before = System.currentTimeMillis()
             val saved = client.pair(server.url("/pair#token=bootstrap-secret").toString(), "Phone")
             assertEquals(AccessTokenType.DPoP, saved.tokenType); assertEquals("dpop-secret", saved.accessToken)
@@ -96,8 +97,15 @@ class DpopAuthTest {
             assertEquals("POST", part(proof, 1).string("htm")); assertEquals(server.url("/oauth/token").toString(), part(proof, 1).string("htu"))
             assertNull("The exchange proof has no access token yet", part(proof, 1)["ath"]); assertTrue(verifies(proof))
             // An older server that ignores the proof answers Bearer, and the saved environment stays bearer.
-            server.enqueue(json(descriptor)); server.enqueue(json("""{"access_token":"bearer-secret","token_type":"Bearer"}"""))
+            server.enqueue(json(renewingDescriptor)); server.enqueue(json("""{"access_token":"bearer-secret","token_type":"Bearer"}"""))
             assertEquals(AccessTokenType.Bearer, client.pair(server.url("/pair#token=bootstrap-secret").toString(), "Phone").tokenType)
+            server.takeRequest(); server.takeRequest()
+            // A device whose key cannot sign keeps the one-time code for a bearer exchange.
+            val keyless = T3Client(scope, dpopKey = { error("keystore unavailable") })
+            server.enqueue(json(renewingDescriptor)); server.enqueue(json("""{"access_token":"bearer-secret","token_type":"Bearer"}"""))
+            assertEquals(AccessTokenType.Bearer, keyless.pair(server.url("/pair#token=bootstrap-secret").toString(), "Phone").tokenType)
+            server.takeRequest(); assertNull(server.takeRequest().getHeader("DPoP"))
+            keyless.close()
         } finally { client.close(); scope.cancel(); server.shutdown() }
     }
 
@@ -109,6 +117,7 @@ class DpopAuthTest {
             server.enqueue(json(descriptor)); server.enqueue(json("""{"access_token":"bearer-secret","token_type":"Bearer","expires_in":2592000}"""))
             val saved = client.pair(server.url("/pair#token=bootstrap-secret").toString(), "Phone")
             assertEquals(AccessTokenType.Bearer, saved.tokenType); assertNotNull(saved.accessTokenExpiresAtMillis)
+            // A host without `accessTokenRenewal` gets no proof, so its session cannot strand the device after an hour.
             server.takeRequest(); assertNull(server.takeRequest().getHeader("DPoP"))
             // A DPoP token the client never asked for is refused.
             server.enqueue(json(descriptor)); server.enqueue(json("""{"access_token":"x","token_type":"DPoP"}"""))
@@ -119,10 +128,10 @@ class DpopAuthTest {
     @Test fun pairingRetriesOnceAfterClockSkew() = runBlocking {
         val server = MockWebServer(); server.start()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val client = T3Client(scope, dpopKey = { key }, pairWithDpop = true)
+        val client = T3Client(scope, dpopKey = { key })
         try {
             val serverNow = System.currentTimeMillis() + 3_600_000
-            server.enqueue(json(descriptor)); server.enqueue(dpopRejection("time_window").setHeader("Date", DateTimeFormatter.RFC_1123_DATE_TIME.format(Instant.ofEpochMilli(serverNow).atOffset(ZoneOffset.UTC))))
+            server.enqueue(json(renewingDescriptor)); server.enqueue(dpopRejection("time_window").setHeader("Date", DateTimeFormatter.RFC_1123_DATE_TIME.format(Instant.ofEpochMilli(serverNow).atOffset(ZoneOffset.UTC))))
             server.enqueue(json("""{"access_token":"dpop-secret","token_type":"DPoP","expires_in":3600}"""))
             assertEquals(AccessTokenType.DPoP, client.pair(server.url("/pair#token=bootstrap-secret").toString(), "Phone").tokenType)
             server.takeRequest(); server.takeRequest()
@@ -181,15 +190,17 @@ class DpopAuthTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val client = T3Client(scope, dpopKey = { key })
         try {
-            server.enqueue(json(descriptor)); server.enqueue(dpopRejection("token_mismatch"))
+            // A rejected DPoP token renews once; a refused renewal is definite.
+            server.enqueue(json(descriptor)); server.enqueue(dpopRejection("token_mismatch")); server.enqueue(dpopRejection("key_mismatch"))
             try { client.connect(dpopEnvironment(server.url("/").toString())); fail("A token mismatch is definite") }
             catch (error: PairingException) { assertTrue(error.message.orEmpty().contains("pair again")) }
-            assertEquals("No retry for a definite DPoP failure", 2, server.requestCount)
+            assertEquals("One renewal, no further retries", 3, server.requestCount)
+            server.takeRequest(); server.takeRequest(); assertEquals("/oauth/token", server.takeRequest().path)
             val keyless = T3Client(scope, dpopKey = { error("keystore unavailable") })
             server.enqueue(json(descriptor))
             try { keyless.connect(dpopEnvironment(server.url("/").toString())); fail("A DPoP token without the key cannot be used") }
             catch (error: PairingException) { assertTrue(error.message.orEmpty().contains("Pair again")) }
-            assertEquals("The token never leaves without its proof", 3, server.requestCount)
+            assertEquals("The token never leaves without its proof", 4, server.requestCount)
             keyless.close()
         } finally { client.close(); scope.cancel(); server.shutdown() }
     }

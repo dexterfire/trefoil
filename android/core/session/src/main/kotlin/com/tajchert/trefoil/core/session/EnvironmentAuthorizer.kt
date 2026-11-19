@@ -40,8 +40,8 @@ class EnvironmentAuthorizer(
 
     /**
      * Inspects a 401 carrying T3's DPoP challenge. Returns true when one retry with a fresh proof can succeed: a
-     * `replay` (the proof's jti was already used) or a `time_window` miss, after adopting the server's clock. Every
-     * other DPoP failure (bad key, token mismatch, invalid proof) and plain 401s are auth-definite: pair again.
+     * `replay` (the proof's jti was already used) or a `time_window` miss, after adopting the server's clock. Any
+     * other DPoP 401 is left to [EnvironmentTokenRenewer] (one renewal); a refused renewal is auth-definite: pair again.
      */
     fun shouldRetry(response: Response): Boolean {
         if (response.code != 401) return false

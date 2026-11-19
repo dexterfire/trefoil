@@ -6,7 +6,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.core.session.EnvironmentProbe
+import com.tajchert.trefoil.core.session.EnvironmentTokenRenewer
 import com.tajchert.trefoil.core.session.T3Client
+import com.tajchert.trefoil.core.session.withTokenOf
 import com.tajchert.trefoil.core.session.ThreadDraftController
 import com.tajchert.trefoil.core.ssh.SshHostKeyException
 import com.tajchert.trefoil.core.ssh.SshConnectionException
@@ -30,7 +32,9 @@ internal val AUTO_RECONNECT_BACKOFF_MS = listOf(2_000L, 5_000L, 15_000L)
 internal const val LINK_CHECK_TIMEOUT_MS = 4_000L
 
 class TrefoilViewModel(application: Application) : AndroidViewModel(application) {
-    private val client = T3Client(viewModelScope, dpopKey = DeviceDpopKey::loadOrCreate)
+    /** One renewer for the client and the probe, so DPoP renewals of a machine are serialized and land in the vault. */
+    private val tokens = EnvironmentTokenRenewer(DeviceDpopKey::loadOrCreate, onRenewed = { renewed, replaces -> saveRenewedToken(renewed, replaces) })
+    private val client = T3Client(viewModelScope, tokens = tokens)
     val usageController = UsageController(viewModelScope, { client }, onReport = {
         try { widgetSync.report(it) } catch (e: CancellationException) { throw e } catch (_: Exception) { /* Widget storage must not fail app reads. */ }
     })
@@ -99,7 +103,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     private var keepAliveCheckPosted = false
     /** Set by an explicit disconnect or forgetting the live machine; until the next connection action nothing starts the service. */
     private var keepAliveLatched = false
-    private val environmentProbe = EnvironmentProbe(dpopKey = DeviceDpopKey::loadOrCreate)
+    private val environmentProbe = EnvironmentProbe(tokens = tokens)
     private val prober = MachineProber(
         // Adapter over the single-route probe; EnvironmentProbe's multi-route probe has the same contract.
         direct = { environment, routes -> probeRoutes(routes) { environmentProbe.probe(environment, it.baseUrl) } },
@@ -278,6 +282,16 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         val durable = environments.map { environment -> unsavedHints.remove(environment.id)?.fold(environment) { e, h -> e.withRouteHints(h) } ?: environment }.map { it.forStorage() }
         withContext(Dispatchers.IO) { vault.write(durable) }
         _environments.value = durable
+    }
+
+    /** Stores a renewed DPoP token over the same session's older token only; a newer pairing's token is never replaced. */
+    private suspend fun saveRenewedToken(renewed: SavedEnvironment, replaces: Set<String>) {
+        initialized.await()
+        vaultMutex.withLock {
+            val saved = _environments.value
+            if (saved.none { it.id == renewed.id && it.accessToken in replaces }) return@withLock
+            save(saved.map { if (it.id == renewed.id && it.accessToken in replaces) it.withTokenOf(renewed) else it })
+        }
     }
 
     private suspend fun disconnectCurrent() {

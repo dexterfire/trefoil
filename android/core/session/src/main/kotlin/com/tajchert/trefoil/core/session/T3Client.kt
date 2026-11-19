@@ -58,13 +58,11 @@ class T3Client(
     private val routeTimeoutMillis: (RouteKind) -> Long = ::routePreflightTimeoutMillis,
     /** This device's DPoP proof key, loaded lazily; needed for DPoP environments (null: bearer only). */
     dpopKey: (() -> DpopKey)? = null,
-    /**
-     * Ask for a DPoP-bound token at pairing. Off by default: a direct T3 pairing then issues a 1-hour DPoP token that
-     * no endpoint renews (renewal needs a fresh bootstrap credential, which only T3 Connect mints), against a 30-day bearer.
-     */
-    private val pairWithDpop: Boolean = false,
+    /** Renews DPoP sessions; share one per process so renewals of an environment are serialized and persisted. */
+    private val tokens: EnvironmentTokenRenewer = EnvironmentTokenRenewer(dpopKey),
 ) : TrefoilClient {
-    private val authorizer = EnvironmentAuthorizer(dpopKey)
+    private val authorizer = tokens.authorizer
+    private var renewJob: Job? = null
     private val mutable = MutableStateFlow(ClientState())
     override val state: StateFlow<ClientState> = mutable.asStateFlow()
     private val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).build()
@@ -155,15 +153,63 @@ class T3Client(
         } finally { cancellation.cancel() }
     }
     /**
-     * Authenticated HTTP to an already verified [url] with the saved token's scheme. A DPoP `replay` or clock-skew
-     * answer gets exactly one retry with a fresh proof; anything else propagates (401/403: pair again).
+     * Authenticated HTTP to an already verified [url] with the saved token's scheme. A DPoP token due for renewal is
+     * renewed at [url]'s host first. A DPoP `replay` or clock-skew answer gets exactly one retry with a fresh proof; any
+     * other DPoP 401 renews once and retries; anything else propagates (401/403: pair again).
      */
     private suspend fun authorizedFetch(environment: SavedEnvironment, method: String, url: HttpUrl, timeoutMillis: Long? = null): JsonObject {
+        val base = url.newBuilder().encodedPath("/").query(null).fragment(null).build()
+        var current = usableToken(environment, base)
         // Off the caller's thread: a DPoP proof is a keystore signature.
         suspend fun request() = withContext(Dispatchers.IO) {
-            authorizer.authorize(Request.Builder().url(url), environment, method, url).apply { if (method == "POST") post(ByteArray(0).toRequestBody()) }.build()
+            authorizer.authorize(Request.Builder().url(url), current, method, url).apply { if (method == "POST") post(ByteArray(0).toRequestBody()) }.build()
         }
-        return try { fetch(request(), timeoutMillis) } catch (error: HttpFailure) { if (!error.dpopRetry) throw error; fetch(request(), timeoutMillis) }
+        return try { fetch(request(), timeoutMillis) } catch (error: HttpFailure) {
+            when {
+                error.dpopRetry -> fetch(request(), timeoutMillis)
+                error.status == 401 && current.tokenType == AccessTokenType.DPoP -> {
+                    current = tokens.fresh(current, base, rejectedToken = current.accessToken).also(::adoptToken)
+                    fetch(request(), timeoutMillis)
+                }
+                else -> throw error
+            }
+        }
+    }
+    /** The newest token for [environment], renewed when due; a renewal that cannot reach the host keeps an unexpired token. */
+    private suspend fun usableToken(environment: SavedEnvironment, base: HttpUrl): SavedEnvironment {
+        if (environment.tokenType != AccessTokenType.DPoP) return environment
+        return try { tokens.fresh(environment, base).also(::adoptToken) } catch (error: TokenRenewalUnavailable) {
+            tokens.current(environment).takeUnless(tokens::isExpired) ?: throw error
+        }
+    }
+    /** A renewal keeps the live session (and its socket); only the connected environment's token fields change. */
+    private fun adoptToken(renewed: SavedEnvironment) = synchronized(lifecycleLock) {
+        update { state -> state.environment?.takeIf { it.id == renewed.id && it.accessToken != renewed.accessToken }?.let { state.copy(environment = it.withTokenOf(renewed)) } ?: state }
+    }
+    /**
+     * Renews the live connection's DPoP token [EnvironmentTokenRenewer.RENEW_BEFORE_EXPIRY_MS] before it expires, at the
+     * verified [base]. A failed attempt retries (the session outlives the token); a definite refusal ends the connection.
+     */
+    private fun startRenewal(epoch: Long, base: HttpUrl) = synchronized(lifecycleLock) {
+        if (epoch != generation || state.value.environment?.tokenType != AccessTokenType.DPoP) return@synchronized
+        renewJob?.cancel()
+        renewJob = scope.launch {
+            var failed = false
+            while (isActive && epoch == generation) {
+                val environment = state.value.environment?.let(tokens::current) ?: break
+                val expiresAt = environment.accessTokenExpiresAtMillis ?: break
+                val now = System.currentTimeMillis()
+                val wait = expiresAt - EnvironmentTokenRenewer.RENEW_BEFORE_EXPIRY_MS - now
+                // The floor spaces out retries and keeps a short-lived token or a clock jump from spinning.
+                delay(if (failed) maxOf(wait, if (now < expiresAt) 5_000 else EnvironmentTokenRenewer.RENEW_BEFORE_EXPIRY_MS) else maxOf(wait, 0))
+                if (epoch != generation) break
+                failed = try { adoptToken(tokens.fresh(state.value.environment ?: break, base)); false }
+                catch (error: CancellationException) { throw error }
+                catch (_: TokenRenewalUnavailable) { true }
+                catch (error: Exception) { fail(epoch, error.message ?: "Sign-in expired; pair again"); break }
+                if (!failed) delay(1_000)
+            }
+        }
     }
     /** [dpopRetry]: a DPoP rejection one fresh proof can fix (see [EnvironmentAuthorizer.shouldRetry]). */
     private class HttpFailure(val status: Int, val dpopRetry: Boolean = false) : IllegalStateException(if (status == 401 || status == 403) "Authorization expired or denied; pair again" else "Server HTTP error $status")
@@ -188,10 +234,12 @@ class T3Client(
             .add("client_label", name.ifBlank { "Trefoil" }).add("client_device_type", "mobile").add("client_os", "Android").build()
         currentCoroutineContext().ensureActive()
         val tokenUrl = base.resolve("/oauth/token")!!
-        // With a proof (no `ath`) T3 binds the token to this key and answers `DPoP`; it checks the proof before spending
-        // the credential, so one retry after `replay`/clock skew is safe. No usable key: plain bearer pairing.
+        // A host advertising `accessTokenRenewal` binds a token exchanged with a proof (no `ath`) to this key, on a session
+        // the device renews itself (T3 client runtime `preparePairingRegistration`). It checks the proof before spending
+        // the credential, so one retry after `replay`/clock skew is safe. Other hosts, or no usable key: plain bearer.
+        val renewable = (info["capabilities"] as? JsonObject)?.get("accessTokenRenewal")?.let { it as? JsonPrimitive }?.takeUnless { it.isString }?.booleanOrNull == true
         suspend fun exchange(): Request {
-            val proof = if (pairWithDpop && authorizer.supportsDpop) withContext(Dispatchers.IO) { try { authorizer.proof("POST", tokenUrl, null) } catch (_: DpopKeyUnavailable) { null } } else null
+            val proof = if (renewable && authorizer.supportsDpop) withContext(Dispatchers.IO) { try { authorizer.proof("POST", tokenUrl, null) } catch (_: DpopKeyUnavailable) { null } } else null
             return Request.Builder().url(tokenUrl).post(form).apply { if (proof != null) header("DPoP", proof) }.build()
         }
         val sent = exchange()
@@ -205,7 +253,7 @@ class T3Client(
         require(token.string("access_token").isNotBlank()) { "Server returned an empty access token" }
         val expiresAt = (token["expires_in"] as? JsonPrimitive)?.takeUnless { it.isString }?.doubleOrNull?.takeIf { it > 0 }?.let { System.currentTimeMillis() + (it * 1000).toLong() }
         SavedEnvironment(info.string("environmentId").ifBlank { error("Missing environment identity") }, name.ifBlank { info.string("label") }, base.toString(), token.string("access_token"), allowInsecureHttp = allowInsecureHttp && base.scheme == "http" && isPrivateLanAddress(base.host),
-            tokenType = tokenType, accessTokenExpiresAtMillis = expiresAt)
+            tokenType = tokenType, accessTokenExpiresAtMillis = expiresAt).also { tokens.forget(it.id) }
     } catch (error: CancellationException) { throw error }
     catch (error: PairingException) { throw error }
     catch (error: HttpFailure) { throw PairingException(if (error.status == 401 || error.status == 403) "Pairing token expired or was denied. Generate a new pairing link." else "Pairing server returned HTTP ${error.status}. Check the server and try again.") }
@@ -249,6 +297,7 @@ class T3Client(
             catch (error: CancellationException) { throw error }
             catch (error: HttpFailure) { if (error.status == 401 || error.status == 403) throw error; failure = error; continue }
             catch (error: DpopKeyUnavailable) { throw error }
+            catch (error: TokenRenewalRejected) { throw error }
             catch (error: Exception) { failure = error; continue }
             require(session["authenticated"]?.jsonPrimitive?.booleanOrNull == true) { "Authorization expired; pair again" }
             return SelectedRoute(route, base, session)
@@ -322,6 +371,7 @@ class T3Client(
                 selectedModel = it.selectedModel?.let { selected -> models.firstOrNull { m -> m.instanceId == selected.instanceId && m.model == selected.model } ?: selected }) }
             subscribeShell(epoch, environment.id, shellOrigin(environment.id, config))
             startRouteHints(epoch, environment, base)
+            startRenewal(epoch, base)
             state.value.selectedThreadId?.let { selectThread(it) }
         } catch (error: CancellationException) {
             if (error is TimeoutCancellationException && currentCoroutineContext().isActive) {
@@ -336,7 +386,7 @@ class T3Client(
         catch (error: Exception) {
             val message = when (error) {
                 is PairingException -> error.message ?: "Connection failed"
-                is HttpFailure, is DpopKeyUnavailable -> error.message ?: "Connection failed"
+                is HttpFailure, is DpopKeyUnavailable, is TokenRenewalRejected, is TokenRenewalUnavailable -> error.message ?: "Connection failed"
                 is RequestTimedOut, is java.io.InterruptedIOException -> "T3 connection timed out. Check the server and network, then try again."
                 else -> "Connection failed. Check the network and server, or pair again."
             }
@@ -468,7 +518,7 @@ class T3Client(
         pending.values.forEach { it.completeExceptionally(IllegalStateException(message)) }; pending.clear()
         streams.clear(); heartbeat?.cancel(); socket?.cancel(); socket = null
     }
-    private fun resetRoute() { activeBase = null; directEndpoints = null; initialHintSent = false; configSubscription = null; linkStateJob?.cancel(); linkStateJob = null }
+    private fun resetRoute() { activeBase = null; directEndpoints = null; initialHintSent = false; configSubscription = null; linkStateJob?.cancel(); linkStateJob = null; renewJob?.cancel(); renewJob = null }
     override suspend fun disconnect() = disconnectNow()
     /** [reason] replaces any stale error when the disconnect was not requested by the user. */
     private fun disconnectNow(reason: String? = null) = synchronized(lifecycleLock) {
@@ -1258,6 +1308,7 @@ class T3Client(
         environmentStates.remove(environmentId)
         environmentId?.let(shellResume::forget)
         threadProjections.keys.removeAll { it.first == environmentId }
+        environmentId?.let(tokens::forget)
     }
     override fun close() { disconnectNow(); environmentStates.clear(); shellResume.forget(null); threadProjections.clear(); http.connectionPool.evictAll() }
 }
