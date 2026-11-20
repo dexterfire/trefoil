@@ -48,7 +48,7 @@ class RetainedSessionTest {
                                 "orchestration.subscribeShell" -> { shellPayload = frame.obj("payload"); shells.trySend(webSocket to id) }
                                 "orchestration.subscribeThread" -> { subscriptions.incrementAndGet(); threads.trySend(webSocket to id) }
                                 "orchestration.getTurnItem" -> itemReads.trySend(webSocket to frame)
-                                "subscribeServerConfig" -> Unit
+                                "subscribeServerConfig", "subscribeDiscoveredLocalServers" -> Unit
                                 "orchestration.dispatchCommand" -> {
                                     commands.trySend(frame.obj("payload"))
                                     if (!holdCommands) webSocket.send("""{"_tag":"Exit","requestId":"$id","exit":{"_tag":"Success","value":{}}}""")

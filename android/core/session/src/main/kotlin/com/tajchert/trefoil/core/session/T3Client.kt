@@ -92,6 +92,16 @@ class T3Client(
     private var previewScreenSubscription: String? = null
     private var deviceScreenSubscription: String? = null
     private val optionalScreenStreams = mutableSetOf<String>()
+    /** Request id of the live `subscribeDiscoveredLocalServers` stream; optional, never fails the session. */
+    private var discoverySubscription: String? = null
+    /** Connection generation the discovery stream was started (or rejected) for; it starts at most once per connection. */
+    private var discoveryEpoch = -1L
+    /** Loopback forwards of the live connection by remote port; see [LoopbackPortForwarder]. */
+    private val portForwarders = linkedMapOf<Int, LoopbackPortForwarder>()
+    /** The live connection's shared media ticket for tunnel connections, keyed by connection generation. */
+    private var tunnelTickets: Pair<Long, MediaTicketCache>? = null
+    /** Tunnel connections idle for as long as the page keeps them open (HMR, keep-alive), so no read timeout. */
+    private val tunnelHttp: OkHttpClient by lazy { http.newBuilder().readTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS).build() }
     @Volatile private var pongAt = 0L
     /** Arrival of the live connection's latest frame of any kind; a large snapshot in transit keeps it fresh. */
     @Volatile private var frameAt = 0L
@@ -135,7 +145,7 @@ class T3Client(
         val current = state.value
         current.environment?.id?.let { id ->
             environmentStates.remove(id)
-            environmentStates[id] = current.copy(canWrite = false, canRead = false, canReadUsage = false, busy = false, error = null, screens = ScreenCatalog())
+            environmentStates[id] = current.copy(canWrite = false, canRead = false, canReadUsage = false, busy = false, error = null, screens = ScreenCatalog(), localServers = LocalServerCatalog(), portForwards = emptyList())
             while (environmentStates.size > 4) {
                 val evicted = environmentStates.keys.first()
                 environmentStates.remove(evicted)
@@ -318,7 +328,8 @@ class T3Client(
             if (state.value.environment?.id != environment.id) usageCache.clear()
             val retained = environmentStates[environment.id] ?: ClientState()
             projection = JsonObject(emptyMap())
-            update { retained.copy(environment = environment, connection = ConnectionStatus.Connecting, canWrite = false, canRead = false, canReadUsage = false, busy = false, error = null, settlementUndo = null, threadActionsConfigured = false, activeRoute = null) }
+            update { retained.copy(environment = environment, connection = ConnectionStatus.Connecting, canWrite = false, canRead = false, canReadUsage = false, busy = false, error = null, settlementUndo = null, threadActionsConfigured = false, activeRoute = null,
+                localServers = LocalServerCatalog(), previewTunnelSetting = null, portForwards = emptyList()) }
         }
         try {
             val (route, base, session) = selectRoute(environment, routes, epoch)
@@ -368,13 +379,15 @@ class T3Client(
             previewAuthorized = permissions?.any { it.jsonPrimitive.content == "preview:operate" } == true
             serverBrowser = config.obj("environment").obj("capabilities")["serverBrowser"]?.jsonPrimitive?.booleanOrNull == true
             val threadStop = (config.obj("environment").obj("capabilities")["threadStop"] as? JsonPrimitive)?.booleanOrNull == true
+            // Says whether the server honors `enablePreviewTunnel`; absent on servers where the tunnel cannot be switched off.
+            val tunnelSetting = (config.obj("environment").obj("capabilities")["previewTunnelSetting"] as? JsonPrimitive)?.takeUnless { it.isString }?.booleanOrNull
             val models = config.objects("providers").filter { it["enabled"]?.jsonPrimitive?.booleanOrNull != false }.flatMap { provider ->
                 val modes = supportedRuntimeModes(provider)
                 provider.objects("models").map { ModelOption(provider.string("instanceId"), it.string("slug"), it.string("name"), modes, modelOptionDescriptors(it)) }
             }
             val defaultMode = RuntimeMode.fromWire(config.obj("settings").string("defaultRuntimeMode"))
             synchronized(lifecycleLock) { check(epoch == generation) { "Connection was cancelled" }; directEndpoints = directEndpointHints(config) }
-            update { it.copy(connection = ConnectionStatus.Connected, activeRoute = route, canReadUsage = mayReadUsage, models = models, providers = providerInstances(config), defaultRuntimeMode = defaultMode, threadStopSupported = threadStop,
+            update { it.copy(connection = ConnectionStatus.Connected, activeRoute = route, canReadUsage = mayReadUsage, models = models, providers = providerInstances(config), defaultRuntimeMode = defaultMode, threadStopSupported = threadStop, previewTunnelSetting = tunnelSetting,
                 selectedModel = it.selectedModel?.let { selected -> models.firstOrNull { m -> m.instanceId == selected.instanceId && m.model == selected.model } ?: selected }) }
             subscribeShell(epoch, environment.id, shellOrigin(environment.id, config))
             startRouteHints(epoch, environment, base)
@@ -502,6 +515,7 @@ class T3Client(
                 if (streams.remove(id) != null) {
                     // Route hints are optional: an older server rejecting the config stream, or its end, leaves the session alone.
                     if (id == configSubscription) configSubscription = null
+                    else if (id == discoverySubscription) discoveryEnded(exit)
                     else if (optionalScreenStreams.remove(id)) {
                         if (id == previewScreenSubscription) { previewScreenSubscription = null; browserScreensFresh = false }
                         if (id == deviceScreenSubscription) { deviceScreenSubscription = null; deviceScreensFresh = false }
@@ -521,12 +535,13 @@ class T3Client(
         endShellStream(message)
         resetRoute()
         resetScreens()
+        stopPortForwards()
         undoPlan = null; pendingModelSelections = null
         update { it.copy(connection =ConnectionStatus.Error, canWrite = false, canRead = false, canReadUsage = false, busy = false, error = message, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
         pending.values.forEach { it.completeExceptionally(IllegalStateException(message)) }; pending.clear()
         streams.clear(); heartbeat?.cancel(); socket?.cancel(); socket = null
     }
-    private fun resetRoute() { activeBase = null; directEndpoints = null; initialHintSent = false; configSubscription = null; linkStateJob?.cancel(); linkStateJob = null; renewJob?.cancel(); renewJob = null }
+    private fun resetRoute() { endDiscovery(); activeBase = null; directEndpoints = null; initialHintSent = false; configSubscription = null; linkStateJob?.cancel(); linkStateJob = null; renewJob?.cancel(); renewJob = null }
     override suspend fun disconnect() = disconnectNow()
     /** [reason] replaces any stale error when the disconnect was not requested by the user. */
     private fun disconnectNow(reason: String? = null) = synchronized(lifecycleLock) {
@@ -540,6 +555,7 @@ class T3Client(
         endShellStream("Disconnected before the thread list refreshed")
         resetRoute()
         resetScreens()
+        stopPortForwards()
         undoPlan = null; pendingModelSelections = null
         update { it.copy(connection =ConnectionStatus.Disconnected, canWrite = false, canRead = false, canReadUsage = false, busy = false, error = reason ?: it.error, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
     }
@@ -770,6 +786,7 @@ class T3Client(
             "synchronized" -> {
                 shellReady = true; writable()
                 shellRefresh?.complete(Unit); shellRefresh = null
+                startDiscovery()
             }
         }
         // After the rows changed: an item that failed to apply never moves the cursor.
@@ -965,6 +982,102 @@ class T3Client(
                 buildMap { put("wsTicket", ticket); if (currentTarget is ScreenTarget.Device) put("hostId", currentTarget.hostId) },
                 interactive = if (currentTarget is ScreenTarget.Browser) previewAuthorized else authorized, selectionGeneration = selection)
         }
+    }
+    /**
+     * `subscribeDiscoveredLocalServers {}` once the connection's shell is ready, at most once per connection. Each
+     * chunk is a full snapshot. A rejection (older server, unknown method, missing scope) marks the catalog
+     * unsupported and is never retried on this connection or surfaced as an error. Caller holds [lifecycleLock].
+     */
+    private fun startDiscovery() {
+        if (discoveryEpoch == generation || socket == null || state.value.connection != ConnectionStatus.Connected) return
+        val epoch = generation
+        discoveryEpoch = epoch
+        discoverySubscription = runCatching {
+            subscribe("subscribeDiscoveredLocalServers", buildJsonObject {}) { snapshot ->
+                if (epoch == generation) discoveredLocalServers(snapshot)?.let { catalog -> update { it.copy(localServers = catalog) } }
+            }
+        }.getOrNull()
+    }
+    /** A failed Exit is a rejection; an interrupted or successful one only ends the live stream. Caller holds [lifecycleLock]. */
+    private fun discoveryEnded(exit: JsonObject) {
+        discoverySubscription = null
+        val rejected = exit.string("_tag") != "Success" && !exitInterruptedOnly(exit)
+        update { it.copy(localServers = if (rejected) LocalServerCatalog(supported = false) else it.localServers.copy(live = false)) }
+    }
+    /** Drops the stream with its connection; the next connection asks again. Caller holds [lifecycleLock]. */
+    private fun endDiscovery() {
+        discoverySubscription = null
+        update { it.copy(localServers = LocalServerCatalog(supported = it.localServers.supported)) }
+    }
+
+    /**
+     * Forwards belong to the live connection: disconnect, reconnect, environment switch, [close] and a lost SSH
+     * tunnel (which fails the socket) all stop them, and nothing restarts them. Caller holds [lifecycleLock].
+     */
+    private fun stopPortForwards() {
+        val open = portForwarders.values.toList()
+        portForwarders.clear(); tunnelTickets = null
+        open.forEach { it.close() }
+        update { it.copy(portForwards = emptyList()) }
+    }
+    private fun publishPortForwards() = update { it.copy(portForwards = portForwarders.values.map { forwarder -> forwarder.snapshot() }) }
+
+    /**
+     * Binds the loopback listener for [remotePort] and returns its state. An existing forward is returned (after
+     * its bind finishes); a failed one is replaced, which is how the user retries. A bind failure returns a
+     * [PortForwardStatus.Failed] forward rather than throwing. Tunnel failures arrive later, per connection, in
+     * [ClientState.portForwards]. Throws when not connected or when the connection changed during the bind.
+     */
+    override suspend fun startPortForward(remotePort: Int): PortForward {
+        require(remotePort in 1..65535) { "Choose a port from 1 to 65535" }
+        val (forwarder, created) = synchronized(lifecycleLock) {
+            check(state.value.connection == ConnectionStatus.Connected && shellReady && socket != null) { "Connect before forwarding a port" }
+            val environment = state.value.environment ?: error("Connect an environment")
+            // The live route's base: it passed the URL policy and the identity check (an SSH route is its loopback forward).
+            val base = activeBase ?: error("Connect an environment")
+            val existing = portForwarders[remotePort]
+            if (existing != null && existing.snapshot().status != PortForwardStatus.Failed) return@synchronized existing to false
+            existing?.close()
+            val epoch = generation
+            val tickets = tunnelTickets?.takeIf { it.first == epoch }?.second
+                ?: MediaTicketCache { mintTunnelTicket(epoch, environment.id, base) }.also { tunnelTickets = epoch to it }
+            val tunnel = base.resolve("/api/preview/tunnel")!!
+            val forwarder = LoopbackPortForwarder(environment.id, remotePort, tunnelHttp,
+                { ticket -> tunnel.newBuilder().query(null).addQueryParameter("port", remotePort.toString()).addQueryParameter("wsTicket", ticket).build() },
+                tickets, onChange = { synchronized(lifecycleLock) { if (epoch == generation) publishPortForwards() } })
+            portForwarders.remove(remotePort); portForwarders[remotePort] = forwarder
+            publishPortForwards()
+            forwarder to true
+        }
+        // Always finishes, so a cancelled caller never leaves a forward stuck in Starting.
+        if (created) withContext(NonCancellable + Dispatchers.IO) { forwarder.bind() } else forwarder.bound.await()
+        return synchronized(lifecycleLock) {
+            if (portForwarders[remotePort] !== forwarder) { if (created) forwarder.close(); error("Connection changed; forward the port again") }
+            publishPortForwards()
+            forwarder.snapshot()
+        }
+    }
+    override suspend fun stopPortForward(remotePort: Int) = synchronized(lifecycleLock) {
+        portForwarders.remove(remotePort)?.let { it.close(); publishPortForwards() }
+        Unit
+    }
+    /** Mints the connection's media ticket at the verified live base; failures map to how a tunnel connection fails. */
+    private suspend fun mintTunnelTicket(epoch: Long, environmentId: String, base: HttpUrl): MintedMediaTicket {
+        val environment = synchronized(lifecycleLock) {
+            state.value.environment?.takeIf { epoch == generation && it.id == environmentId } ?: throw MediaTicketUnavailable(PortForwardError.Unreachable)
+        }
+        val reply = try { authorizedFetch(environment, "POST", base.resolve("/api/auth/websocket-ticket/media")!!, timeoutMillis = 8_000) }
+        catch (error: CancellationException) { throw error }
+        catch (error: HttpFailure) {
+            throw MediaTicketUnavailable(when (error.status) { 401, 403 -> PortForwardError.Unauthorized; 404 -> PortForwardError.ServerOutdated; else -> PortForwardError.Unreachable })
+        }
+        catch (_: DpopKeyUnavailable) { throw MediaTicketUnavailable(PortForwardError.Unauthorized) }
+        catch (_: TokenRenewalRejected) { throw MediaTicketUnavailable(PortForwardError.Unauthorized) }
+        catch (_: Exception) { throw MediaTicketUnavailable(PortForwardError.Unreachable) }
+        val ticket = reply.string("ticket")
+        if (ticket.isBlank()) throw MediaTicketUnavailable(PortForwardError.Unreachable)
+        synchronized(lifecycleLock) { if (epoch != generation) throw MediaTicketUnavailable(PortForwardError.Unreachable) }
+        return MintedMediaTicket(ticket, mediaTicketExpiry(reply))
     }
     override suspend fun downloadFile(reference: RemoteFileReference, output: java.io.OutputStream, environmentId: String, threadId: String, onProgress: (FileDownloadProgress) -> Unit): DownloadedFile {
         data class FileRead(val epoch: Long, val selection: Long, val environment: SavedEnvironment, val threadId: String)
