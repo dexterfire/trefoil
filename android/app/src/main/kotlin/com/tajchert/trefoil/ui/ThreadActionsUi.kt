@@ -27,6 +27,9 @@ internal fun threadCopyReference(target: ThreadTarget): String {
 internal fun selectedThreadActionsVisible(wide: Boolean, showThread: Boolean, draft: ThreadDraft?, threadId: String?): Boolean =
     (wide || showThread) && draft == null && threadId != null
 
+/** Settling the open thread from its header returns a single-pane layout to the thread list; two panes already show it. */
+internal fun settleLeavesConversation(action: ThreadAction, twoPane: Boolean): Boolean = action == ThreadAction.Settle && !twoPane
+
 /** Overflow button for a thread (conversation header). List rows open [ThreadActionsDropdown] on long-press instead. */
 @Composable
 internal fun ThreadActionsMenu(state: ClientState, thread: ThreadSummary, onOpenAgents: (() -> Unit)? = null, onAction: (ThreadTarget, ThreadAction, String?) -> Unit) {

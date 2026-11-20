@@ -256,7 +256,10 @@ fun TrefoilApp(
                                                     actions = {
                                                         if (selectedThreadActionsVisible(twoPane, showThread, draft, state.selectedThreadId)) {
                                                             if (pill != null) AgentsChip(pill) { showAgents = true }
-                                                            state.threads.firstOrNull { it.id == state.selectedThreadId }?.let { ThreadActionsMenu(state, it, onOpenAgents = if (roster != null) ({ showAgents = true }) else null, onAction = onThreadAction) }
+                                                            state.threads.firstOrNull { it.id == state.selectedThreadId }?.let { ThreadActionsMenu(state, it, onOpenAgents = if (roster != null) ({ showAgents = true }) else null, onAction = { target, operation, value ->
+                                                                onThreadAction(target, operation, value)
+                                                                if (settleLeavesConversation(operation, twoPane)) showThread = false
+                                                            }) }
                                                         }
                                                     },
                                                     seedPrompt = seedPrompt.takeIf { draft != null }, onSeedConsumed = { seedPrompt = null })

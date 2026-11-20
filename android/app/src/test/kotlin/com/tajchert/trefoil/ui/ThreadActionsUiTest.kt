@@ -16,6 +16,11 @@ import org.robolectric.annotation.Config
 class ThreadActionsUiTest {
     @get:Rule val compose = createComposeRule()
     private val environment = SavedEnvironment("env", "Fixture", "https://example.test", "fixture")
+    @Test fun settleFromHeaderLeavesOnlySinglePaneConversation() {
+        assertTrue(settleLeavesConversation(ThreadAction.Settle, twoPane = false))
+        assertFalse(settleLeavesConversation(ThreadAction.Settle, twoPane = true))
+        ThreadAction.entries.filter { it != ThreadAction.Settle }.forEach { assertFalse(settleLeavesConversation(it, twoPane = false)) }
+    }
     @Test fun rowMenuMutatesItsOwnTargetWithoutSelectingIt() {
         var selected: String? = null
         var action: Pair<ThreadTarget, ThreadAction>? = null
