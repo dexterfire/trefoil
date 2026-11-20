@@ -153,11 +153,9 @@ class TokenRenewalTest {
             // Once the request is at the server (and has taken the unanswered response), the route probe gives up: the
             // renewal must stop with it, not run out its own 15 s timeout.
             assertNotNull(server.takeRequest(5, TimeUnit.SECONDS))
-            val started = System.nanoTime()
             caller.cancel()
             assertNotNull("Cancellation ends the call promptly", withTimeoutOrNull(3_000) { caller.join() })
             assertTrue(caller.isCancelled)
-            assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 3_000)
             server.enqueue(renewal("new-secret"))
             val next = withTimeout(3_000) { tokens.fresh(expired, server.url("/")) }
             assertEquals("The lock is free for the next caller", "new-secret", next.accessToken)
