@@ -1,5 +1,13 @@
 # Android releases
 
+Release `0.20.0` (`versionCode = 37`) adds dev servers and port forwarding: the app menu and a thread
+header chip open a screen of servers listening on the T3 host, which open in an in-app browser or are
+forwarded to a loopback port on the phone (T3 Code v0.1.11+, browser tunnels on, `terminal:operate`; see
+`protocol/PORTS.md`). Forwards stop on disconnect, reconnect and machine switch. Composer drafts (new-thread
+prompts and replies) persist locally and encrypted across restarts, with a Drafts block in the thread list.
+Settling the open thread returns to the thread list. Check a forward over a direct and an SSH connection, and
+drafts across a process restart, against a real environment on a device.
+
 Release `0.19.0` (`versionCode = 36`) adds pull to refresh to the thread list, and rows whose turn ended
 while subagents still run show a Waiting spinner. Reconnects resume the shell from its cursor, so the server
 replays missed deltas and skips the full snapshot. Hosts that advertise access-token renewal get device-bound
