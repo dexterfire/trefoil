@@ -27,6 +27,9 @@ import java.util.concurrent.atomic.AtomicReference
 internal const val MAX_TUNNEL_CONNECTIONS = 64
 internal const val TUNNEL_DISABLED_HEADER = "x-t3-tunnel-disabled"
 internal const val TUNNEL_PORT_REFUSED_HEADER = "x-t3-tunnel-port-refused"
+private const val TUNNEL_MARKER = "1"
+/** Tunnel connections across every forward of one client; also the tunnel dispatcher's request limit. */
+internal const val MAX_CLIENT_TUNNEL_CONNECTIONS = 256
 private const val SEND_HIGH_WATER_BYTES = 1024L * 1024
 private const val TUNNEL_OPEN_TIMEOUT_MS = 15_000L
 /** Mint again this long before `expiresAt`, so a connection never presents a ticket that lapses mid-handshake. */
@@ -63,11 +66,12 @@ internal fun discoveredLocalServers(value: JsonObject): LocalServerCatalog? {
 
 /**
  * Classifies a refused `/api/preview/tunnel` upgrade. The T3 markers decide first, because a status alone
- * cannot tell T3 from a proxy in front of it; [status] is null when no HTTP response arrived.
+ * cannot tell T3 from a proxy in front of it. T3 sets them to exactly "1"; any other value falls through to the status.
+ * [status] is null when no HTTP response arrived.
  */
 internal fun classifyTunnelHandshake(status: Int?, header: (String) -> String?): PortForwardError = when {
-    header(TUNNEL_DISABLED_HEADER) != null -> PortForwardError.TunnelDisabled
-    header(TUNNEL_PORT_REFUSED_HEADER) != null -> PortForwardError.PortRefused
+    header(TUNNEL_DISABLED_HEADER)?.trim() == TUNNEL_MARKER -> PortForwardError.TunnelDisabled
+    header(TUNNEL_PORT_REFUSED_HEADER)?.trim() == TUNNEL_MARKER -> PortForwardError.PortRefused
     status == null -> PortForwardError.Unreachable
     status in 200..299 || status == 404 -> PortForwardError.ServerOutdated
     status == 401 || status == 403 -> PortForwardError.Unauthorized
@@ -115,6 +119,29 @@ internal class MediaTicketCache(private val clock: () -> Long = System::currentT
     override fun toString(): String = "MediaTicketCache(redacted)"
 }
 
+/**
+ * Admission for tunnel connections shared by every forward of one client. It equals the tunnel dispatcher's
+ * request limit and is taken before a WebSocket is enqueued, so an upgrade never waits in OkHttp's queue.
+ */
+internal class TunnelAdmission(val limit: Int = MAX_CLIENT_TUNNEL_CONNECTIONS) {
+    private val held = java.util.concurrent.atomic.AtomicInteger()
+    fun tryAcquire(): Boolean {
+        while (true) { val now = held.get(); if (now >= limit) return false; if (held.compareAndSet(now, now + 1)) return true }
+    }
+    fun release() { held.decrementAndGet() }
+    val inUse: Int get() = held.get()
+}
+
+/**
+ * A client for tunnel WebSockets. OkHttp 4 holds a dispatcher slot for each WebSocket's whole life, so tunnels get
+ * their own [okhttp3.Dispatcher] sized to [admission] instead of competing with the RPC socket and HTTP calls for
+ * the shared 64 slots. No read timeout: tunnels idle for as long as the page keeps them open (HMR, keep-alive).
+ */
+internal fun tunnelClient(base: OkHttpClient, admission: TunnelAdmission): OkHttpClient = base.newBuilder()
+    .dispatcher(okhttp3.Dispatcher().apply { maxRequests = admission.limit; maxRequestsPerHost = admission.limit })
+    .readTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
+    .build()
+
 /** Accept loops and upstream pumps block on sockets; this view grows past the shared IO pool's 64 threads. */
 private val tunnelDispatcher = Dispatchers.IO.limitedParallelism(512)
 
@@ -147,6 +174,8 @@ internal class LoopbackPortForwarder(
     private val tickets: MediaTicketCache,
     private val onChange: () -> Unit,
     private val maxConnections: Int = MAX_TUNNEL_CONNECTIONS,
+    /** Shared by every forward that uses [client]; its limit must not exceed the client's dispatcher limits. */
+    private val admission: TunnelAdmission = TunnelAdmission(maxConnections),
     private val openTimeoutMillis: Long = TUNNEL_OPEN_TIMEOUT_MS,
     private val binder: (Int) -> ServerSocket = ::bindLoopback,
 ) {
@@ -194,7 +223,7 @@ internal class LoopbackPortForwarder(
         while (true) {
             val socket = try { listener.accept() } catch (_: IOException) { break }
             val connection = synchronized(lock) {
-                if (closed || connections.size >= maxConnections) null else Connection(socket).also { connections += it }
+                if (closed || connections.size >= maxConnections || !admission.tryAcquire()) null else Connection(socket).also { connections += it }
             }
             if (connection == null) { socket.closeQuietly(); continue }
             changed()
@@ -204,11 +233,15 @@ internal class LoopbackPortForwarder(
 
     private fun changed() { if (!synchronized(lock) { closed }) onChange() }
 
-    private fun recordFailure(failure: PortForwardError) {
+    /**
+     * Records a connection's failure. A terminal one sets Failed and marks the forward closed in the same critical
+     * section, so no concurrent success or failure can overwrite it; teardown follows outside the lock.
+     */
+    internal fun recordFailure(failure: PortForwardError) {
         val ends = synchronized(lock) {
             if (closed) return
             error = failure
-            if (failure.endsForward) { status = PortForwardStatus.Failed; localPort = null }
+            if (failure.endsForward) { status = PortForwardStatus.Failed; localPort = null; closed = true }
             failure.endsForward
         }
         if (ends) {
@@ -217,7 +250,7 @@ internal class LoopbackPortForwarder(
         } else changed()
     }
 
-    private fun recordSuccess() {
+    internal fun recordSuccess() {
         val cleared = synchronized(lock) { (!closed && error != null).also { if (it) error = null } }
         if (cleared) onChange()
     }
@@ -225,8 +258,16 @@ internal class LoopbackPortForwarder(
     private inner class Connection(private val socket: Socket) {
         @Volatile private var webSocket: WebSocket? = null
         private val ended = CompletableDeferred<Unit>()
+        private val released = java.util.concurrent.atomic.AtomicBoolean()
+        /** Set before every cancel this side starts, so only an unexpected transport failure reports Unreachable. */
+        @Volatile private var shuttingDown = false
+        /** The tunnel broke after the upgrade: the page gets a reset instead of a clean EOF that looks complete. */
+        @Volatile private var aborted = false
 
-        fun close() { webSocket?.cancel(); socket.closeQuietly(); ended.complete(Unit) }
+        fun close() { shuttingDown = true; webSocket?.cancel(); socket.closeQuietly(); ended.complete(Unit); release() }
+
+        /** Returns the admission slot once, whether [run] ran or the forward closed before it started. */
+        private fun release() { if (released.compareAndSet(false, true)) admission.release() }
 
         suspend fun run() {
             try {
@@ -234,12 +275,15 @@ internal class LoopbackPortForwarder(
                 recordSuccess()
                 val upstream = scope.launch { pumpUp(ws) }
                 ended.await()
+                if (aborted) { runCatching { socket.setSoLinger(true, 0) }; return }
                 // Let the page read what already arrived before the connection ends.
                 runCatching { socket.getOutputStream().flush(); socket.shutdownOutput() }
                 withTimeoutOrNull(1_000) { upstream.join() }
             } finally {
+                shuttingDown = true
                 webSocket?.cancel()
                 socket.closeQuietly()
+                release()
                 val removed = synchronized(lock) { connections.remove(this) }
                 if (removed) changed()
             }
@@ -255,15 +299,18 @@ internal class LoopbackPortForwarder(
                 catch (_: Exception) { recordFailure(PortForwardError.Unreachable); return null }
                 val (ws, failure) = handshake(ticket)
                 if (ws != null) return ws
+                // Neither: the forward closed before the upgrade could be enqueued.
+                if (failure == null) return null
                 if (failure == PortForwardError.Unauthorized && !retried) { tickets.invalidate(ticket); retried = true; continue }
-                recordFailure(failure ?: PortForwardError.Unreachable)
+                recordFailure(failure)
                 return null
             }
         }
 
+        /** The open tunnel, or its refusal; both null when the forward closed first and nothing was enqueued. */
         private suspend fun handshake(ticket: String): Pair<WebSocket?, PortForwardError?> {
             val opened = CompletableDeferred<PortForwardError?>()
-            val ws = client.newWebSocket(Request.Builder().url(tunnelUrl(ticket)).build(), object : WebSocketListener() {
+            val listener = object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) { opened.complete(null) }
                 // Writing on OkHttp's reader thread blocks it, so a page that stops reading stops the tunnel from reading.
                 override fun onMessage(webSocket: WebSocket, bytes: ByteString) { toPage(webSocket, bytes.toByteArray()) }
@@ -273,20 +320,27 @@ internal class LoopbackPortForwarder(
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                     // A failed handshake belongs to this attempt only; a retry must not inherit its end.
                     val failure = if (response == null) PortForwardError.Unreachable else classifyTunnelHandshake(response.code) { response.header(it) }
-                    if (!opened.complete(failure)) ended.complete(Unit)
+                    if (opened.complete(failure)) return
+                    // After the upgrade: a reset or dropped transport the page did not ask for.
+                    if (!shuttingDown) { aborted = true; recordFailure(PortForwardError.Unreachable) }
+                    ended.complete(Unit)
                 }
-            })
-            webSocket = ws
+            }
+            // Enqueued under the lock that [close] takes, so an upgrade is either visible to close or never starts.
+            val ws = synchronized(lock) {
+                if (closed || this !in connections) return null to null
+                client.newWebSocket(Request.Builder().url(tunnelUrl(ticket)).build(), listener).also { webSocket = it }
+            }
             // A null outcome is an open tunnel, so a timeout is told apart by its exception, not by a null.
             val failure = try { withTimeout(openTimeoutMillis) { opened.await() } }
             catch (_: TimeoutCancellationException) { PortForwardError.Unreachable }
-            catch (error: CancellationException) { ws.cancel(); throw error }
+            catch (error: CancellationException) { shuttingDown = true; ws.cancel(); throw error }
             if (failure != null) { ws.cancel(); webSocket = null; return null to failure }
             return ws to null
         }
 
         private fun toPage(webSocket: WebSocket, bytes: ByteArray) {
-            try { socket.getOutputStream().write(bytes) } catch (_: IOException) { webSocket.cancel(); ended.complete(Unit) }
+            try { socket.getOutputStream().write(bytes) } catch (_: IOException) { shuttingDown = true; webSocket.cancel(); ended.complete(Unit) }
         }
 
         private suspend fun pumpUp(ws: WebSocket) {
@@ -294,15 +348,16 @@ internal class LoopbackPortForwarder(
             try {
                 val input = socket.getInputStream()
                 while (true) {
+                    // Local EOF may be a half-close after the request: the tunnel has no half-close signal, so the
+                    // response keeps flowing until the remote side ends, errors, or the page closes its socket.
                     val count = input.read(buffer)
-                    if (count < 0) break
+                    if (count < 0) return
                     if (!ws.send(buffer.toByteString(0, count))) return
                     // OkHttp queues sends without limit and fails the socket past 16 MiB.
                     while (ws.queueSize() > SEND_HIGH_WATER_BYTES && !ended.isCompleted) delay(5)
                 }
-                ws.close(1000, null)
             } catch (error: CancellationException) { throw error }
-            catch (_: IOException) { ws.cancel(); ended.complete(Unit) }
+            catch (_: IOException) { shuttingDown = true; ws.cancel(); ended.complete(Unit) }
         }
     }
 }

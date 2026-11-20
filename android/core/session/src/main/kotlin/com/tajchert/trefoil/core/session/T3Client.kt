@@ -100,8 +100,9 @@ class T3Client(
     private val portForwarders = linkedMapOf<Int, LoopbackPortForwarder>()
     /** The live connection's shared media ticket for tunnel connections, keyed by connection generation. */
     private var tunnelTickets: Pair<Long, MediaTicketCache>? = null
-    /** Tunnel connections idle for as long as the page keeps them open (HMR, keep-alive), so no read timeout. */
-    private val tunnelHttp: OkHttpClient by lazy { http.newBuilder().readTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS).build() }
+    /** One admission for every forward, matching [tunnelHttp]'s own dispatcher, so tunnels never queue or starve RPC. */
+    private val tunnelAdmission = TunnelAdmission()
+    private val tunnelHttp: OkHttpClient by lazy { tunnelClient(http, tunnelAdmission) }
     @Volatile private var pongAt = 0L
     /** Arrival of the live connection's latest frame of any kind; a large snapshot in transit keeps it fresh. */
     @Volatile private var frameAt = 0L
@@ -1044,7 +1045,7 @@ class T3Client(
             val tunnel = base.resolve("/api/preview/tunnel")!!
             val forwarder = LoopbackPortForwarder(environment.id, remotePort, tunnelHttp,
                 { ticket -> tunnel.newBuilder().query(null).addQueryParameter("port", remotePort.toString()).addQueryParameter("wsTicket", ticket).build() },
-                tickets, onChange = { synchronized(lifecycleLock) { if (epoch == generation) publishPortForwards() } })
+                tickets, onChange = { synchronized(lifecycleLock) { if (epoch == generation) publishPortForwards() } }, admission = tunnelAdmission)
             portForwarders.remove(remotePort); portForwarders[remotePort] = forwarder
             publishPortForwards()
             forwarder to true

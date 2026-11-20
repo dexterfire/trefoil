@@ -15,6 +15,9 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.CyclicBarrier
+import kotlin.concurrent.thread
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -67,6 +70,12 @@ class PortForwardingTest {
         assertEquals(PortForwardError.Unreachable, classify(400))
         assertEquals(PortForwardError.Unreachable, classify(500))
         assertEquals(PortForwardError.Unreachable, classify(null))
+        // Only T3's exact "1" is a marker; anything else falls through to the status.
+        assertEquals(PortForwardError.PortRefused, classify(502, "x-t3-tunnel-port-refused" to " 1 "))
+        assertEquals(PortForwardError.Unauthorized, classify(403, "x-t3-tunnel-port-refused" to "0"))
+        assertEquals(PortForwardError.Unreachable, classify(502, "x-t3-tunnel-disabled" to "yes"))
+        assertEquals(PortForwardError.ServerOutdated, classify(404, "x-t3-tunnel-disabled" to ""))
+        assertEquals(PortForwardError.Unauthorized, classify(401, "x-t3-tunnel-disabled" to "true", "x-t3-tunnel-port-refused" to "10"))
     }
 
     @Test fun mediaTicketIsReusedAndRefreshedBeforeExpiry() = runBlocking {
@@ -133,7 +142,8 @@ class PortForwardingTest {
             assertEquals(1, f.mints.get())
             assertEquals(PortForwardStatus.Active, forwarder.snapshot().status)
             assertNull(forwarder.snapshot().error)
-            first.close()
+            // A FIN is only a half-close (see aHalfClosedRequest...); a page that drops the connection resets it.
+            first.setSoLinger(true, 0); first.close()
             waitFor { forwarder.snapshot().activeConnections == 1 }
             forwarder.close()
         }
@@ -229,6 +239,123 @@ class PortForwardingTest {
         }
     }
 
+    @Test fun forwardsShareOneAdmissionSizedToTheirOwnDispatcherSoUpgradesNeverQueue() = runBlocking {
+        TunnelFixture().use { f ->
+            f.respond = { MockResponse().withWebSocketUpgrade(f.echo) }
+            val admission = TunnelAdmission(3)
+            val client = tunnelClient(f.http, admission)
+            assertNotSame(f.http.dispatcher, client.dispatcher)
+            assertEquals(3, client.dispatcher.maxRequests)
+            assertEquals(0, client.readTimeoutMillis)
+            val a = f.forwarder(4100, client, admission).also { it.bind() }
+            val b = f.forwarder(4101, client, admission).also { it.bind() }
+            val open = listOf(f.open(a), f.open(a), f.open(b)).onEach { assertEquals("hello", it.readText(5)) }
+            // The limit is shared: B has room of its own but the client does not.
+            assertEquals(-1, f.open(b).getInputStream().read())
+            assertEquals(3, f.server.requestCount)
+            assertEquals(0, client.dispatcher.queuedCallsCount())
+            open.first().apply { setSoLinger(true, 0); close() }
+            waitFor { a.snapshot().activeConnections == 1 && admission.inUse == 2 }
+            assertEquals("hello", f.open(b).readText(5))
+            assertEquals(0, client.dispatcher.queuedCallsCount())
+            a.close(); b.close()
+            waitFor { admission.inUse == 0 }
+        }
+    }
+
+    @Test fun closeWhileAConnectionHoldsATicketNeverEnqueuesItsUpgrade() = runBlocking {
+        TunnelFixture().use { f ->
+            f.respond = { MockResponse().withWebSocketUpgrade(f.echo) }
+            val minting = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            // Blocks without suspending, so the ticket comes back to a worker whose forward closed meanwhile.
+            val tickets = MediaTicketCache { minting.countDown(); release.await(); MintedMediaTicket("late", null) }
+            val forwarder = f.forwarder(4102, tickets = tickets).also { it.bind() }
+            val socket = f.open(forwarder)
+            assertTrue(minting.await(5, TimeUnit.SECONDS))
+            forwarder.close()
+            release.countDown()
+            assertClosed(socket)
+            delay(300)
+            assertEquals("no upgrade may be built after close", 0, f.upgrades.get())
+            assertEquals(0, f.server.requestCount)
+            assertEquals(0, f.http.dispatcher.runningCallsCount() + f.http.dispatcher.queuedCallsCount())
+        }
+    }
+
+    @Test fun aHalfClosedRequestStillReceivesTheWholeResponse() = runBlocking {
+        TunnelFixture().use { f ->
+            // Like T3: replies after a while, and ends the tunnel on a close frame.
+            val slowReply = object : WebSocketListener() {
+                override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                    thread { Thread.sleep(200); webSocket.send("reply:".encodeUtf8().toByteArray().plus(bytes.toByteArray()).let { ByteString.of(*it) }); webSocket.close(1000, null) }
+                }
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(1000, null) }
+            }
+            f.respond = { MockResponse().withWebSocketUpgrade(slowReply) }
+            val forwarder = f.forwarder(4103).also { it.bind() }
+            val socket = f.open(forwarder)
+            socket.getOutputStream().apply { write("ping".toByteArray()); flush() }
+            socket.shutdownOutput()
+            assertEquals("reply:ping", String(socket.getInputStream().readBytes()))
+            waitFor { forwarder.snapshot().activeConnections == 0 }
+            assertNull(forwarder.snapshot().error)
+            forwarder.close()
+        }
+    }
+
+    @Test fun aTransportFailureAfterTheUpgradeReportsUnreachableButAPageResetDoesNot() = runBlocking {
+        TunnelFixture().use { f ->
+            f.respond = { MockResponse().withWebSocketUpgrade(f.echo) }
+            val forwarder = f.forwarder(4104).also { it.bind() }
+            val dropped = f.open(forwarder)
+            assertEquals("hello", dropped.readText(5))
+            // The server vanishes mid-stream: its sockets close without a close frame.
+            f.server.shutdown()
+            assertClosed(dropped)
+            waitFor { forwarder.snapshot().error == PortForwardError.Unreachable }
+            assertEquals(PortForwardStatus.Active, forwarder.snapshot().status)
+            waitFor { forwarder.snapshot().activeConnections == 0 }
+            forwarder.close()
+        }
+        TunnelFixture().use { f ->
+            f.respond = { MockResponse().withWebSocketUpgrade(f.echo) }
+            val forwarder = f.forwarder(4107).also { it.bind() }
+            val page = f.open(forwarder)
+            assertEquals("hello", page.readText(5))
+            waitFor { forwarder.snapshot().error == null }
+            page.setSoLinger(true, 0); page.close()
+            waitFor { forwarder.snapshot().activeConnections == 0 }
+            withTimeout(5_000) { while (f.serverClosed.get() < 1) delay(10) }
+            assertNull(forwarder.snapshot().error)
+            forwarder.close()
+        }
+    }
+
+    @Test fun aTerminalFailureIsNeverOverwritten() {
+        TunnelFixture().use { f ->
+            val forwarder = f.forwarder(4105).also { it.bind() }
+            forwarder.recordFailure(PortForwardError.Unauthorized)
+            forwarder.recordSuccess()
+            forwarder.recordFailure(PortForwardError.PortRefused)
+            forwarder.recordFailure(PortForwardError.TunnelDisabled)
+            assertEquals(PortForward("env", 4105, null, PortForwardStatus.Failed, PortForwardError.Unauthorized), forwarder.snapshot())
+            repeat(200) { round ->
+                val racing = f.forwarder(4106).also { it.bind() }
+                val start = CyclicBarrier(4)
+                // Other connections keep succeeding and failing while one hits a terminal refusal.
+                fun churn(action: () -> Unit): () -> Unit = { repeat(2_000) { action() } }
+                listOf({ racing.recordFailure(PortForwardError.ServerOutdated) },
+                    churn { racing.recordFailure(PortForwardError.PortRefused); racing.recordSuccess() },
+                    churn { racing.recordSuccess() }, churn { racing.recordFailure(PortForwardError.Unreachable) })
+                    .map { action -> thread { start.await(); action() } }.forEach { it.join() }
+                val snapshot = racing.snapshot()
+                assertEquals("round $round", PortForwardStatus.Failed, snapshot.status)
+                assertEquals("round $round", PortForwardError.ServerOutdated, snapshot.error)
+            }
+        }
+    }
+
     @Test fun bindsTheSamePortAndFallsBackWhenBusyOrPrivileged() {
         val free = ServerSocket(0, 50, loopback).use { it.localPort }
         bindLoopback(free).use { assertEquals(free, it.localPort) }
@@ -266,6 +393,8 @@ class PortForwardingTest {
         val requests = ConcurrentLinkedQueue<RecordedRequest>()
         @Volatile var respond: (RecordedRequest) -> MockResponse = { MockResponse().setResponseCode(500) }
         val mints = AtomicInteger()
+        /** Upgrade URLs built: each one is a WebSocket about to be enqueued. */
+        val upgrades = AtomicInteger()
         @Volatile var mintFailure: PortForwardError? = null
         val serverClosed = AtomicInteger()
         val http: OkHttpClient = OkHttpClient.Builder().readTimeout(0, TimeUnit.MILLISECONDS).build()
@@ -287,9 +416,11 @@ class PortForwardingTest {
             server.start()
         }
         fun tunnelUrl(ticket: String): HttpUrl = server.url("/api/preview/tunnel").newBuilder().addQueryParameter("port", "5173").addQueryParameter("wsTicket", ticket).build()
-        fun forwarder(remotePort: Int) = LoopbackPortForwarder("env", remotePort, http,
-            { ticket -> server.url("/api/preview/tunnel").newBuilder().addQueryParameter("port", remotePort.toString()).addQueryParameter("wsTicket", ticket).build() },
-            tickets, {}, binder = { ServerSocket(0, 50, InetAddress.getByAddress("localhost", byteArrayOf(127, 0, 0, 1))) })
+        fun forwarder(remotePort: Int, client: OkHttpClient = http, admission: TunnelAdmission? = null, tickets: MediaTicketCache = this.tickets) =
+            LoopbackPortForwarder("env", remotePort, client,
+                { ticket -> upgrades.incrementAndGet(); server.url("/api/preview/tunnel").newBuilder().addQueryParameter("port", remotePort.toString()).addQueryParameter("wsTicket", ticket).build() },
+                tickets, {}, admission = admission ?: TunnelAdmission(MAX_TUNNEL_CONNECTIONS),
+                binder = { ServerSocket(0, 50, InetAddress.getByAddress("localhost", byteArrayOf(127, 0, 0, 1))) })
         fun open(forwarder: LoopbackPortForwarder): Socket =
             Socket(InetAddress.getByAddress("localhost", byteArrayOf(127, 0, 0, 1)), forwarder.snapshot().localPort!!).apply { soTimeout = 5_000 }
         override fun close() { server.shutdown() }
