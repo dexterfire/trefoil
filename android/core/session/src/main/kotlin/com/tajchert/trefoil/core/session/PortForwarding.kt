@@ -146,13 +146,41 @@ internal fun tunnelClient(base: OkHttpClient, admission: TunnelAdmission): OkHtt
 private val tunnelDispatcher = Dispatchers.IO.limitedParallelism(512)
 
 /**
- * Binds `127.0.0.1:[preferredPort]` so pages keep their `localhost:PORT` origin, or an ephemeral port when that one
- * is taken or privileged (below 1024).
+ * The loopback listeners of one forward. All of them feed the same forwarder. [dualStack] is true when both
+ * `127.0.0.1:N` and `[::1]:N` are ours, so `localhost` reaches this forward whichever address it resolves to.
  */
-internal fun bindLoopback(preferredPort: Int): ServerSocket {
-    val loopback = InetAddress.getByAddress("localhost", byteArrayOf(127, 0, 0, 1))
-    if (preferredPort in 1024..65535) try { return ServerSocket(preferredPort, 50, loopback) } catch (_: IOException) {}
-    return ServerSocket(0, 50, loopback)
+internal class LoopbackListeners(val sockets: List<ServerSocket>, val dualStack: Boolean) : AutoCloseable {
+    init { require(sockets.isNotEmpty()) { "No listener" } }
+    val port: Int get() = sockets.first().localPort
+    /** The host that [PortForward.localUrl] may use: one that cannot resolve to an address we do not listen on. */
+    val host: String get() = if (dualStack) PortForward.LOCALHOST else PortForward.LOOPBACK_V4
+    override fun close() { sockets.forEach { it.closeQuietly() } }
+}
+
+private val IPV4_LOOPBACK: InetAddress = InetAddress.getByAddress("localhost", byteArrayOf(127, 0, 0, 1))
+private val IPV6_LOOPBACK: InetAddress = InetAddress.getByAddress("localhost", ByteArray(16).also { it[15] = 1 })
+
+/**
+ * Binds `127.0.0.1:N` and `[::1]:N` for the same N, so pages keep their `localhost:N` origin whichever of the two
+ * `localhost` resolves to first and no other app's listener on the other address can answer. N is [preferredPort]
+ * when both can be bound there, else an ephemeral port that both can (a port below 1024 counts as taken).
+ * Where this device has no usable IPv6 loopback at all, or no shared port turned up, only IPv4 is bound and
+ * [LoopbackListeners.host] is `127.0.0.1`, so the URL still reaches nothing but us. Throws when not even IPv4 binds.
+ * [open] creates one bound listener; it is a parameter so tests can take addresses away.
+ */
+internal fun bindLoopback(preferredPort: Int, open: (InetAddress, Int) -> ServerSocket = { address, port -> ServerSocket(port, 50, address) }): LoopbackListeners {
+    fun ipv6Usable(): Boolean = try { open(IPV6_LOOPBACK, 0).closeQuietly(); true } catch (_: IOException) { false }
+    /** Both addresses on [port]; IPv4 alone when IPv6 loopback is unusable; null when [port] is taken on either. */
+    fun attempt(port: Int): LoopbackListeners? {
+        val v4 = try { open(IPV4_LOOPBACK, port) } catch (_: IOException) { return null }
+        try { return LoopbackListeners(listOf(v4, open(IPV6_LOOPBACK, v4.localPort)), dualStack = true) } catch (_: IOException) {}
+        if (!ipv6Usable()) return LoopbackListeners(listOf(v4), dualStack = false)
+        v4.closeQuietly()
+        return null
+    }
+    if (preferredPort in 1024..65535) attempt(preferredPort)?.let { return it }
+    repeat(8) { attempt(0)?.let { return it } }
+    return LoopbackListeners(listOf(open(IPV4_LOOPBACK, 0)), dualStack = false)
 }
 
 /**
@@ -177,32 +205,33 @@ internal class LoopbackPortForwarder(
     /** Shared by every forward that uses [client]; its limit must not exceed the client's dispatcher limits. */
     private val admission: TunnelAdmission = TunnelAdmission(maxConnections),
     private val openTimeoutMillis: Long = TUNNEL_OPEN_TIMEOUT_MS,
-    private val binder: (Int) -> ServerSocket = ::bindLoopback,
+    private val binder: (Int) -> LoopbackListeners = { bindLoopback(it) },
 ) {
     private val lock = Any()
     private val scope = CoroutineScope(SupervisorJob() + tunnelDispatcher)
-    private var server: ServerSocket? = null
+    private var listeners: LoopbackListeners? = null
     private val connections = mutableSetOf<Connection>()
     private var status = PortForwardStatus.Starting
     private var error: PortForwardError? = null
     private var localPort: Int? = null
+    private var localHost = PortForward.LOCALHOST
     private var closed = false
     /** Completes once [bind] has finished, bound or not. */
     val bound = CompletableDeferred<Unit>()
 
-    fun snapshot(): PortForward = synchronized(lock) { PortForward(environmentId, remotePort, localPort, status, error, connections.size) }
+    fun snapshot(): PortForward = synchronized(lock) { PortForward(environmentId, remotePort, localPort, status, error, connections.size, localHost) }
 
-    /** Binds the loopback listener and starts accepting. Blocking. False when it failed or the forward was closed meanwhile. */
+    /** Binds the loopback listeners and starts accepting. Blocking. False when it failed or the forward was closed meanwhile. */
     fun bind(): Boolean {
         try {
-            val socket: ServerSocket? = try { binder(remotePort) } catch (_: Exception) { null }
-            val listener = synchronized(lock) {
-                if (closed) { socket?.closeQuietly(); return false }
-                if (socket == null) { status = PortForwardStatus.Failed; error = PortForwardError.LocalBindFailed; closed = true; return false }
-                server = socket; localPort = socket.localPort; status = PortForwardStatus.Active
-                socket
+            val made: LoopbackListeners? = try { binder(remotePort) } catch (_: Exception) { null }
+            val open = synchronized(lock) {
+                if (closed) { made?.close(); return false }
+                if (made == null) { status = PortForwardStatus.Failed; error = PortForwardError.LocalBindFailed; closed = true; return false }
+                listeners = made; localPort = made.port; localHost = made.host; status = PortForwardStatus.Active
+                made
             }
-            scope.launch { accept(listener) }
+            open.sockets.forEach { socket -> scope.launch { accept(socket) } }
             return true
         } finally { bound.complete(Unit) }
     }
@@ -211,7 +240,7 @@ internal class LoopbackPortForwarder(
     fun close() {
         val open = synchronized(lock) {
             closed = true
-            server?.closeQuietly()
+            listeners?.close()
             connections.toList().also { connections.clear() }
         }
         open.forEach { it.close() }
@@ -219,6 +248,10 @@ internal class LoopbackPortForwarder(
         bound.complete(Unit)
     }
 
+    /**
+     * One accept loop per listener. A listener that dies while the forward is open would leave its address free for
+     * another app, so that fails the whole forward instead of leaving half of it.
+     */
     private fun accept(listener: ServerSocket) {
         while (true) {
             val socket = try { listener.accept() } catch (_: IOException) { break }
@@ -229,6 +262,7 @@ internal class LoopbackPortForwarder(
             changed()
             scope.launch { connection.run() }
         }
+        recordFailure(PortForwardError.LocalBindFailed) // a no-op once the forward is closed
     }
 
     private fun changed() { if (!synchronized(lock) { closed }) onChange() }

@@ -58,7 +58,18 @@ data class PortForward(
     val status: PortForwardStatus = PortForwardStatus.Starting,
     val error: PortForwardError? = null,
     val activeConnections: Int = 0,
+    /**
+     * The host of [localUrl]. [LOCALHOST] when both `127.0.0.1:N` and `[::1]:N` are ours, so whichever address
+     * `localhost` resolves to reaches this forward; [LOOPBACK_V4] when only IPv4 could be bound, so the URL can
+     * never resolve to an IPv6 listener of another app.
+     */
+    val localHost: String = LOCALHOST,
 ) {
     /** URL that the in-app WebView or an external browser opens; null until bound. */
-    val localUrl: String? get() = localPort?.let { "http://localhost:$it/" }
+    val localUrl: String? get() = localPort?.let { "http://$localHost:$it/" }
+
+    companion object {
+        const val LOCALHOST = "localhost"
+        const val LOOPBACK_V4 = "127.0.0.1"
+    }
 }

@@ -8,6 +8,7 @@ import okhttp3.mockwebserver.*
 import okio.ByteString
 import okio.ByteString.Companion.encodeUtf8
 import org.junit.Assert.*
+import org.junit.Assume
 import org.junit.Test
 import java.io.IOException
 import java.net.ConnectException
@@ -23,6 +24,8 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class PortForwardingTest {
     private val loopback: InetAddress = InetAddress.getByAddress("localhost", byteArrayOf(127, 0, 0, 1))
+    private val ipv6Loopback: InetAddress = InetAddress.getByAddress("localhost", ByteArray(16).also { it[15] = 1 })
+    private fun ipv6LoopbackUsable() = try { ServerSocket(0, 50, ipv6Loopback).close(); true } catch (_: IOException) { false }
 
     @Test fun discoverySnapshotToleratesAdditiveFieldsAndSkipsMalformedEntries() {
         val snapshot = Json.parseToJsonElement("""{
@@ -358,12 +361,76 @@ class PortForwardingTest {
 
     @Test fun bindsTheSamePortAndFallsBackWhenBusyOrPrivileged() {
         val free = ServerSocket(0, 50, loopback).use { it.localPort }
-        bindLoopback(free).use { assertEquals(free, it.localPort) }
+        bindLoopback(free).use { assertEquals(free, it.port) }
         ServerSocket(0, 50, loopback).use { busy ->
-            bindLoopback(busy.localPort).use { assertNotEquals(busy.localPort, it.localPort); assertTrue(it.localPort > 0) }
+            bindLoopback(busy.localPort).use { assertNotEquals(busy.localPort, it.port); assertTrue(it.port > 0) }
         }
-        bindLoopback(80).use { assertNotEquals(80, it.localPort) }
-        bindLoopback(free).use { assertEquals(loopback, it.inetAddress) }
+        bindLoopback(80).use { assertNotEquals(80, it.port) }
+        bindLoopback(free).use { listeners -> assertTrue(listeners.sockets.all { it.inetAddress.isLoopbackAddress }) }
+    }
+
+    @Test fun bindsBothLoopbackAddressesOnOnePortAndClosesThemTogether() {
+        Assume.assumeTrue("No IPv6 loopback on this machine", ipv6LoopbackUsable())
+        val free = ServerSocket(0, 50, loopback).use { it.localPort }
+        val listeners = bindLoopback(free)
+        assertTrue(listeners.dualStack)
+        assertEquals(PortForward.LOCALHOST, listeners.host)
+        assertEquals(setOf<InetAddress>(loopback, ipv6Loopback), listeners.sockets.map { it.inetAddress }.toSet())
+        assertEquals(listOf(free, free), listeners.sockets.map { it.localPort })
+        listeners.close()
+        assertTrue(listeners.sockets.all { it.isClosed })
+    }
+
+    @Test fun anotherAppsIpv6ListenerOnThePreferredPortMovesTheForwardToAPortWeOwnOnBothAddresses() {
+        Assume.assumeTrue("No IPv6 loopback on this machine", ipv6LoopbackUsable())
+        ServerSocket(0, 50, ipv6Loopback).use { foreign ->
+            val listeners = bindLoopback(foreign.localPort)
+            try {
+                assertTrue(listeners.dualStack)
+                assertNotEquals(foreign.localPort, listeners.port)
+                assertEquals(PortForward.LOCALHOST, listeners.host)
+                // The old port is still free on IPv4: it must not stay bound, or the page's origin would be half ours.
+                ServerSocket(foreign.localPort, 50, loopback).close()
+            } finally { listeners.close() }
+        }
+    }
+
+    @Test fun withoutIpv6LoopbackOnlyIpv4IsBoundAndTheUrlSaysSo() {
+        val noIpv6: (InetAddress, Int) -> ServerSocket = { address, port ->
+            if (address.address.size == 16) throw java.net.SocketException("Cannot assign requested address") else ServerSocket(port, 50, address)
+        }
+        val free = ServerSocket(0, 50, loopback).use { it.localPort }
+        bindLoopback(free, noIpv6).use { listeners ->
+            assertFalse(listeners.dualStack)
+            assertEquals(1, listeners.sockets.size)
+            assertEquals(free, listeners.port)
+            assertEquals(PortForward.LOOPBACK_V4, listeners.host)
+            assertEquals("http://127.0.0.1:$free/", PortForward("env", 1, listeners.port, PortForwardStatus.Active, localHost = listeners.host).localUrl)
+        }
+        bindLoopback(80, noIpv6).use { assertFalse(it.dualStack); assertNotEquals(80, it.port) }
+    }
+
+    @Test fun anIpv4OnlyForwardHandsOutALiteralIpv4UrlAndOwnsNothingElse() = runBlocking {
+        TunnelFixture().use { f ->
+            val forwarder = LoopbackPortForwarder("env", 4011, f.http, f::tunnelUrl, f.tickets, {}, binder = { LoopbackListeners(listOf(ServerSocket(0, 50, loopback)), dualStack = false) })
+            assertTrue(forwarder.bind())
+            val snapshot = forwarder.snapshot()
+            assertEquals("http://127.0.0.1:${snapshot.localPort}/", snapshot.localUrl)
+            forwarder.close()
+        }
+    }
+
+    @Test fun aForwardThatLostOneListenerFailsInsteadOfLeavingItsAddressFree() = runBlocking {
+        TunnelFixture().use { f ->
+            val v4 = ServerSocket(0, 50, loopback)
+            val second = ServerSocket(0, 50, loopback)
+            val forwarder = LoopbackPortForwarder("env", 4012, f.http, f::tunnelUrl, f.tickets, {}, binder = { LoopbackListeners(listOf(v4, second), dualStack = true) })
+            assertTrue(forwarder.bind())
+            second.close()
+            waitFor { forwarder.snapshot().status == PortForwardStatus.Failed }
+            assertEquals(PortForwardError.LocalBindFailed, forwarder.snapshot().error)
+            assertTrue(v4.isClosed)
+        }
     }
 
     @Test fun bindFailureFailsTheForward() = runBlocking {
@@ -385,6 +452,28 @@ class PortForwardingTest {
             assertRefused(port)
             withTimeout(5_000) { while (f.serverClosed.get() < 3) delay(10) }
             assertEquals(0, forwarder.snapshot().activeConnections)
+        }
+    }
+
+    /**
+     * `localhost` may resolve to `::1` first, and the forward's URL says `localhost`: an IPv6 listener of another app
+     * on that port would answer instead of the tunnel. So `[::1]:N` must be ours too, and close with the forward.
+     */
+    @Test fun theForwardAnswersOnIpv6LoopbackAndClosesItWithTheIpv4Listener() = runBlocking {
+        Assume.assumeTrue("No IPv6 loopback on this machine", ipv6LoopbackUsable())
+        TunnelFixture().use { f ->
+            f.respond = { MockResponse().withWebSocketUpgrade(f.echo) }
+            val forwarder = f.forwarder(4010).also { assertTrue(it.bind()) }
+            val port = forwarder.snapshot().localPort!!
+            val viaV6 = Socket(ipv6Loopback, port).apply { soTimeout = 5_000 }
+            assertEquals("hello", viaV6.readText(5))
+            val viaV4 = f.open(forwarder)
+            assertEquals("hello", viaV4.readText(5))
+            waitFor { forwarder.snapshot().activeConnections == 2 }
+            forwarder.close()
+            assertClosed(viaV6); assertClosed(viaV4)
+            assertRefused(port)
+            try { Socket(ipv6Loopback, port).close(); fail("[::1]:$port is still open") } catch (_: ConnectException) {}
         }
     }
 
@@ -419,8 +508,7 @@ class PortForwardingTest {
         fun forwarder(remotePort: Int, client: OkHttpClient = http, admission: TunnelAdmission? = null, tickets: MediaTicketCache = this.tickets) =
             LoopbackPortForwarder("env", remotePort, client,
                 { ticket -> upgrades.incrementAndGet(); server.url("/api/preview/tunnel").newBuilder().addQueryParameter("port", remotePort.toString()).addQueryParameter("wsTicket", ticket).build() },
-                tickets, {}, admission = admission ?: TunnelAdmission(MAX_TUNNEL_CONNECTIONS),
-                binder = { ServerSocket(0, 50, InetAddress.getByAddress("localhost", byteArrayOf(127, 0, 0, 1))) })
+                tickets, {}, admission = admission ?: TunnelAdmission(MAX_TUNNEL_CONNECTIONS))
         fun open(forwarder: LoopbackPortForwarder): Socket =
             Socket(InetAddress.getByAddress("localhost", byteArrayOf(127, 0, 0, 1)), forwarder.snapshot().localPort!!).apply { soTimeout = 5_000 }
         override fun close() { server.shutdown() }

@@ -23,6 +23,14 @@ class TunnelNavigationTest {
         assertEquals(TunnelNavigation.Block, nav("http://app.localhost:5173/"))
     }
 
+    @Test fun anIpv4OnlyForwardNeverFollowsLocalhostBecauseThatMayResolveToAnotherAppOnIpv6() {
+        val v4 = "http://127.0.0.1:5173/"
+        assertEquals(TunnelNavigation.Allow, tunnelNavigation(v4, "http://127.0.0.1:5173/app", false))
+        assertEquals(TunnelNavigation.Block, tunnelNavigation(v4, "http://localhost:5173/app", true))
+        assertEquals(TunnelNavigation.Block, tunnelNavigation(v4, "http://[::1]:5173/", true))
+        assertEquals(TunnelNavigation.Block, tunnelNavigation(v4, "http://127.0.0.1:5174/", true))
+    }
+
     @Test fun portIsNormalizedWhenBoundUrlHasNone() {
         assertEquals(TunnelNavigation.Allow, tunnelNavigation("http://localhost/", "http://localhost:80/", true))
     }

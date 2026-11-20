@@ -79,8 +79,9 @@ internal sealed interface TunnelNavigation {
 }
 
 /**
- * Navigation policy for the forwarded page at [boundUrl] (`http://localhost:N/`). Only `http` to `localhost` or
- * `127.0.0.1` on the bound port stays in the WebView. Other loopback names and ports are refused so a page cannot
+ * Navigation policy for the forwarded page at [boundUrl] (`http://localhost:N/`, or `http://127.0.0.1:N/` when only
+ * IPv4 could be bound). Only `http` to `localhost` (when [boundUrl] uses it) or `127.0.0.1` on the bound port stays
+ * in the WebView. Other loopback names and ports are refused so a page cannot
  * steer the WebView at other services on the device. A gesture-initiated http(s) link to anywhere else goes to the
  * system browser; every other scheme (file, content, intent, javascript, data…) and any URL with credentials is blocked.
  */
@@ -94,7 +95,9 @@ internal fun tunnelNavigation(boundUrl: String, target: String, hasGesture: Bool
     if (isLoopbackName(host)) {
         val port = if (uri.port != -1) uri.port else if (scheme == "https") 443 else 80
         val boundPort = if (bound.port != -1) bound.port else 80
-        val allowedHost = host == "localhost" || host == "127.0.0.1"
+        // `localhost` may resolve to `::1`, which only a dual-stack forward owns; an IPv4-only one is bound as `127.0.0.1`.
+        val boundHost = bound.host?.lowercase()?.trimEnd('.')
+        val allowedHost = host == "127.0.0.1" || (host == "localhost" && boundHost == "localhost")
         return if (scheme == "http" && allowedHost && port == boundPort) TunnelNavigation.Allow else TunnelNavigation.Block
     }
     return if (hasGesture) TunnelNavigation.External(target) else TunnelNavigation.Block
