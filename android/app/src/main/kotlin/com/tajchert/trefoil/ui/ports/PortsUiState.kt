@@ -15,13 +15,11 @@ data class PortsUiState(
     val live: Boolean = false,
     /** False when the server rejected the discovery subscription (older T3). */
     val supported: Boolean = true,
-    /** `previewTunnelSetting` capability: false means tunnels are off, null means unknown (treated as on). */
-    val tunnelSetting: Boolean? = null,
+    /** The server config says tunnels are off (`ClientState.previewTunnelDisabled`); unknown is not off. */
+    val tunnelsDisabled: Boolean = false,
     val canWrite: Boolean = true,
     val selectedThreadId: String? = null,
 ) {
-    val tunnelsDisabled: Boolean get() = tunnelSetting == false
-
     /** Opening or forwarding is possible: supported, tunnels not off, and the user may write. */
     val canForward: Boolean get() = supported && !tunnelsDisabled && canWrite
 }

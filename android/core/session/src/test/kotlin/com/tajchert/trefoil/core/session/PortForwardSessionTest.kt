@@ -33,6 +33,9 @@ class PortForwardSessionTest {
         val acks = Channel<String>(Channel.UNLIMITED)
         @Volatile var rejectDiscovery = false
         @Volatile var capabilities = """{"previewTunnelSetting":true}"""
+        /** Extra top-level `server.getConfig` members, each with a leading comma: `,"settings":{...}`. */
+        @Volatile var configExtra = ""
+        val configStream = Channel<Pair<WebSocket, String>>(Channel.UNLIMITED)
         init {
             server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse = when {
@@ -53,7 +56,8 @@ class PortForwardSessionTest {
                             if (frame.string("_tag") != "Request") return
                             val id = frame.string("id")
                             when (frame.string("tag")) {
-                                "server.getConfig" -> complete(webSocket, id, """{"providers":[],"environment":{"capabilities":$capabilities}}""")
+                                "server.getConfig" -> complete(webSocket, id, """{"providers":[],"environment":{"capabilities":$capabilities}$configExtra}""")
+                                "subscribeServerConfig" -> configStream.trySend(webSocket to id)
                                 "orchestration.subscribeShell" -> { shells.trySend(webSocket to id); chunk(webSocket, id, """{"kind":"snapshot","snapshot":{"projects":[],"threads":[]}},{"kind":"synchronized"}""") }
                                 "subscribeDiscoveredLocalServers" -> {
                                     discoveryCalls.incrementAndGet()
@@ -122,6 +126,66 @@ class PortForwardSessionTest {
             f.client.refreshThreads()
             assertEquals(1, f.discoveryCalls.get())
             assertEquals(ConnectionStatus.Connected, f.client.state.value.connection)
+        }
+    }
+
+    @Test fun theCapabilityAloneNeverDisablesTunnelsOnlyTheServersEffectiveValueDoes() = runBlocking {
+        suspend fun disabledWith(capabilities: String, extra: String): Boolean = Fixture().use { f ->
+            f.capabilities = capabilities; f.configExtra = extra
+            f.connect()
+            f.client.state.value.previewTunnelDisabled
+        }
+        // Current server, setting on, no policy: on. The capability is true there and says nothing else.
+        assertFalse(disabledWith("""{"previewTunnelSetting":true}""", ""","settings":{"enablePreviewTunnel":true}"""))
+        assertFalse(disabledWith("""{"previewTunnelSetting":true}""", ""","settings":{"enablePreviewTunnel":true},"managedPolicy":{"limits":{"previewTunnel":true}}"""))
+        // The setting off, or a policy off, disables.
+        assertTrue(disabledWith("""{"previewTunnelSetting":true}""", ""","settings":{"enablePreviewTunnel":false}"""))
+        assertTrue(disabledWith("""{"previewTunnelSetting":true}""", ""","settings":{"enablePreviewTunnel":true},"managedPolicy":{"limits":{"previewTunnel":false}}"""))
+        // Older servers: no capability, so the tunnel is always on, whatever a setting says.
+        assertFalse(disabledWith("{}", ""","settings":{"enablePreviewTunnel":false}"""))
+        // A capability of false is not "off" either.
+        assertFalse(disabledWith("""{"previewTunnelSetting":false}""", ""","settings":{"enablePreviewTunnel":false}"""))
+        // Unknown is not disabled: absent, null and wrong-typed fields.
+        assertFalse(disabledWith("""{"previewTunnelSetting":true}""", ""))
+        assertFalse(disabledWith("""{"previewTunnelSetting":true}""", ""","settings":{"enablePreviewTunnel":"false"},"managedPolicy":{"limits":{"previewTunnel":"no"}}"""))
+        assertFalse(disabledWith("""{"previewTunnelSetting":true}""", ""","settings":"off","managedPolicy":[1]"""))
+        assertFalse(disabledWith("""{"previewTunnelSetting":true}""", ""","settings":{"enablePreviewTunnel":null},"managedPolicy":{"limits":null}"""))
+        assertFalse(disabledWith("""{"previewTunnelSetting":"true"}""", ""","settings":{"enablePreviewTunnel":false}"""))
+    }
+
+    @Test fun theConfigStreamKeepsTheTunnelStateCurrentAndTheNextConnectionStartsFresh() = runBlocking {
+        Fixture().use { f ->
+            f.configExtra = ""","settings":{"enablePreviewTunnel":true},"managedPolicy":{"limits":{"previewTunnel":true}}"""
+            f.connect()
+            val (ws, id) = withTimeout(5000) { f.configStream.receive() }
+            // The client acks a chunk after handling it, so an ack means its effect is already in the state.
+            suspend fun event(json: String) { Fixture.chunk(ws, id, json); withTimeout(5000) { while (f.acks.receive() != id) {} } }
+            val tunnelsOff = { f.client.state.value.previewTunnelDisabled }
+            assertFalse(tunnelsOff())
+            // A settings update flips it; a malformed one changes nothing.
+            event("""{"version":1,"type":"settingsUpdated","payload":{"settings":{"enablePreviewTunnel":false}}}""")
+            assertTrue(tunnelsOff())
+            event("""{"version":1,"type":"settingsUpdated","payload":{"settings":"broken"}}""")
+            assertTrue(tunnelsOff())
+            event("""{"version":1,"type":"settingsUpdated","payload":{"settings":{"enablePreviewTunnel":true}}}""")
+            assertFalse(tunnelsOff())
+            // A snapshot brings the policy: off by policy while the setting is on.
+            event("""{"version":1,"type":"snapshot","config":{"environment":{"capabilities":{"previewTunnelSetting":true}},"settings":{"enablePreviewTunnel":true},"managedPolicy":{"limits":{"previewTunnel":false}}}}""")
+            assertTrue(tunnelsOff())
+            // A settings update carries no policy and must not forget it; other events change nothing.
+            event("""{"version":1,"type":"settingsUpdated","payload":{"settings":{"enablePreviewTunnel":true}}}""")
+            assertTrue(tunnelsOff())
+            event("""{"version":1,"type":"providerStatuses","payload":{"providers":[]}}""")
+            assertTrue(tunnelsOff())
+            // The policy lifted in a later snapshot.
+            event("""{"version":1,"type":"snapshot","config":{"environment":{"capabilities":{"previewTunnelSetting":true}},"settings":{"enablePreviewTunnel":true}}}""")
+            assertFalse(tunnelsOff())
+            event("""{"version":1,"type":"settingsUpdated","payload":{"settings":{"enablePreviewTunnel":false}}}""")
+            assertTrue(tunnelsOff())
+            f.client.disconnect()
+            f.configExtra = ""","settings":{"enablePreviewTunnel":true}"""
+            f.connect()
+            assertFalse(f.client.state.value.previewTunnelDisabled)
         }
     }
 

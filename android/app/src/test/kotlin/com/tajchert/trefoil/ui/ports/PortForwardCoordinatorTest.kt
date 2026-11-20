@@ -72,13 +72,25 @@ class PortForwardCoordinatorTest {
         assertNull(coordinator.browser.value)
     }
 
-    @Test fun disabledTunnelSettingAndInvalidPortAreRejectedBeforeAnyRequest() = run { client, coordinator, errors ->
+    /** The capability only says the server honours the setting (T3 `previewTunnelSetting`); it never says the tunnel is off. */
+    @Test fun theCapabilityAloneNeverBlocksForwarding() = run { client, coordinator, errors ->
         client.state.update { it.copy(previewTunnelSetting = false) }
         coordinator.openInApp(5173)
         client.state.update { it.copy(previewTunnelSetting = true) }
+        coordinator.openExternal(5173)
+        client.state.update { it.copy(previewTunnelSetting = null) }
+        coordinator.openInApp(5173)
+        assertEquals(listOf(5173, 5173, 5173), client.started)
+        assertTrue(errors.isEmpty())
+    }
+
+    @Test fun aServerConfigThatTurnsTunnelsOffAndInvalidPortsAreRejectedBeforeAnyRequest() = run { client, coordinator, errors ->
+        client.state.update { it.copy(previewTunnelSetting = true, previewTunnelDisabled = true) }
+        coordinator.openInApp(5173)
+        client.state.update { it.copy(previewTunnelDisabled = false) }
         coordinator.openInApp(0); coordinator.openInApp(70_000)
         assertTrue(client.started.isEmpty())
-        assertEquals(3, errors.size)
+        assertEquals(listOf("Browser tunnels are turned off on this T3 server.", "Choose a port from 1 to 65535.", "Choose a port from 1 to 65535."), errors)
     }
 
     @Test fun failedForwardReportsItsErrorAndDoesNotOpenTheBrowser() = run { client, coordinator, errors ->

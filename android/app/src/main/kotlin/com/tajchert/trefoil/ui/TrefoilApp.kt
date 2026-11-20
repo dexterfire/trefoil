@@ -128,7 +128,7 @@ fun TrefoilApp(
         val portsUi = PortsUiState(
             servers = state.localServers.servers, forwards = state.portForwards,
             threadTitles = remember(state.threads) { state.threads.associate { it.id to it.title } },
-            live = state.localServers.live, supported = state.localServers.supported, tunnelSetting = state.previewTunnelSetting,
+            live = state.localServers.live, supported = state.localServers.supported, tunnelsDisabled = state.previewTunnelDisabled,
             canWrite = state.canWrite && state.connection == ConnectionStatus.Connected, selectedThreadId = state.selectedThreadId)
         val portsActions = PortsActions({ showPorts = false }, onOpenPortInApp, onOpenPortExternal, onStopPortForward, onForwardPort)
         var screenFullscreen by rememberSaveable { mutableStateOf(false) }

@@ -25,16 +25,16 @@ object PortsFixtures {
 
     val mixed = PortsUiState(
         servers = listOf(docs, unknown, api, vite), forwards = listOf(activeVite, startingApi, failedDocs, manual),
-        threadTitles = titles, live = true, tunnelSetting = true, selectedThreadId = "t-approval",
+        threadTitles = titles, live = true, selectedThreadId = "t-approval",
     )
-    val empty = PortsUiState(live = true, tunnelSetting = true)
-    val scanning = PortsUiState(live = false, tunnelSetting = true)
+    val empty = PortsUiState(live = true)
+    val scanning = PortsUiState(live = false)
     val unsupported = PortsUiState(supported = false)
-    val disabled = PortsUiState(live = true, tunnelSetting = false)
+    val disabled = PortsUiState(live = true, tunnelsDisabled = true)
     val failed = PortsUiState(
-        servers = listOf(docs), forwards = listOf(failedDocs), threadTitles = titles, live = true, tunnelSetting = true,
+        servers = listOf(docs), forwards = listOf(failedDocs), threadTitles = titles, live = true,
     )
-    val readOnly = PortsUiState(servers = listOf(vite), threadTitles = titles, live = true, tunnelSetting = true, canWrite = false, selectedThreadId = "t-approval")
+    val readOnly = PortsUiState(servers = listOf(vite), threadTitles = titles, live = true, canWrite = false, selectedThreadId = "t-approval")
 
     val actions = PortsActions(onBack = {}, onOpenInApp = {}, onOpenExternal = {}, onStopForward = {}, onForwardManual = {})
 }

@@ -63,8 +63,7 @@ class PortsUiStateTest {
 
     @Test fun forwardingNeedsSupportWritesAndTunnelsNotOff() {
         assertTrue(PortsUiState().canForward)
-        assertTrue(PortsUiState(tunnelSetting = null).canForward)
-        assertFalse(PortsUiState(tunnelSetting = false).canForward)
+        assertFalse(PortsUiState(tunnelsDisabled = true).canForward)
         assertFalse(PortsUiState(canWrite = false).canForward)
         assertFalse(PortsUiState(supported = false).canForward)
     }

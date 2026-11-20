@@ -65,6 +65,34 @@ internal fun discoveredLocalServers(value: JsonObject): LocalServerCatalog? {
 }
 
 /**
+ * What the server config says about the preview tunnel (T3 `allowsPreviewTunnel`, `packages/contracts/src/managedPolicy.ts`):
+ * it serves when `settings.enablePreviewTunnel && managedPolicy?.limits?.previewTunnel !== false`. The capability
+ * `environment.capabilities.previewTunnelSetting` only says the server honours that setting (true on current servers,
+ * absent on older ones, where the tunnel is always on), so it never disables anything by itself: [disabled] needs the
+ * capability to be true and the effective value to be false. A field that is absent or not a boolean is unknown, and
+ * unknown is not disabled; a refused handshake ([PortForwardError.TunnelDisabled]) stays the fallback.
+ *
+ * A snapshot carries all three parts. A `settingsUpdated` event carries only `settings`, so the policy and the
+ * capability are kept from the last snapshot.
+ */
+internal data class PreviewTunnelConfig(val capability: Boolean? = null, val settingEnabled: Boolean? = null, val policyAllows: Boolean? = null) {
+    val disabled: Boolean get() = capability == true && (settingEnabled == false || policyAllows == false)
+
+    /** A full config (`server.getConfig` result or a `subscribeServerConfig` snapshot's `config`). */
+    fun withConfig(config: JsonObject): PreviewTunnelConfig = PreviewTunnelConfig(
+        // The capability is part of the environment descriptor; a snapshot without one keeps what connect read.
+        capability = (config["environment"] as? JsonObject)?.let { (it["capabilities"] as? JsonObject)?.get("previewTunnelSetting").asBoolean() } ?: capability,
+        settingEnabled = (config["settings"] as? JsonObject)?.get("enablePreviewTunnel").asBoolean(),
+        policyAllows = (((config["managedPolicy"] as? JsonObject)?.get("limits") as? JsonObject)?.get("previewTunnel")).asBoolean(),
+    )
+
+    /** A `settingsUpdated` event's `payload.settings`. */
+    fun withSettings(settings: JsonObject): PreviewTunnelConfig = copy(settingEnabled = settings["enablePreviewTunnel"].asBoolean())
+
+    private fun JsonElement?.asBoolean(): Boolean? = (this as? JsonPrimitive)?.takeUnless { it.isString }?.booleanOrNull
+}
+
+/**
  * Classifies a refused `/api/preview/tunnel` upgrade. The T3 markers decide first, because a status alone
  * cannot tell T3 from a proxy in front of it. T3 sets them to exactly "1"; any other value falls through to the status.
  * [status] is null when no HTTP response arrived.

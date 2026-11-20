@@ -76,7 +76,7 @@ class PortForwardCoordinator(
         when {
             port !in 1..65535 -> return onError("Choose a port from 1 to 65535.")
             state.connection != ConnectionStatus.Connected || !state.canWrite -> return onError("Reconnect with write access to open dev servers.")
-            state.previewTunnelSetting == false -> return onError(describe(PortForwardError.TunnelDisabled))
+            state.previewTunnelDisabled -> return onError(describe(PortForwardError.TunnelDisabled))
         }
         val environmentId = state.environment?.id ?: return
         if (!starting.add(port)) return

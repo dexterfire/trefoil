@@ -126,6 +126,8 @@ class T3Client(
     /** Last `directEndpoints` reported for the live connection (null: not reported); snapshots emit only on change. */
     private var directEndpoints: List<DirectEndpointHint>? = null
     private var configSubscription: String? = null
+    /** The live connection's preview-tunnel config, kept current by [serverConfigEvent]. Guarded by [lifecycleLock]. */
+    private var tunnelConfig = PreviewTunnelConfig()
     private var linkStateJob: Job? = null
     /** Whether the first (getConfig + link-state) hint went out; earlier snapshots only update [directEndpoints]. */
     private var initialHintSent = false
@@ -330,7 +332,7 @@ class T3Client(
             val retained = environmentStates[environment.id] ?: ClientState()
             projection = JsonObject(emptyMap())
             update { retained.copy(environment = environment, connection = ConnectionStatus.Connecting, canWrite = false, canRead = false, canReadUsage = false, busy = false, error = null, settlementUndo = null, threadActionsConfigured = false, activeRoute = null,
-                localServers = LocalServerCatalog(), previewTunnelSetting = null, portForwards = emptyList()) }
+                localServers = LocalServerCatalog(), previewTunnelSetting = null, previewTunnelDisabled = false, portForwards = emptyList()) }
         }
         try {
             val (route, base, session) = selectRoute(environment, routes, epoch)
@@ -380,15 +382,16 @@ class T3Client(
             previewAuthorized = permissions?.any { it.jsonPrimitive.content == "preview:operate" } == true
             serverBrowser = config.obj("environment").obj("capabilities")["serverBrowser"]?.jsonPrimitive?.booleanOrNull == true
             val threadStop = (config.obj("environment").obj("capabilities")["threadStop"] as? JsonPrimitive)?.booleanOrNull == true
-            // Says whether the server honors `enablePreviewTunnel`; absent on servers where the tunnel cannot be switched off.
-            val tunnelSetting = (config.obj("environment").obj("capabilities")["previewTunnelSetting"] as? JsonPrimitive)?.takeUnless { it.isString }?.booleanOrNull
+            // The capability only says the server honors `enablePreviewTunnel` (absent where the tunnel cannot be switched off);
+            // whether the tunnel is off comes from the config's effective value.
+            val tunnel = PreviewTunnelConfig().withConfig(config)
             val models = config.objects("providers").filter { it["enabled"]?.jsonPrimitive?.booleanOrNull != false }.flatMap { provider ->
                 val modes = supportedRuntimeModes(provider)
                 provider.objects("models").map { ModelOption(provider.string("instanceId"), it.string("slug"), it.string("name"), modes, modelOptionDescriptors(it)) }
             }
             val defaultMode = RuntimeMode.fromWire(config.obj("settings").string("defaultRuntimeMode"))
-            synchronized(lifecycleLock) { check(epoch == generation) { "Connection was cancelled" }; directEndpoints = directEndpointHints(config) }
-            update { it.copy(connection = ConnectionStatus.Connected, activeRoute = route, canReadUsage = mayReadUsage, models = models, providers = providerInstances(config), defaultRuntimeMode = defaultMode, threadStopSupported = threadStop, previewTunnelSetting = tunnelSetting,
+            synchronized(lifecycleLock) { check(epoch == generation) { "Connection was cancelled" }; directEndpoints = directEndpointHints(config); tunnelConfig = tunnel }
+            update { it.copy(connection = ConnectionStatus.Connected, activeRoute = route, canReadUsage = mayReadUsage, models = models, providers = providerInstances(config), defaultRuntimeMode = defaultMode, threadStopSupported = threadStop, previewTunnelSetting = tunnel.capability, previewTunnelDisabled = tunnel.disabled,
                 selectedModel = it.selectedModel?.let { selected -> models.firstOrNull { m -> m.instanceId == selected.instanceId && m.model == selected.model } ?: selected }) }
             subscribeShell(epoch, environment.id, shellOrigin(environment.id, config))
             startRouteHints(epoch, environment, base)
@@ -432,13 +435,28 @@ class T3Client(
         }
     }
 
-    /** Ignores every event except a `snapshot`; one without `directEndpoints` says nothing and keeps the last hint. */
+    /**
+     * A `snapshot` feeds the route hints and the preview-tunnel config; a `settingsUpdated` event only the latter (it
+     * carries no policy, so the last snapshot's policy stands). Every other event is ignored. A snapshot without
+     * `directEndpoints` says nothing and keeps the last hint.
+     */
     private fun serverConfigEvent(epoch: Long, environmentId: String, event: JsonObject) {
-        if (epoch != generation || event.string("type") != "snapshot") return
+        if (epoch != generation) return
+        when (event.string("type")) {
+            "settingsUpdated" -> ((event["payload"] as? JsonObject)?.get("settings") as? JsonObject)?.let { applyTunnelConfig(tunnelConfig.withSettings(it)) }
+            "snapshot" -> (event["config"] as? JsonObject)?.let { applyTunnelConfig(tunnelConfig.withConfig(it)) }
+        }
+        if (event.string("type") != "snapshot") return
         val endpoints = directEndpointHints(event.obj("config")) ?: return
         if (endpoints == directEndpoints) return
         directEndpoints = endpoints
         if (initialHintSent) hints.tryEmit(RouteHints(environmentId, endpoints, TunnelHint.Unknown))
+    }
+
+    /** Publishes the preview-tunnel config. Caller holds [lifecycleLock]. */
+    private fun applyTunnelConfig(config: PreviewTunnelConfig) {
+        tunnelConfig = config
+        if (state.value.previewTunnelDisabled != config.disabled) update { it.copy(previewTunnelDisabled = config.disabled) }
     }
 
     /** `GET /api/connect/link-state` on the verified route; any failure is [TunnelHint.Unknown] and never fails the connection. */
@@ -542,7 +560,7 @@ class T3Client(
         pending.values.forEach { it.completeExceptionally(IllegalStateException(message)) }; pending.clear()
         streams.clear(); heartbeat?.cancel(); socket?.cancel(); socket = null
     }
-    private fun resetRoute() { endDiscovery(); activeBase = null; directEndpoints = null; initialHintSent = false; configSubscription = null; linkStateJob?.cancel(); linkStateJob = null; renewJob?.cancel(); renewJob = null }
+    private fun resetRoute() { endDiscovery(); tunnelConfig = PreviewTunnelConfig(); activeBase = null; directEndpoints = null; initialHintSent = false; configSubscription = null; linkStateJob?.cancel(); linkStateJob = null; renewJob?.cancel(); renewJob = null }
     override suspend fun disconnect() = disconnectNow()
     /** [reason] replaces any stale error when the disconnect was not requested by the user. */
     private fun disconnectNow(reason: String? = null) = synchronized(lifecycleLock) {

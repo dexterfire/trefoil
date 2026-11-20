@@ -208,8 +208,19 @@ data class ClientState(
     val activeRoute: EnvironmentRoute? = null,
     /** Dev servers T3 discovered on the environment host; see PortModels.kt. */
     val localServers: LocalServerCatalog = LocalServerCatalog(),
-    /** Server `environment.capabilities.previewTunnelSetting`: true/false when reported, null when the server did not say. */
+    /**
+     * Server `environment.capabilities.previewTunnelSetting`: true/false when reported, null when the server did not say.
+     * It only says the server honours the `enablePreviewTunnel` setting (true on current servers, absent on older ones,
+     * where the tunnel is always on). It never says whether the tunnel is on; see [previewTunnelDisabled].
+     */
     val previewTunnelSetting: Boolean? = null,
+    /**
+     * The server config says the tunnel is off: [previewTunnelSetting] is true and `settings.enablePreviewTunnel` is
+     * false or `managedPolicy.limits.previewTunnel` is false (T3 `allowsPreviewTunnel`). Absent or wrong-typed fields
+     * leave it false, so only a `TunnelDisabled` handshake can still say the tunnel is off. Kept current from
+     * `subscribeServerConfig`; cleared on disconnect.
+     */
+    val previewTunnelDisabled: Boolean = false,
     /** Port forwards of the live connection, ordered by start. Cleared on disconnect and environment switch. */
     val portForwards: List<PortForward> = emptyList(),
 )
