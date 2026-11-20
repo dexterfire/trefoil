@@ -13,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -123,6 +124,7 @@ class EnvironmentTokenRenewer(
         // the caller was cancelled meanwhile, because the host has already moved the session.
         suspend fun exchange(request: Request): Pair<Int, JsonObject?> {
             val call = http.newCall(request)
+            val caller = currentCoroutineContext().job
             val abort = CoroutineScope(currentCoroutineContext()).launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
                 try { awaitCancellation() } finally { call.cancel() }
             }
@@ -135,7 +137,8 @@ class EnvironmentTokenRenewer(
                             response.code to (EffectRpc.json.parseToJsonElement(response.body?.string().orEmpty()) as? JsonObject)
                         }
                     } catch (error: IOException) {
-                        if (call.isCanceled()) throw CancellationException("Token renewal cancelled").apply { initCause(error) }
+                        // OkHttp's own call timeout also cancels the call; only the caller's cancellation is a cancellation.
+                        if (caller.isCancelled) throw CancellationException("Token renewal cancelled").apply { initCause(error) }
                         throw TokenRenewalUnavailable(error)
                     } catch (error: kotlinx.serialization.SerializationException) { throw TokenRenewalUnavailable(error) }
                 } }

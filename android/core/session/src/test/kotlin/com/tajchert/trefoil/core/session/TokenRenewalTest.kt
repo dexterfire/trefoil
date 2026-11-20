@@ -149,10 +149,15 @@ class TokenRenewalTest {
         try {
             server.enqueue(renewal("late-secret").setSocketPolicy(SocketPolicy.NO_RESPONSE))
             val expired = environment(server.url("/").toString(), System.currentTimeMillis() - 1)
+            val caller = launch(Dispatchers.Default) { tokens.fresh(expired, server.url("/")) }
+            // Once the request is at the server (and has taken the unanswered response), the route probe gives up: the
+            // renewal must stop with it, not run out its own 15 s timeout.
+            assertNotNull(server.takeRequest(5, TimeUnit.SECONDS))
             val started = System.nanoTime()
-            // A short route probe gives up: the renewal must stop with it, not run out its own 15 s timeout.
-            assertNull(withTimeoutOrNull(300) { tokens.fresh(expired, server.url("/")) })
-            assertTrue("Cancellation ends the call promptly", TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 3_000)
+            caller.cancel()
+            assertNotNull("Cancellation ends the call promptly", withTimeoutOrNull(3_000) { caller.join() })
+            assertTrue(caller.isCancelled)
+            assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 3_000)
             server.enqueue(renewal("new-secret"))
             val next = withTimeout(3_000) { tokens.fresh(expired, server.url("/")) }
             assertEquals("The lock is free for the next caller", "new-secret", next.accessToken)
@@ -163,20 +168,34 @@ class TokenRenewalTest {
     @Test fun responseReceivedBeforeCancellationIsStillStored() = runBlocking {
         val server = MockWebServer(); server.start()
         val saved = CopyOnWriteArrayList<Saved>()
-        var caller: Job? = null
+        lateinit var caller: Job
         // The response body is fully read, then the caller is cancelled before the renewer sees the result.
         val http = OkHttpClient.Builder().eventListener(object : EventListener() {
-            override fun responseBodyEnd(call: Call, byteCount: Long) { caller!!.cancel() }
+            override fun responseBodyEnd(call: Call, byteCount: Long) { caller.cancel() }
         }).build()
         val tokens = EnvironmentTokenRenewer({ key }, http, onRenewed = { renewed, replaces -> saved += Saved(renewed, replaces) })
         try {
             server.enqueue(renewal("new-secret"))
             val expired = environment(server.url("/").toString(), System.currentTimeMillis() - 1)
-            caller = launch(Dispatchers.Default) { tokens.fresh(expired, server.url("/")) }
-            caller.join()
+            // Assigned before it starts, so the listener always sees it.
+            caller = launch(Dispatchers.Default, start = CoroutineStart.LAZY) { tokens.fresh(expired, server.url("/")) }
+            caller.start(); caller.join()
             assertEquals(listOf("new-secret"), saved.map { it.renewed.accessToken })
             assertEquals(setOf("old-secret"), saved.single().replaces)
             assertEquals("new-secret", tokens.current(expired).accessToken)
+        } finally { server.shutdown() }
+    }
+
+    @Test fun ownCallTimeoutWithAnActiveCallerIsUnavailableNotCancelled() = runBlocking {
+        val server = MockWebServer(); server.start()
+        // OkHttp's call timeout cancels the call itself; the caller is still active and must get a retriable failure.
+        val tokens = EnvironmentTokenRenewer({ key }, timeoutMillis = 200)
+        try {
+            server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+            val expired = environment(server.url("/").toString(), System.currentTimeMillis() - 1)
+            val outcome = runCatching { tokens.fresh(expired, server.url("/")) }.exceptionOrNull()
+            assertTrue("Got $outcome", outcome is TokenRenewalUnavailable)
+            assertTrue(isActive)
         } finally { server.shutdown() }
     }
 
