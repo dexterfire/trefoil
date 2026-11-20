@@ -186,6 +186,31 @@ class TokenRenewalTest {
         } finally { server.shutdown() }
     }
 
+    @Test fun lateRenewalOfAnOlderSessionIsNotAdoptedByANewerPairing() = runBlocking {
+        val server = MockWebServer(); server.start()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val tokens = EnvironmentTokenRenewer({ key })
+        val client = T3Client(scope, tokens = tokens)
+        @Suppress("UNCHECKED_CAST")
+        val mutable = T3Client::class.java.getDeclaredField("mutable").apply { isAccessible = true }.get(client) as kotlinx.coroutines.flow.MutableStateFlow<ClientState>
+        val adopt = T3Client::class.java.getDeclaredMethod("adoptToken", SavedEnvironment::class.java).apply { isAccessible = true }
+        try {
+            server.enqueue(renewal("new-secret"))
+            val expired = environment(server.url("/").toString(), System.currentTimeMillis() - 1)
+            // A renewal of the old session finishes for a caller that no longer matters...
+            val renewed = tokens.fresh(expired, server.url("/"))
+            // ...while the same machine is already live under a newer pairing.
+            val paired = expired.copy(accessToken = "paired-again", accessTokenExpiresAtMillis = System.currentTimeMillis() + 3_600_000)
+            mutable.value = ClientState(environment = paired, connection = ConnectionStatus.Connected)
+            adopt.invoke(client, renewed)
+            assertEquals("paired-again", client.state.value.environment?.accessToken)
+            // The same session's live copy still adopts its renewal.
+            mutable.value = ClientState(environment = expired, connection = ConnectionStatus.Connected)
+            adopt.invoke(client, renewed)
+            assertEquals("new-secret", client.state.value.environment?.accessToken)
+        } finally { client.close(); scope.cancel(); server.shutdown() }
+    }
+
     @Test fun ownCallTimeoutWithAnActiveCallerIsUnavailableNotCancelled() = runBlocking {
         val server = MockWebServer(); server.start()
         // OkHttp's call timeout cancels the call itself; the caller is still active and must get a retriable failure.

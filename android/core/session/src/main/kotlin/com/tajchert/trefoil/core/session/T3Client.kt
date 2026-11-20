@@ -201,9 +201,15 @@ class T3Client(
             tokens.current(environment).takeUnless(tokens::isExpired) ?: throw error
         }
     }
-    /** A renewal keeps the live session (and its socket); only the connected environment's token fields change. */
+    /**
+     * A renewal keeps the live session (and its socket); only the connected environment's token fields change, and only
+     * when [renewed] renews the live token's own session: a late renewal of an older session never replaces a newer pairing.
+     */
     private fun adoptToken(renewed: SavedEnvironment) = synchronized(lifecycleLock) {
-        update { state -> state.environment?.takeIf { it.id == renewed.id && it.accessToken != renewed.accessToken }?.let { state.copy(environment = it.withTokenOf(renewed)) } ?: state }
+        update { state ->
+            val live = state.environment?.takeIf { it.id == renewed.id && it.accessToken != renewed.accessToken } ?: return@update state
+            tokens.current(live).takeIf { it.accessToken == renewed.accessToken }?.let { state.copy(environment = live.withTokenOf(renewed)) } ?: state
+        }
     }
     /**
      * Renews the live connection's DPoP token [EnvironmentTokenRenewer.RENEW_BEFORE_EXPIRY_MS] before it expires, at the
