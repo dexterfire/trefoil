@@ -218,7 +218,7 @@ data class ClientState(
      * The server config says the tunnel is off: [previewTunnelSetting] is true and `settings.enablePreviewTunnel` is
      * false or `managedPolicy.limits.previewTunnel` is false (T3 `allowsPreviewTunnel`). Absent or wrong-typed fields
      * leave it false, so only a `TunnelDisabled` handshake can still say the tunnel is off. Kept current from
-     * `subscribeServerConfig`; cleared on disconnect.
+     * `subscribeServerConfig`; false again when that stream is not live, and cleared on disconnect.
      */
     val previewTunnelDisabled: Boolean = false,
     /** Port forwards of the live connection, ordered by start. Cleared on disconnect and environment switch. */

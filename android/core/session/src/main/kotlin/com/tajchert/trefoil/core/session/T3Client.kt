@@ -427,6 +427,7 @@ class T3Client(
     private fun startRouteHints(epoch: Long, environment: SavedEnvironment, base: HttpUrl) = synchronized(lifecycleLock) {
         if (epoch != generation) return@synchronized
         configSubscription = runCatching { subscribe("subscribeServerConfig", buildJsonObject {}) { event -> serverConfigEvent(epoch, environment.id, event) } }.getOrNull()
+        if (configSubscription == null) configStreamLost()
         linkStateJob = scope.launch {
             val tunnel = linkState(base, environment)
             synchronized(lifecycleLock) {
@@ -452,6 +453,12 @@ class T3Client(
         directEndpoints = endpoints
         if (initialHintSent) hints.tryEmit(RouteHints(environmentId, endpoints, TunnelHint.Unknown))
     }
+
+    /**
+     * The config stream is not live (it never started, ended or failed), so nothing keeps the connect-time setting and
+     * policy current: they stop counting, and the `TunnelDisabled` handshake decides. Caller holds [lifecycleLock].
+     */
+    private fun configStreamLost() = applyTunnelConfig(tunnelConfig.copy(settingEnabled = null, policyAllows = null))
 
     /** Publishes the preview-tunnel config. Caller holds [lifecycleLock]. */
     private fun applyTunnelConfig(config: PreviewTunnelConfig) {
@@ -533,7 +540,7 @@ class T3Client(
                 else result?.completeExceptionally(if (exitInterruptedOnly(exit)) RequestInterrupted() else ServerRejected())
                 if (streams.remove(id) != null) {
                     // Route hints are optional: an older server rejecting the config stream, or its end, leaves the session alone.
-                    if (id == configSubscription) configSubscription = null
+                    if (id == configSubscription) { configSubscription = null; configStreamLost() }
                     else if (id == discoverySubscription) discoveryEnded(exit)
                     else if (optionalScreenStreams.remove(id)) {
                         if (id == previewScreenSubscription) { previewScreenSubscription = null; browserScreensFresh = false }

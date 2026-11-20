@@ -189,6 +189,25 @@ class PortForwardSessionTest {
         }
     }
 
+    /** Nothing keeps the flag current once the config stream is gone, so it must not stay frozen at "off". */
+    @Test fun aConfigStreamThatEndsOrFailsReturnsTheTunnelStateToNotKnownToBeDisabled() = runBlocking {
+        for (exit in listOf(
+            """{"_tag":"Failure","cause":[{"_tag":"Die","defect":"Unable to load server config"}]}""",
+            """{"_tag":"Success","value":null}""",
+        )) Fixture().use { f ->
+            f.configExtra = ""","settings":{"enablePreviewTunnel":false}"""
+            f.connect()
+            val (ws, id) = withTimeout(5000) { f.configStream.receive() }
+            assertTrue(f.client.state.value.previewTunnelDisabled)
+            ws.send("""{"_tag":"Exit","requestId":"$id","exit":$exit}""")
+            withTimeout(5000) { f.client.state.first { !it.previewTunnelDisabled } }
+            // The capability is still what the server said, and the session is untouched.
+            assertEquals(true, f.client.state.value.previewTunnelSetting)
+            assertEquals(ConnectionStatus.Connected, f.client.state.value.connection)
+            assertNull(f.client.state.value.error)
+        }
+    }
+
     @Test fun forwardsCarryBytesShareTheTicketAndStopOnDisconnect() = runBlocking {
         Fixture().use { f ->
             try { f.client.startPortForward(5173); fail("Forwarding needs a connection") } catch (_: IllegalStateException) {}

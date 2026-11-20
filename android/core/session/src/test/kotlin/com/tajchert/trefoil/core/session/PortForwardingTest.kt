@@ -422,13 +422,17 @@ class PortForwardingTest {
 
     @Test fun aForwardThatLostOneListenerFailsInsteadOfLeavingItsAddressFree() = runBlocking {
         TunnelFixture().use { f ->
+            Assume.assumeTrue("No IPv6 loopback on this machine", ipv6LoopbackUsable())
+            // One port on both families, like a real dual-stack forward.
             val v4 = ServerSocket(0, 50, loopback)
-            val second = ServerSocket(0, 50, loopback)
-            val forwarder = LoopbackPortForwarder("env", 4012, f.http, f::tunnelUrl, f.tickets, {}, binder = { LoopbackListeners(listOf(v4, second), dualStack = true) })
+            val v6 = try { ServerSocket(v4.localPort, 50, ipv6Loopback) } catch (error: IOException) { v4.close(); Assume.assumeNoException(error); return@use }
+            val forwarder = LoopbackPortForwarder("env", 4012, f.http, f::tunnelUrl, f.tickets, {}, binder = { LoopbackListeners(listOf(v4, v6), dualStack = true) })
             assertTrue(forwarder.bind())
-            second.close()
+            v6.close()
             waitFor { forwarder.snapshot().status == PortForwardStatus.Failed }
             assertEquals(PortForwardError.LocalBindFailed, forwarder.snapshot().error)
+            // Failed is published before the surviving listener is closed, so wait for that close.
+            waitFor { v4.isClosed }
             assertTrue(v4.isClosed)
         }
     }
@@ -521,9 +525,12 @@ class PortForwardingTest {
     }
     private fun Socket.readText(count: Int) = String(readBytes(count))
     private fun assertClosed(socket: Socket) {
-        // Drains bytes already delivered; the connection must then end (EOF or reset) within the socket timeout.
+        // Drains bytes already delivered; the connection must then end with EOF or a reset. A read that merely times
+        // out means the connection is still established, which is not closed.
         val result = try { val input = socket.getInputStream(); var next = input.read(); var drained = 0
-            while (next >= 0 && drained++ < 1_000_000) next = input.read(); next } catch (_: IOException) { -1 }
+            while (next >= 0 && drained++ < 1_000_000) next = input.read(); next }
+        catch (_: java.net.SocketTimeoutException) { fail("Socket is still open: the read timed out"); return }
+        catch (_: IOException) { -1 }
         assertEquals(-1, result)
     }
     private fun assertRefused(port: Int) {
