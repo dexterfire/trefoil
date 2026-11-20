@@ -9,6 +9,9 @@ import com.tajchert.trefoil.core.session.EnvironmentProbe
 import com.tajchert.trefoil.core.session.EnvironmentTokenRenewer
 import com.tajchert.trefoil.core.session.T3Client
 import com.tajchert.trefoil.core.session.withTokenOf
+import com.tajchert.trefoil.core.session.ComposerDraft
+import com.tajchert.trefoil.core.session.ComposerDraftKey
+import com.tajchert.trefoil.core.session.ComposerDraftStore
 import com.tajchert.trefoil.core.session.ThreadDraftController
 import com.tajchert.trefoil.core.ssh.SshHostKeyException
 import com.tajchert.trefoil.core.ssh.SshConnectionException
@@ -16,6 +19,7 @@ import com.tajchert.trefoil.core.ssh.SshTunnel
 import com.tajchert.trefoil.core.ssh.SshTunnelConnector
 import com.tajchert.trefoil.keepalive.ConnectionKeepAlive
 import com.tajchert.trefoil.security.DeviceDpopKey
+import com.tajchert.trefoil.security.ComposerDraftFileStore
 import com.tajchert.trefoil.security.EnvironmentVault
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -68,11 +72,30 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     val connectionAttempt = _connectionAttempt.asStateFlow()
     /** Mutations started here or by [drafts] that have not settled; a route switch waits for zero. */
     private val mutationsInFlight = AtomicInteger()
-    private val drafts = ThreadDraftController(viewModelScope, MutationTrackingClient(client, mutationsInFlight)) { _notice.value = it }
+    private val composerDraftStore = ComposerDraftStore(ComposerDraftFileStore(application), viewModelScope)
+    /** Local unsent composer text with content, per thread reply and per (environment, project) new thread; never synced. */
+    val composerDrafts: StateFlow<Map<ComposerDraftKey, ComposerDraft>> = composerDraftStore.drafts
+    private val drafts = ThreadDraftController(viewModelScope, ComposerDraftSettlingClient(MutationTrackingClient(client, mutationsInFlight),
+        onSent = { composerDraftStore.clear(it) }, onLaunched = { composerDraftStore.clear(it) })) { _notice.value = it }
     /** Unsent new conversation; while non-null the UI shows the draft instead of the selected thread. */
     val draft: StateFlow<ThreadDraft?> = drafts.draft
     /** Emits once for every send (draft or thread) that did not deliver; the composer must leave its pending state. */
     val sendFailed: SharedFlow<Unit> = drafts.sendFailed
+    init {
+        // A launch reconciled as created after an uncertain outcome closes the draft with its thread listed.
+        viewModelScope.launch {
+            var open: Pair<ThreadDraft, String?>? = null
+            drafts.draft.collect { current ->
+                val closed = open
+                open = current?.let { it to drafts.environmentId }
+                if (current != null || closed == null) return@collect
+                val (pending, environmentId) = closed
+                val state = client.state.value
+                if (environmentId != null && state.environment?.id == environmentId && state.threads.any { it.id == pending.threadId })
+                    composerDraftStore.clear(ComposerDraftKey.NewThread(environmentId, pending.projectId))
+            }
+        }
+    }
     private val _sshHostKey = MutableStateFlow<SshHostKey?>(null)
     val sshHostKey = _sshHostKey.asStateFlow()
     private val _sshLogin = MutableStateFlow<SshConnectionInput?>(null)
@@ -465,6 +488,17 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     fun respond(id: String, decision: String, answers: Map<String,List<String>>) = mutation("Response outcome is uncertain. Check the request status before responding again.") { client.respond(id, decision, answers) }
     /** Opens a local draft; no server mutation until the first send. */
     fun startDraft(draft: ThreadDraft) = drafts.start(draft)
+    /** The composer draft for [key], including a NewThread draft that holds only sheet settings. */
+    fun composerDraft(key: ComposerDraftKey): ComposerDraft? = composerDraftStore.get(key)
+    /** Writes through the composer state (debounced); blank text without settings removes it. Allowed while disconnected. */
+    fun updateComposerDraft(key: ComposerDraftKey, text: String, modelInstanceId: String? = null, model: String? = null, runtimeMode: String? = null, effort: String? = null) =
+        composerDraftStore.update(key, text, modelInstanceId, model, runtimeMode, effort)
+    fun clearComposerDraft(key: ComposerDraftKey) = composerDraftStore.clear(key)
+    /** Moves the sheet's draft to another project; the old key stays when this sheet session did not create it. */
+    fun moveComposerDraft(from: ComposerDraftKey, to: ComposerDraftKey, keepSource: Boolean) = composerDraftStore.move(from, to, keepSource)
+    /** Undo of a discard. */
+    fun restoreComposerDraft(draft: ComposerDraft) = composerDraftStore.restore(draft)
+    fun flushComposerDrafts() { viewModelScope.launch { composerDraftStore.flush() } }
     fun cancelDraft() = clearDraft()
     private fun clearDraft() = drafts.clear()
     /** Draft: updates locally. Selected thread: dispatches `thread.runtime-mode.set`. */
@@ -547,6 +581,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         }
     }
     fun forget(environment: SavedEnvironment) = action("Could not remove saved credentials.") {
+        composerDraftStore.clearEnvironment(environment.id)
         if (drafts.environmentId == environment.id || state.value.environment?.id == environment.id) clearDraft()
         if (selectedEnvironment?.id == environment.id || state.value.environment?.id == environment.id) { cancelSsh(); keepAliveLatched = true }
         if (resumeEnvironment?.id == environment.id) resumeEnvironment = null
@@ -571,6 +606,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     fun setThreadShown(shown: Boolean) { threadShown = shown; updateThreadViewing() }
     private fun updateThreadViewing() = client.setThreadViewing(foreground && threadShown)
     fun pause() {
+        flushComposerDrafts()
         if (!foreground) return
         screenSessions.pause()
         foreground = false
@@ -853,6 +889,8 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     }
 
     override fun onCleared() {
+        // viewModelScope is already cancelled here; the store's flush needs no scope of its own.
+        CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).launch { composerDraftStore.flush() }
         if (keepAlive) { _keepAliveActive.value = false; try { keepAliveControl.stop(getApplication()) } catch (_: Exception) {} }
         widgetSync.close()
         probeJob?.cancel()
@@ -978,6 +1016,27 @@ internal fun applyRouteHints(environments: List<SavedEnvironment>, hints: RouteH
 /** The vault's learned routes for the same machine win over this copy's (re-pairing, or a copy older than the vault). */
 internal fun SavedEnvironment.withLearnedRoutesOf(environments: List<SavedEnvironment>): SavedEnvironment =
     environments.firstOrNull { it.id == id }?.let { copy(routes = it.routes) } ?: this
+
+/**
+ * Clears composer drafts once [ThreadDraftController]'s sends are accepted: the Reply draft of the thread the
+ * message went to, the NewThread draft of the launched project. Failed or uncertain sends keep them.
+ */
+internal class ComposerDraftSettlingClient(
+    private val inner: TrefoilClient,
+    private val onSent: (ComposerDraftKey.Reply) -> Unit,
+    private val onLaunched: (ComposerDraftKey.NewThread) -> Unit,
+) : TrefoilClient by inner {
+    override suspend fun sendMessage(text: String) {
+        val state = inner.state.value
+        val key = state.environment?.id?.let { environment -> state.selectedThreadId?.let { ComposerDraftKey.Reply(environment, it) } }
+        inner.sendMessage(text)
+        key?.let(onSent)
+    }
+    override suspend fun launchThread(draft: ThreadDraft, firstMessage: String): String {
+        val environment = inner.state.value.environment?.id
+        return inner.launchThread(draft, firstMessage).also { environment?.let { onLaunched(ComposerDraftKey.NewThread(it, draft.projectId)) } }
+    }
+}
 
 /** Counts the mutations [ThreadDraftController] sends, so a route switch can wait for them to settle. */
 internal class MutationTrackingClient(private val inner: TrefoilClient, private val inFlight: AtomicInteger) : TrefoilClient by inner {

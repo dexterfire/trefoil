@@ -3,6 +3,7 @@ package com.tajchert.trefoil
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.core.model.RouteKind.*
 import com.tajchert.trefoil.core.model.RouteSource.*
+import com.tajchert.trefoil.core.session.ComposerDraftKey
 import com.tajchert.trefoil.core.ssh.SshConnectionException
 import com.tajchert.trefoil.core.ssh.SshHostKeyException
 import kotlinx.coroutines.CompletableDeferred
@@ -122,8 +123,18 @@ class ConnectionPlanTest {
         assertEquals(0, inFlight.get())
     }
 
-    private class SendOnlyClient(private val onSend: suspend () -> Unit) : TrefoilClient {
-        override val state: StateFlow<ClientState> = MutableStateFlow(ClientState())
+    @Test fun composerReplyDraftClearsOnlyAfterAcceptedSend() = runBlocking {
+        val state = MutableStateFlow(ClientState(environment = SavedEnvironment("env", "Mac", "https://mac.example/", "token"), selectedThreadId = "t1"))
+        val cleared = mutableListOf<ComposerDraftKey>()
+        val failing = ComposerDraftSettlingClient(SendOnlyClient(state) { error("boom") }, onSent = { cleared += it }, onLaunched = { cleared += it })
+        assertTrue(runCatching { failing.sendMessage("fixture") }.isFailure)
+        assertTrue(cleared.isEmpty())
+        val ok = ComposerDraftSettlingClient(SendOnlyClient(state) { state.value = state.value.copy(selectedThreadId = "t2") }, onSent = { cleared += it }, onLaunched = { cleared += it })
+        ok.sendMessage("fixture")
+        assertEquals("the thread the message went to", listOf<ComposerDraftKey>(ComposerDraftKey.Reply("env", "t1")), cleared)
+    }
+
+    private class SendOnlyClient(override val state: StateFlow<ClientState> = MutableStateFlow(ClientState()), private val onSend: suspend () -> Unit) : TrefoilClient {
         override suspend fun pair(pairingUrl: String, name: String, allowInsecureHttp: Boolean) = error("unused")
         override suspend fun connect(environment: SavedEnvironment) = error("unused")
         override suspend fun disconnect() = error("unused")
