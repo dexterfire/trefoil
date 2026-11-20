@@ -72,28 +72,22 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     val connectionAttempt = _connectionAttempt.asStateFlow()
     /** Mutations started here or by [drafts] that have not settled; a route switch waits for zero. */
     private val mutationsInFlight = AtomicInteger()
-    private val composerDraftStore = ComposerDraftStore(ComposerDraftFileStore(application), viewModelScope)
+    /** Process-wide: its load and final write outlive this view model, and every screen shares one map and write queue. */
+    private val composerDraftStore = ComposerDraftFileStore.get(application)
     /** Local unsent composer text with content, per thread reply and per (environment, project) new thread; never synced. */
     val composerDrafts: StateFlow<Map<ComposerDraftKey, ComposerDraft>> = composerDraftStore.drafts
-    private val drafts = ThreadDraftController(viewModelScope, ComposerDraftSettlingClient(MutationTrackingClient(client, mutationsInFlight),
-        onSent = { composerDraftStore.clear(it) }, onLaunched = { composerDraftStore.clear(it) })) { _notice.value = it }
+    private val drafts = ThreadDraftController(viewModelScope, ComposerDraftSettlingClient(MutationTrackingClient(client, mutationsInFlight), composerDraftStore)) { _notice.value = it }
     /** Unsent new conversation; while non-null the UI shows the draft instead of the selected thread. */
     val draft: StateFlow<ThreadDraft?> = drafts.draft
     /** Emits once for every send (draft or thread) that did not deliver; the composer must leave its pending state. */
     val sendFailed: SharedFlow<Unit> = drafts.sendFailed
     init {
-        // A launch reconciled as created after an uncertain outcome closes the draft with its thread listed.
+        // A launch whose thread a connected snapshot lists is settled, also one restored from an earlier session.
         viewModelScope.launch {
-            var open: Pair<ThreadDraft, String?>? = null
-            drafts.draft.collect { current ->
-                val closed = open
-                open = current?.let { it to drafts.environmentId }
-                if (current != null || closed == null) return@collect
-                val (pending, environmentId) = closed
-                val state = client.state.value
-                if (environmentId != null && state.environment?.id == environmentId && state.threads.any { it.id == pending.threadId })
-                    composerDraftStore.clear(ComposerDraftKey.NewThread(environmentId, pending.projectId))
-            }
+            client.state.map { state -> state.environment?.id?.takeIf { state.connection == ConnectionStatus.Connected }?.let { it to state.threads.mapTo(HashSet()) { t -> t.id } } }
+                .distinctUntilChanged()
+                .combine(composerDraftStore.drafts) { snapshot, _ -> snapshot }
+                .collect { snapshot -> snapshot?.let { (environmentId, threadIds) -> composerDraftStore.reconcileLaunches(environmentId, threadIds) } }
         }
     }
     private val _sshHostKey = MutableStateFlow<SshHostKey?>(null)
@@ -487,7 +481,11 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     fun undoSettlement(undo: SettlementUndo) = mutation("Could not undo settlement. Check the thread status.") { client.undoSettlement(undo) }
     fun respond(id: String, decision: String, answers: Map<String,List<String>>) = mutation("Response outcome is uncertain. Check the request status before responding again.") { client.respond(id, decision, answers) }
     /** Opens a local draft; no server mutation until the first send. */
-    fun startDraft(draft: ThreadDraft) = drafts.start(draft)
+    fun startDraft(draft: ThreadDraft) {
+        // A draft whose earlier launch is still uncertain relaunches with the same ids, so the server resumes instead of duplicating.
+        val launch = state.value.environment?.id?.let { composerDraftStore.get(ComposerDraftKey.NewThread(it, draft.projectId))?.pendingLaunch }
+        drafts.start(if (launch == null) draft else draft.copy(threadId = launch.threadId, commandId = launch.commandId))
+    }
     /** The composer draft for [key], including a NewThread draft that holds only sheet settings. */
     fun composerDraft(key: ComposerDraftKey): ComposerDraft? = composerDraftStore.get(key)
     /** Writes through the composer state (debounced); blank text without settings removes it. Allowed while disconnected. */
@@ -498,7 +496,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     fun moveComposerDraft(from: ComposerDraftKey, to: ComposerDraftKey, keepSource: Boolean) = composerDraftStore.move(from, to, keepSource)
     /** Undo of a discard. */
     fun restoreComposerDraft(draft: ComposerDraft) = composerDraftStore.restore(draft)
-    fun flushComposerDrafts() { viewModelScope.launch { composerDraftStore.flush() } }
+    fun flushComposerDrafts() { composerDraftStore.flushInBackground() }
     fun cancelDraft() = clearDraft()
     private fun clearDraft() = drafts.clear()
     /** Draft: updates locally. Selected thread: dispatches `thread.runtime-mode.set`. */
@@ -889,8 +887,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     }
 
     override fun onCleared() {
-        // viewModelScope is already cancelled here; the store's flush needs no scope of its own.
-        CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).launch { composerDraftStore.flush() }
+        flushComposerDrafts() // on the store's own scope; viewModelScope is already cancelled
         if (keepAlive) { _keepAliveActive.value = false; try { keepAliveControl.stop(getApplication()) } catch (_: Exception) {} }
         widgetSync.close()
         probeJob?.cancel()
@@ -1018,23 +1015,23 @@ internal fun SavedEnvironment.withLearnedRoutesOf(environments: List<SavedEnviro
     environments.firstOrNull { it.id == id }?.let { copy(routes = it.routes) } ?: this
 
 /**
- * Clears composer drafts once [ThreadDraftController]'s sends are accepted: the Reply draft of the thread the
- * message went to, the NewThread draft of the launched project. Failed or uncertain sends keep them.
+ * Settles composer drafts around [ThreadDraftController]'s sends. An accepted reply clears the thread's Reply draft
+ * unless it was edited while the send was in flight. A launch first records its ids on the NewThread draft (so a
+ * relaunch after an uncertain outcome, even after a restart, reuses them) and, once accepted, clears the draft
+ * unless it was edited since. Failed or uncertain sends keep the drafts.
  */
-internal class ComposerDraftSettlingClient(
-    private val inner: TrefoilClient,
-    private val onSent: (ComposerDraftKey.Reply) -> Unit,
-    private val onLaunched: (ComposerDraftKey.NewThread) -> Unit,
-) : TrefoilClient by inner {
+internal class ComposerDraftSettlingClient(private val inner: TrefoilClient, private val store: ComposerDraftStore) : TrefoilClient by inner {
     override suspend fun sendMessage(text: String) {
         val state = inner.state.value
         val key = state.environment?.id?.let { environment -> state.selectedThreadId?.let { ComposerDraftKey.Reply(environment, it) } }
+        val revision = key?.let(store::revision)
         inner.sendMessage(text)
-        key?.let(onSent)
+        if (key != null && revision != null) store.clearIfUnchanged(key, revision)
     }
     override suspend fun launchThread(draft: ThreadDraft, firstMessage: String): String {
         val environment = inner.state.value.environment?.id
-        return inner.launchThread(draft, firstMessage).also { environment?.let { onLaunched(ComposerDraftKey.NewThread(it, draft.projectId)) } }
+        environment?.let { store.markLaunching(ComposerDraftKey.NewThread(it, draft.projectId), draft.threadId, draft.commandId) }
+        return inner.launchThread(draft, firstMessage).also { environment?.let { store.settleLaunched(it, draft.threadId) } }
     }
 }
 

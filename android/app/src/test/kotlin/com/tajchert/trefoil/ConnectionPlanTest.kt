@@ -4,6 +4,9 @@ import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.core.model.RouteKind.*
 import com.tajchert.trefoil.core.model.RouteSource.*
 import com.tajchert.trefoil.core.session.ComposerDraftKey
+import com.tajchert.trefoil.core.session.ComposerDraftPersistence
+import com.tajchert.trefoil.core.session.ComposerDraftStore
+import com.tajchert.trefoil.core.session.PendingLaunch
 import com.tajchert.trefoil.core.ssh.SshConnectionException
 import com.tajchert.trefoil.core.ssh.SshHostKeyException
 import kotlinx.coroutines.CompletableDeferred
@@ -123,18 +126,54 @@ class ConnectionPlanTest {
         assertEquals(0, inFlight.get())
     }
 
-    @Test fun composerReplyDraftClearsOnlyAfterAcceptedSend() = runBlocking {
-        val state = MutableStateFlow(ClientState(environment = SavedEnvironment("env", "Mac", "https://mac.example/", "token"), selectedThreadId = "t1"))
-        val cleared = mutableListOf<ComposerDraftKey>()
-        val failing = ComposerDraftSettlingClient(SendOnlyClient(state) { error("boom") }, onSent = { cleared += it }, onLaunched = { cleared += it })
-        assertTrue(runCatching { failing.sendMessage("fixture") }.isFailure)
-        assertTrue(cleared.isEmpty())
-        val ok = ComposerDraftSettlingClient(SendOnlyClient(state) { state.value = state.value.copy(selectedThreadId = "t2") }, onSent = { cleared += it }, onLaunched = { cleared += it })
-        ok.sendMessage("fixture")
-        assertEquals("the thread the message went to", listOf<ComposerDraftKey>(ComposerDraftKey.Reply("env", "t1")), cleared)
+    private class MemoryDrafts : ComposerDraftPersistence {
+        var stored: String? = null
+        override suspend fun load(): String? = stored
+        override suspend fun save(json: String?) { stored = json }
     }
 
-    private class SendOnlyClient(override val state: StateFlow<ClientState> = MutableStateFlow(ClientState()), private val onSend: suspend () -> Unit) : TrefoilClient {
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun composerReplyDraftClearsOnlyAfterAcceptedSendAndKeepsNewerText() = runTest {
+        val state = MutableStateFlow(ClientState(environment = SavedEnvironment("env", "Mac", "https://mac.example/", "token"), selectedThreadId = "t1"))
+        val store = ComposerDraftStore(MemoryDrafts(), backgroundScope).also { runCurrent() }
+        val key = ComposerDraftKey.Reply("env", "t1")
+        store.update(key, "first")
+        val failing = ComposerDraftSettlingClient(SendOnlyClient(state) { error("boom") }, store)
+        assertTrue(runCatching { failing.sendMessage("first") }.isFailure)
+        assertEquals("a failed send keeps the draft", "first", store.get(key)?.text)
+        val gate = CompletableDeferred<Unit>()
+        val slow = ComposerDraftSettlingClient(SendOnlyClient(state) { gate.await() }, store)
+        val send = launch { slow.sendMessage("first") }
+        runCurrent()
+        store.update(key, "follow-up")
+        gate.complete(Unit); send.join()
+        assertEquals("text typed while the send was pending survives its ack", "follow-up", store.get(key)?.text)
+        val ok = ComposerDraftSettlingClient(SendOnlyClient(state) { state.value = state.value.copy(selectedThreadId = "t2") }, store)
+        ok.sendMessage("follow-up")
+        assertNull("the thread the message went to", store.get(key))
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun launchRecordsItsIdentityAndClearsTheDraftOnlyWhenAccepted() = runTest {
+        val state = MutableStateFlow(ClientState(environment = SavedEnvironment("env", "Mac", "https://mac.example/", "token")))
+        val store = ComposerDraftStore(MemoryDrafts(), backgroundScope).also { runCurrent() }
+        val key = ComposerDraftKey.NewThread("env", "p1")
+        store.update(key, "prompt")
+        val draft = ThreadDraft("p1", ModelOption("codex", "gpt"))
+        val uncertain = ComposerDraftSettlingClient(SendOnlyClient(state, onLaunch = { throw UncertainOutcomeException("lost") }) {}, store)
+        assertTrue(runCatching { uncertain.launchThread(draft, "prompt") }.isFailure)
+        assertEquals(PendingLaunch(draft.threadId, draft.commandId, "prompt"), store.get(key)?.pendingLaunch)
+        val accepted = ComposerDraftSettlingClient(SendOnlyClient(state, onLaunch = { it.threadId }) {}, store)
+        accepted.launchThread(draft, "prompt")
+        assertNull(store.get(key))
+    }
+
+    private class SendOnlyClient(
+        override val state: StateFlow<ClientState> = MutableStateFlow(ClientState()),
+        private val onLaunch: suspend (ThreadDraft) -> String = { error("unused") },
+        private val onSend: suspend () -> Unit,
+    ) : TrefoilClient {
+        override suspend fun launchThread(draft: ThreadDraft, firstMessage: String): String = onLaunch(draft)
         override suspend fun pair(pairingUrl: String, name: String, allowInsecureHttp: Boolean) = error("unused")
         override suspend fun connect(environment: SavedEnvironment) = error("unused")
         override suspend fun disconnect() = error("unused")

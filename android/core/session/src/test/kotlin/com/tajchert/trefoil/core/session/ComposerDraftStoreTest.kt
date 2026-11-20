@@ -140,4 +140,102 @@ class ComposerDraftStoreTest {
         fail = false; s.flush()
         assertEquals("hello", ComposerDraftStore.decode(p.stored!!)[reply]?.text)
     }
+
+    @Test fun acceptedSendKeepsTextTypedWhileItWasInFlight() = runTest {
+        val s = store(FakePersistence())
+        s.update(reply, "first")
+        val atSubmit = s.revision(reply)
+        s.update(reply, "first follow-up")
+        assertFalse(s.clearIfUnchanged(reply, atSubmit))
+        assertEquals("first follow-up", s.get(reply)?.text)
+        val unchanged = s.revision(reply)
+        assertTrue(s.clearIfUnchanged(reply, unchanged))
+        assertNull(s.get(reply))
+        s.update(reply, "typed after clear")
+        assertFalse("a clear also moves the revision", s.clearIfUnchanged(reply, unchanged))
+    }
+
+    @Test fun clearsBeforeTheLoadAreWrittenEvenWithoutOtherEdits() = runTest {
+        val seeded = FakePersistence(); val seed = store(seeded)
+        seed.update(reply, "stored"); seed.update(newA, "stored A"); seed.update(ComposerDraftKey.Reply("env2", "t"), "other"); seed.flush()
+        val p = FakePersistence(seeded.stored).apply { gate = CompletableDeferred() }
+        val s = store(p)
+        s.clear(reply); s.clearEnvironment("env2")
+        p.gate!!.complete(Unit); runCurrent(); advanceTimeBy(1_000); runCurrent()
+        assertEquals(setOf<ComposerDraftKey>(newA), ComposerDraftStore.decode(p.stored!!).keys)
+        assertEquals("a restart does not bring them back", setOf<ComposerDraftKey>(newA), store(p).drafts.value.keys)
+    }
+
+    @Test fun corruptPayloadIsReplaced() = runTest {
+        val p = object : ComposerDraftPersistence {
+            var stored: String? = null
+            override suspend fun load(): String? = throw CorruptComposerDraftsException()
+            override suspend fun save(json: String?) { stored = json }
+        }
+        val s = ComposerDraftStore(p, backgroundScope, clock = { now }).also { runCurrent() }
+        s.update(reply, "fresh"); s.flush()
+        assertEquals("fresh", ComposerDraftStore.decode(p.stored!!)[reply]?.text)
+    }
+
+    @Test fun unreadableStorageIsRetriedOnceAndNeverOverwritten() = runTest {
+        var failures = 2
+        val saves = mutableListOf<String?>()
+        val valid = ComposerDraftStore.encode(mapOf(newA to ComposerDraft(newA, "stored A", updatedAtMillis = 1)))
+        val p = object : ComposerDraftPersistence {
+            override suspend fun load(): String? { if (failures-- > 0) throw java.io.IOException("keystore busy"); return valid }
+            override suspend fun save(json: String?) { saves += json }
+        }
+        val s = ComposerDraftStore(p, backgroundScope, clock = { now }).also { runCurrent() }
+        s.update(reply, "typed"); s.flush()
+        assertTrue("both reads failed: the file is left alone", saves.isEmpty())
+        assertEquals("edits still work in memory", "typed", s.get(reply)?.text)
+        s.update(reply, "more"); s.flush()
+        assertTrue(saves.isEmpty())
+    }
+
+    @Test fun unreadableStorageRecoversOnTheRetry() = runTest {
+        var failures = 1
+        val valid = ComposerDraftStore.encode(mapOf(newA to ComposerDraft(newA, "stored A", updatedAtMillis = 1)))
+        val p = object : ComposerDraftPersistence {
+            var stored: String? = null
+            override suspend fun load(): String? { if (failures-- > 0) throw IllegalStateException("keystore busy"); return valid }
+            override suspend fun save(json: String?) { stored = json }
+        }
+        val s = ComposerDraftStore(p, backgroundScope, clock = { now }).also { runCurrent() }
+        s.update(reply, "typed"); s.flush()
+        assertEquals(setOf<ComposerDraftKey>(reply, newA), ComposerDraftStore.decode(p.stored!!).keys)
+        assertEquals("stored A", s.get(newA)?.text)
+    }
+
+    @Test fun pendingLaunchSurvivesRestartAndSettlesOnlyUnchangedText() = runTest {
+        val p = FakePersistence(); val s = store(p)
+        s.update(newA, "prompt", model = "gpt"); s.update(newB, "other prompt")
+        val revision = s.revision(newA)
+        s.markLaunching(newA, "thread-1", "command-1")
+        s.markLaunching(newB, "thread-2", "command-2")
+        assertEquals("marking is not an edit", revision, s.revision(newA))
+        s.flush()
+        val restarted = store(p)
+        assertEquals(PendingLaunch("thread-1", "command-1", "prompt"), restarted.get(newA)?.pendingLaunch)
+        restarted.update(newA, "prompt", model = "gpt-5")
+        assertEquals("edits keep the launch identity", "command-1", restarted.get(newA)?.pendingLaunch?.commandId)
+        restarted.update(newB, "other prompt, edited")
+        restarted.reconcileLaunches("env", setOf("thread-1", "thread-2"))
+        assertNull("unchanged text: the thread carries it", restarted.get(newA))
+        assertEquals("edited text stays as a fresh draft", "other prompt, edited", restarted.get(newB)?.text)
+        assertNull(restarted.get(newB)?.pendingLaunch)
+        restarted.reconcileLaunches("other-env", setOf("thread-2"))
+    }
+
+    @Test fun settleLaunchedAndMoveDropTheIdentity() = runTest {
+        val s = store(FakePersistence())
+        s.update(newA, "prompt"); s.markLaunching(newA, "thread-1", "command-1")
+        s.move(newA, newB, keepSource = true)
+        assertNull("a launch belongs to its project", s.get(newB)?.pendingLaunch)
+        s.settleLaunched("env", "unrelated")
+        assertNotNull(s.get(newA))
+        s.settleLaunched("env", "thread-1")
+        assertNull(s.get(newA))
+        assertEquals("prompt", s.get(newB)?.text)
+    }
 }

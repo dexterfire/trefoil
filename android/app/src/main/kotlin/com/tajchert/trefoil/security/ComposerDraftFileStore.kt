@@ -5,34 +5,51 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.AtomicFile
 import com.tajchert.trefoil.core.session.ComposerDraftPersistence
+import com.tajchert.trefoil.core.session.ComposerDraftStore
+import com.tajchert.trefoil.core.session.CorruptComposerDraftsException
 import java.io.File
+import java.io.FileNotFoundException
 import java.security.KeyStore
+import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
-import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.withContext
 
 /**
  * Encrypted local composer drafts (`composer-drafts.v1` in `noBackupFilesDir`), with its own Keystore
  * AES-GCM key; the same pattern as [EnvironmentVault], adapted from Flocket's KeystoreSecretCipher (Apache-2.0).
- * A missing, corrupt or undecryptable file reads as empty; failures are swallowed and never log content.
+ * A missing file reads as null; a malformed envelope or failed tag check is [CorruptComposerDraftsException];
+ * Keystore and I/O failures propagate so the store does not overwrite a file it could not read. Never logs content.
+ * Shared process-wide through [get].
  */
 class ComposerDraftFileStore(context: Context) : ComposerDraftPersistence {
+    companion object {
+        @Volatile private var store: ComposerDraftStore? = null
+        /** The process-wide draft store: it outlives view models so its load and final write complete, and every screen shares it. */
+        fun get(context: Context): ComposerDraftStore = store ?: synchronized(LOCK) {
+            store ?: ComposerDraftStore(ComposerDraftFileStore(context.applicationContext), CoroutineScope(SupervisorJob() + Dispatchers.IO)).also { store = it }
+        }
+        /** One lock per process: instances share the same file. */
+        private val LOCK = Any()
+    }
+
     private val file = AtomicFile(File(context.noBackupFilesDir, "composer-drafts.v1"))
     private val alias = "trefoil.composer-drafts.v1"
 
     override suspend fun load(): String? = withContext(Dispatchers.IO) {
         synchronized(LOCK) {
-            try {
-                if (!file.baseFile.exists()) return@synchronized null
-                val (nonce, encrypted) = SecretEnvelope.decode(file.readFully())
-                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-                cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, nonce))
-                cipher.doFinal(encrypted).decodeToString()
-            } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+            // readFully restores the backup of an interrupted write; checking baseFile.exists() first would skip that.
+            val bytes = try { file.readFully() } catch (_: FileNotFoundException) { return@synchronized null }
+            val (nonce, encrypted) = try { SecretEnvelope.decode(bytes) } catch (e: IllegalArgumentException) { throw CorruptComposerDraftsException(e) }
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, nonce))
+            // A failed tag check with the current key can never succeed; Keystore and I/O failures propagate as transient.
+            try { cipher.doFinal(encrypted).decodeToString() } catch (e: AEADBadTagException) { throw CorruptComposerDraftsException(e) }
         }
     }
 
@@ -55,10 +72,5 @@ class ComposerDraftFileStore(context: Context) : ComposerDraftPersistence {
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
                 .setKeySize(256).build())
         }.generateKey()
-    }
-
-    private companion object {
-        /** One lock per process: instances share the same file. */
-        val LOCK = Any()
     }
 }
