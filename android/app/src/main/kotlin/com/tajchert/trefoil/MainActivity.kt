@@ -17,6 +17,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import android.net.Uri
 import kotlinx.coroutines.launch
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -108,6 +110,15 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) { handleUsageIntent(intent); handlePairLinkIntent(intent) }
         enableEdgeToEdge()
         lifecycleScope.launch {
+            // A forwarded dev server opens in the device browser; the loopback listener lives only while the forward does.
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                model.portForwards.externalUrls.collect { url ->
+                    try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE)) }
+                    catch (_: Exception) { model.externalOpenFailed() }
+                }
+            }
+        }
+        lifecycleScope.launch {
             // Keep-alive ending in the background: stop listening for network changes until the next start.
             model.keepAliveActive.collect { active -> if (!active && !lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) unregisterNetworkCallback() }
         }
@@ -125,6 +136,7 @@ class MainActivity : ComponentActivity() {
             val machineProbes by model.machineProbes.collectAsStateWithLifecycle()
             val usage by model.usage.collectAsStateWithLifecycle()
             val keepConnected by model.keepConnected.collectAsStateWithLifecycle()
+            val portBrowser by model.portForwards.browser.collectAsStateWithLifecycle()
             val refreshing by model.isRefreshing.collectAsStateWithLifecycle()
             // New-thread records and first-line reply previews change only on visible edits, not on every reply keystroke.
             val newThreadDrafts by model.newThreadComposerDrafts.collectAsStateWithLifecycle()
@@ -168,6 +180,12 @@ class MainActivity : ComponentActivity() {
                     { environmentId, threadId, reference -> model.fileDownloads.cancel(reference, environmentId, threadId) },
                     { openDownloaded(it) }, { openDownloaded(it, share = true) }, { openDownloaded(it, install = true) },
                     imageLoader = model.fileDownloads.images, htmlLoader = model.fileDownloads.htmlRenders),
+                portBrowser = portBrowser,
+                onOpenPortInApp = model.portForwards::openInApp,
+                onOpenPortExternal = model.portForwards::openExternal,
+                onStopPortForward = model.portForwards::stop,
+                onForwardPort = model.portForwards::forwardManual,
+                onClosePortBrowser = model.portForwards::closeBrowser,
                 onRespond = model::respond,
                 draft = draft,
                 sendFailed = model.sendFailed,

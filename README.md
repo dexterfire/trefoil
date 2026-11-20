@@ -13,6 +13,7 @@
 - Text messages, queueing during active runs and interrupting a run.
 - Supported live approvals and questions, plus new conversations with server-provided models.
 - Browser and attached-device pixel streams with touch/input controls and immersive phone fullscreen.
+- Dev servers on the host, opened in an in-app browser or forwarded to the phone's localhost.
 - Phone and wide layouts, light/dark themes, retained drafts and explicit reconnect.
 
 Agent file links and attachments can be downloaded to **Downloads/Trefoil**, opened or shared. APK cards also open Android's installer. Download again after rebuilding a file at the same path.
@@ -44,6 +45,14 @@ Tokens are encrypted with Android Keystore and excluded from backups. Forgetting
 Choose a conversation, then tap **Screen sessions** in the toolbar. Open one of its existing browser tabs or attached devices. Tap **Enter full screen** to hide app/system chrome; the floating exit button restores it without restarting the stream. Browser controls include explicit takeover/release, back/forward/reload and text; devices provide supported home/back/app-switcher/rotation/text controls.
 
 Media stays on your validated T3 connection, including SSH. Reconnect gets a new ticket; gestures are never replayed. This release supports the standard HTTP/WebSocket JPEG/H.264/MJPEG paths. WebRTC-only hosts, native multitouch and arbitrary iOS text paste are not supported. Update Android System WebView for codec support. [Screen protocol and validation](protocol/SCREENS.md).
+
+## Dev servers and port forwarding
+
+Tap **Dev servers** in the app menu, or the **Dev server** chip in a conversation's header, to see servers listening on the T3 host. Each row shows the port, process and the agent or terminal that started it. **Open** forwards the port and shows it in an in-app browser. **Open in browser** forwards it and opens `http://localhost:<port>/` in the device browser. **Forward a port…** covers servers discovery missed. **Stop forward** closes one.
+
+Requirements: T3 Code v0.1.11 or newer on the host, browser tunnels turned on in T3 settings, and a session with `terminal:operate`. With an older server the entry is hidden. Forwards need a live, writable connection. They also work over SSH, because the tunnel rides the same validated connection.
+
+Security: while a forward is open, any app on the device can reach its loopback port with your authority on that server. Forwards are started by you, listed in the screen, and closed when the connection drops, reconnects or switches machine. They never restart by themselves, and the local port can differ from the remote one. [Port forwarding protocol and validation](protocol/PORTS.md).
 
 ## 🛠️ Build
 

@@ -65,6 +65,10 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     private val widgetSync = com.tajchert.trefoil.widget.UsageWidgetSync(application, viewModelScope, client, environments)
     private val _notice = MutableStateFlow<String?>(null)
     val notice = _notice.asStateFlow()
+    /** Dev-server forwards and the in-app tunnel browser; failures surface as [notice] like other actions. */
+    val portForwards = com.tajchert.trefoil.ui.ports.PortForwardCoordinator(viewModelScope, client) { _notice.value = it }
+    /** The device has no app that can open a forwarded dev server's URL. */
+    fun externalOpenFailed() { _notice.value = "No browser found to open the dev server." }
     private val _working = MutableStateFlow(false)
     val working = _working.asStateFlow()
     private val _isRefreshing = MutableStateFlow(false)

@@ -24,6 +24,12 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import com.tajchert.trefoil.ui.screens.ScreenViewerState
 import com.tajchert.trefoil.ui.screens.ScreenSessionsScreen
+import com.tajchert.trefoil.ui.ports.PortBrowserState
+import com.tajchert.trefoil.ui.ports.PortsActions
+import com.tajchert.trefoil.ui.ports.PortsScreen
+import com.tajchert.trefoil.ui.ports.PortsUiState
+import com.tajchert.trefoil.ui.ports.ThreadPortsChip
+import com.tajchert.trefoil.ui.ports.TunnelBrowserScreen
 
 /** Detail-pane bottom insets: the composer rides above the navigation bar and the keyboard. */
 private val BottomBarsAndIme @Composable get() = WindowInsets.navigationBars.union(WindowInsets.ime).only(WindowInsetsSides.Bottom)
@@ -70,6 +76,12 @@ fun TrefoilApp(
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
     composerDrafts: ComposerDraftUi = ComposerDraftUi(),
+    portBrowser: PortBrowserState? = null,
+    onOpenPortInApp: (Int) -> Unit = {},
+    onOpenPortExternal: (Int) -> Unit = {},
+    onStopPortForward: (Int) -> Unit = {},
+    onForwardPort: (Int) -> Unit = {},
+    onClosePortBrowser: () -> Unit = {},
 ) {
     TrefoilTheme {
         val conversationState = rememberSaveableStateHolder()
@@ -98,6 +110,7 @@ fun TrefoilApp(
         // First prompt typed in the new-thread sheet; the draft conversation sends it via its composer.
         var seedPrompt by rememberSaveable { mutableStateOf<String?>(null) }
         var showScreens by rememberSaveable(state.environment?.id) { mutableStateOf(false) }
+        var showPorts by rememberSaveable(state.environment?.id) { mutableStateOf(false) }
         var showUsage by rememberSaveable { mutableStateOf(false) }
         // A widget request picks the tab; the header chip and menu always open Limits.
         var usageTab by rememberSaveable { mutableIntStateOf(0) }
@@ -107,6 +120,17 @@ fun TrefoilApp(
         LaunchedEffect(state.environment?.id, state.canReadUsage) {
             if (showUsage && state.canReadUsage) onOpenUsage()
         }
+        // Dev servers need a live environment whose server answers discovery; an older server hides the feature.
+        val portsAvailable = state.environment != null && state.localServers.supported
+        LaunchedEffect(portsAvailable) { if (!portsAvailable) showPorts = false }
+        // Leaving for the machine list drops the browser page; the forward itself stays open until stopped or disconnected.
+        LaunchedEffect(choosingEnvironment) { if (choosingEnvironment) onClosePortBrowser() }
+        val portsUi = PortsUiState(
+            servers = state.localServers.servers, forwards = state.portForwards,
+            threadTitles = remember(state.threads) { state.threads.associate { it.id to it.title } },
+            live = state.localServers.live, supported = state.localServers.supported, tunnelSetting = state.previewTunnelSetting,
+            canWrite = state.canWrite && state.connection == ConnectionStatus.Connected, selectedThreadId = state.selectedThreadId)
+        val portsActions = PortsActions({ showPorts = false }, onOpenPortInApp, onOpenPortExternal, onStopPortForward, onForwardPort)
         var screenFullscreen by rememberSaveable { mutableStateOf(false) }
         LaunchedEffect(state.environment?.id, screenViewer.target) { if (screenViewer.target == null) screenFullscreen = false }
         var showThread by rememberSaveable { mutableStateOf(false) }
@@ -147,10 +171,14 @@ fun TrefoilApp(
         // Thread events briefly clear canWrite; the steady value keeps Stop and its dialog from flickering.
         val steadyWrite = rememberSteadyCanWrite(state)
         val connected = state.environment != null
+        val threadServers = remember(state.localServers.servers, state.selectedThreadId) {
+            state.selectedThreadId?.let { id -> state.localServers.servers.filter { it.threadId == id } }.orEmpty()
+        }
         val shell = ShellActions(
             onMachines = { choosingEnvironment = true; showThread = false },
             onConnectMachine = { adding = true },
             onScreens = if (connected) ({ showScreens = true }) else null,
+            onDevServers = if (portsAvailable) ({ showPorts = true }) else null,
             // Offline the screen shows cached limits; only a connection that can read usage fetches (the effect above covers a later connect).
             onUsage = if (connected) ({ usageTab = 0; showUsage = true; if (state.canReadUsage) onOpenUsage() }) else null,
             onDisconnect = if (connected) ({ onDisconnect(); choosingEnvironment = true; showThread = false }) else null,
@@ -162,7 +190,7 @@ fun TrefoilApp(
         // The conversation counts as open only while it is on screen; the list, machines, usage and screens hide it.
         var wideLayout by remember { mutableStateOf(false) }
         val openThreadId = state.selectedThreadId.takeIf {
-            draft == null && it != null && (wideLayout || showThread) && connected && !choosingEnvironment && !showUsage && !showScreens
+            draft == null && it != null && (wideLayout || showThread) && connected && !choosingEnvironment && !showUsage && !showScreens && !showPorts && portBrowser == null
         }
         // Visit tracking follows what is on screen, not merely which thread is selected.
         LaunchedEffect(openThreadId != null) { onThreadShown(openThreadId != null) }
@@ -178,7 +206,7 @@ fun TrefoilApp(
             attentionMessage(step.announce)?.let { attention.trySend(it) }
         }
         val openAttention by rememberUpdatedState<(String?) -> Unit> { id ->
-            choosingEnvironment = false; showUsage = false; showScreens = false
+            choosingEnvironment = false; showUsage = false; showScreens = false; showPorts = false; onClosePortBrowser()
             if (id != null && state.threads.any { it.id == id }) select(id) else { cancelDraft(); showThread = false }
         }
         val attentionRelevant by rememberUpdatedState<(AttentionMessage) -> Boolean> {
@@ -207,7 +235,7 @@ fun TrefoilApp(
                 SideEffect { wideLayout = twoPane }
                 val machines = !connected || choosingEnvironment
                 BackHandler(showUsage) { showUsage = false }
-                BackHandler(!showUsage && !showScreens && ((choosingEnvironment && connected) || (showThread && !twoPane && !machines) || (backParent != null && !machines && (twoPane || showThread)))) {
+                BackHandler(!showUsage && !showScreens && !showPorts && portBrowser == null && ((choosingEnvironment && connected) || (showThread && !twoPane && !machines) || (backParent != null && !machines && (twoPane || showThread)))) {
                     if (choosingEnvironment) choosingEnvironment = false
                     else if (backParent != null) select(backParent.id)
                     else { cancelDraft(); showThread = false }
@@ -230,6 +258,14 @@ fun TrefoilApp(
                                     onBack = if (connected) ({ choosingEnvironment = false }) else null,
                                     modifier = Modifier.weight(1f).windowInsetsPadding(BottomBarsAndIme), probes = machineProbes,
                                     onAllowLocalHttp = { environment, allowed -> onAllowLocalNetworkHttp(environment.id, allowed) })
+                            }
+                            portBrowser != null -> Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Vertical))) {
+                                ConnectionBanner(state, onReconnect)
+                                TunnelBrowserScreen(portBrowser.url, portBrowser.title, onClosePortBrowser, { onOpenPortExternal(portBrowser.remotePort) }, Modifier.weight(1f))
+                            }
+                            showPorts && portsAvailable -> Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Vertical))) {
+                                ConnectionBanner(state, onReconnect)
+                                PortsScreen(portsUi, portsActions, Modifier.weight(1f))
                             }
                             showScreens -> Column(Modifier.fillMaxSize().then(if (screenFullscreen) Modifier else Modifier.windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Vertical)))) {
                                 if (!screenFullscreen) ConnectionBanner(state, onReconnect)
@@ -266,6 +302,7 @@ fun TrefoilApp(
                                                     actions = {
                                                         if (selectedThreadActionsVisible(twoPane, showThread, draft, state.selectedThreadId)) {
                                                             if (pill != null) AgentsChip(pill) { showAgents = true }
+                                                            if (portsAvailable) ThreadPortsChip(threadServers, onClick = { showPorts = true })
                                                             state.threads.firstOrNull { it.id == state.selectedThreadId }?.let { ThreadActionsMenu(state, it, onOpenAgents = if (roster != null) ({ showAgents = true }) else null, onAction = { target, operation, value ->
                                                                 onThreadAction(target, operation, value)
                                                                 if (settleLeavesConversation(operation, twoPane)) showThread = false
