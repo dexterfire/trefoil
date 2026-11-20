@@ -206,6 +206,12 @@ data class ClientState(
     val canReadUsage: Boolean = false,
     /** Route of the live connection. For SSH: `EnvironmentRoute(Ssh, <ephemeral loopback>, Paired)`, display only, never persisted. */
     val activeRoute: EnvironmentRoute? = null,
+    /** Dev servers T3 discovered on the environment host; see PortModels.kt. */
+    val localServers: LocalServerCatalog = LocalServerCatalog(),
+    /** Server `environment.capabilities.previewTunnelSetting`: true/false when reported, null when the server did not say. */
+    val previewTunnelSetting: Boolean? = null,
+    /** Port forwards of the live connection, ordered by start. Cleared on disconnect and environment switch. */
+    val portForwards: List<PortForward> = emptyList(),
 )
 
 /** A mutation may or may not have been applied; reconcile from server state, never resend it. */
@@ -245,6 +251,13 @@ interface TrefoilClient {
     suspend fun refreshScreens() { error("Remote screens are unavailable") }
     suspend fun screenAccess(target: ScreenTarget): ScreenAccess { error("Remote screens are unavailable") }
     fun isScreenAccessCurrent(access: ScreenAccess): Boolean = false
+    /**
+     * Opens (or returns the existing) loopback forward to [remotePort] on the connected environment's host.
+     * Returns once the local listener is bound; tunnel failures surface per connection in [ClientState.portForwards].
+     */
+    suspend fun startPortForward(remotePort: Int): PortForward { error("Port forwarding is unavailable") }
+    /** Closes the forward's listener and every open tunnel connection. No-op when none exists. */
+    suspend fun stopPortForward(remotePort: Int) {}
     /** Read a body withheld from the synchronized projection, without dispatching a mutation. */
     suspend fun loadActivity(itemId: String) { error("Activity details are unavailable") }
     /** Streams a signed asset into caller-owned storage; failures may leave partial bytes. */
