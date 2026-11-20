@@ -6,6 +6,9 @@ import androidx.lifecycle.viewModelScope
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.core.session.T3Client
 import com.tajchert.trefoil.keepalive.ConnectionKeepAlive
+import com.tajchert.trefoil.ui.ports.EXTERNAL_FORWARD_IDLE_MS
+import com.tajchert.trefoil.ui.ports.ExternalForward
+import com.tajchert.trefoil.ui.ports.ExternalOpenRequest
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.After
@@ -168,11 +171,11 @@ class KeepAliveLifecycleTest {
         assertEquals(ConnectionStatus.Disconnected, model.state.value.connection)
     }
 
-    private val forward = PortForward("fixture", 5173, localPort = 25173, status = PortForwardStatus.Active)
-    /** As after "Open in browser": the forward is live and its URL went to an external browser. */
+    private val forward = PortForward("fixture", 5173, localPort = 25173, status = PortForwardStatus.Active, instance = 7)
+    /** As after "Open in browser" once the browser took the URL (what MainActivity reports after startActivity). */
     private fun openForwardExternally() {
         mutable.value = mutable.value.copy(portForwards = listOf(forward))
-        model.portForwards.holdExternal(forward); advance(0)
+        model.portForwards.externalOpened(ExternalOpenRequest(forward.localUrl!!, ExternalForward("fixture", 5173, 7))); advance(0)
     }
 
     @Test fun anExternallyOpenedForwardKeepsTheConnectionPastTheGraceWithTheSettingOff() {
@@ -192,32 +195,74 @@ class KeepAliveLifecycleTest {
         assertEquals(ConnectionStatus.Disconnected, model.state.value.connection)
     }
 
-    @Test fun stoppingTheLastExternalForwardEndsTheHoldAndRestoresTheGrace() {
+    @Test fun stoppingTheLastExternalForwardEndsTheHoldAndRestartsTheFullGrace() {
         openForwardExternally()
         model.pause(); advance(30_000)
         model.portForwards.stop(5173); advance(0)
         assertFalse(model.keepAliveActive.value)
         assertEquals(1, control.stops)
-        advance(BACKGROUND_CONNECTION_GRACE_MS + 1)
+        advance(BACKGROUND_CONNECTION_GRACE_MS - 1)
+        assertEquals(ConnectionStatus.Connected, model.state.value.connection)
+        advance(1)
         assertEquals(ConnectionStatus.Disconnected, model.state.value.connection)
     }
 
-    @Test fun aForwardLostInTheBackgroundEndsTheHoldAndIsExplainedOnReturn() {
+    @Test fun anIdleExternalForwardEndsTheHoldAfterTheLimitAndIsExplainedOnReturn() {
+        openForwardExternally()
+        model.pause()
+        advance(EXTERNAL_FORWARD_IDLE_MS - 1)
+        assertTrue(model.keepAliveActive.value)
+        assertEquals(ConnectionStatus.Connected, model.state.value.connection)
+        advance(1)
+        assertFalse(model.keepAliveActive.value)
+        // The forward stays until the normal grace disconnects.
+        assertEquals(listOf(forward), model.state.value.portForwards)
+        advance(BACKGROUND_CONNECTION_GRACE_MS - 1)
+        assertEquals(ConnectionStatus.Connected, model.state.value.connection)
+        advance(1)
+        assertEquals(ConnectionStatus.Disconnected, model.state.value.connection)
+        // Read before the reconnect that resume starts can report its own outcome.
+        model.resume()
+        assertTrue(model.notice.value!!.contains("10 minutes"))
+    }
+
+    @Test fun aForwardLostInTheBackgroundIsAnnouncedOnceForItsMachineAndDismissedEverywhere() {
         openForwardExternally()
         model.pause(); advance(30_000)
         dropConnection(); mutable.value = mutable.value.copy(portForwards = emptyList()); advance(0)
         assertFalse(model.keepAliveActive.value)
-        model.resume(); advance(0)
-        assertTrue(model.portForwards.stoppedNotice.value!!.message.contains("port 5173"))
-        assertTrue(model.notice.value!!.contains("port 5173"))
+        model.resume()
+        val message = model.notice.value!!
+        assertTrue(message, message.contains("port 5173"))
+        assertEquals(message, model.portForwards.stoppedNotices.value.getValue("fixture").message)
+        // A second return does not show it again.
+        field("_notice").let { @Suppress("UNCHECKED_CAST") (it.get(model) as MutableStateFlow<String?>).value = null }
+        model.pause(); model.resume()
+        assertNull(model.notice.value)
+        // Dismissing on the ports screen clears the banner that announced it too.
+        field("_notice").let { @Suppress("UNCHECKED_CAST") (it.get(model) as MutableStateFlow<String?>).value = message }
+        model.dismissStoppedForwards("fixture")
+        assertNull(model.notice.value)
+        assertTrue(model.portForwards.stoppedNotices.value.isEmpty())
     }
 
-    @Test fun anExplicitDisconnectEndsTheHold() {
+    @Test fun aLossOnAnotherMachineIsNotAnnouncedHere() {
         openForwardExternally()
-        model.disconnect(); advance(0)
+        model.pause()
+        mutable.value = mutable.value.copy(environment = environment.copy(id = "other", name = "Other"), portForwards = emptyList()); advance(0)
+        model.resume()
+        assertNull(model.notice.value)
+        assertNotNull(model.portForwards.stoppedNotices.value["fixture"])
+    }
+
+    @Test fun theNotificationDisconnectEndsTheHoldWithoutALostForwardNotice() {
+        openForwardExternally()
+        model.pause(); advance(30_000)
+        ConnectionKeepAlive.requestDisconnect(); advance(0)
         assertFalse(model.keepAliveActive.value)
         assertTrue(model.portForwards.externalForwards.value.isEmpty())
         assertEquals(ConnectionStatus.Disconnected, model.state.value.connection)
+        assertTrue(model.portForwards.stoppedNotices.value.isEmpty())
     }
 
     @Test fun keepAliveUsersSeeNoChangeWhenTheirExternalForwardStops() {

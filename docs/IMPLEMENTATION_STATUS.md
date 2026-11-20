@@ -156,4 +156,4 @@ were off. On Android 13+ enabling it asks for notification permission; denying i
 the notification hidden. Covered by Robolectric lifecycle and service tests; not yet exercised on a device.
 With the setting off, the same service also runs while a dev-server forward opened with "Open in browser" is
 active (see `protocol/PORTS.md`), so the page keeps loading while the user is in the browser; it never holds a
-reconnect, and a forward lost in the background is explained on return.
+reconnect, ends after 10 minutes without an open page, and a forward lost in the background is explained on return.

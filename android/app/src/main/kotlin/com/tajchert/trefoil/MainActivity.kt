@@ -112,9 +112,11 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             // A forwarded dev server opens in the device browser; the loopback listener lives only while the forward does.
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                model.portForwards.externalUrls.collect { url ->
-                    try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE)) }
-                    catch (_: Exception) { model.externalOpenFailed(url) }
+                model.portForwards.externalUrls.collect { request ->
+                    val opened = try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(request.url)).addCategory(Intent.CATEGORY_BROWSABLE)); true }
+                    catch (_: Exception) { model.externalOpenFailed(); false }
+                    // Only a URL a browser took holds the forward; this runs before onStop, so the hold starts in the foreground.
+                    if (opened) model.portForwards.externalOpened(request)
                 }
             }
         }
@@ -137,7 +139,7 @@ class MainActivity : ComponentActivity() {
             val usage by model.usage.collectAsStateWithLifecycle()
             val keepConnected by model.keepConnected.collectAsStateWithLifecycle()
             val portBrowser by model.portForwards.browser.collectAsStateWithLifecycle()
-            val stoppedForwards by model.portForwards.stoppedNotice.collectAsStateWithLifecycle()
+            val stoppedForwards by model.portForwards.stoppedNotices.collectAsStateWithLifecycle()
             val refreshing by model.isRefreshing.collectAsStateWithLifecycle()
             // New-thread records and first-line reply previews change only on visible edits, not on every reply keystroke.
             val newThreadDrafts by model.newThreadComposerDrafts.collectAsStateWithLifecycle()
@@ -188,7 +190,7 @@ class MainActivity : ComponentActivity() {
                 onForwardPort = model.portForwards::forwardManual,
                 onClosePortBrowser = model.portForwards::closeBrowser,
                 stoppedForwards = stoppedForwards,
-                onDismissStoppedForwards = model.portForwards::dismissStoppedNotice,
+                onDismissStoppedForwards = model::dismissStoppedForwards,
                 onRespond = model::respond,
                 draft = draft,
                 sendFailed = model.sendFailed,

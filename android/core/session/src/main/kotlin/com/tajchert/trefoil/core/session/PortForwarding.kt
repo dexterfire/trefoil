@@ -21,6 +21,7 @@ import java.io.IOException
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /** Browsers open about six connections per host; this leaves room for several pages, HMR and fetches. */
@@ -221,6 +222,9 @@ internal fun bindLoopback(preferredPort: Int, open: (InetAddress, Int) -> Server
  * Lock order: the owner may call [snapshot] and [close] under its own lock; this class never calls [onChange]
  * while holding its lock, so [onChange] may take the owner's lock and call [snapshot].
  */
+/** Source of [PortForward.instance]: unique per listener within the process. */
+private val forwardInstances = AtomicLong()
+
 internal class LoopbackPortForwarder(
     val environmentId: String,
     val remotePort: Int,
@@ -235,6 +239,8 @@ internal class LoopbackPortForwarder(
     private val openTimeoutMillis: Long = TUNNEL_OPEN_TIMEOUT_MS,
     private val binder: (Int) -> LoopbackListeners = { bindLoopback(it) },
 ) {
+    /** [PortForward.instance] of this listener. */
+    val instance: Long = forwardInstances.incrementAndGet()
     private val lock = Any()
     private val scope = CoroutineScope(SupervisorJob() + tunnelDispatcher)
     private var listeners: LoopbackListeners? = null
@@ -247,7 +253,7 @@ internal class LoopbackPortForwarder(
     /** Completes once [bind] has finished, bound or not. */
     val bound = CompletableDeferred<Unit>()
 
-    fun snapshot(): PortForward = synchronized(lock) { PortForward(environmentId, remotePort, localPort, status, error, connections.size, localHost) }
+    fun snapshot(): PortForward = synchronized(lock) { PortForward(environmentId, remotePort, localPort, status, error, connections.size, localHost, instance) }
 
     /** Binds the loopback listeners and starts accepting. Blocking. False when it failed or the forward was closed meanwhile. */
     fun bind(): Boolean {

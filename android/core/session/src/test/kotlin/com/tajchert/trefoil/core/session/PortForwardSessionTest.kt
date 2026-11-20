@@ -214,7 +214,7 @@ class PortForwardSessionTest {
             f.connect()
             val remote = freePort()
             val forward = f.client.startPortForward(remote)
-            assertEquals(PortForward("env", remote, remote, PortForwardStatus.Active), forward)
+            assertEquals(PortForward("env", remote, remote, PortForwardStatus.Active, instance = forward.instance), forward)
             assertEquals("http://localhost:$remote/", forward.localUrl)
             assertEquals(forward.localPort, f.client.startPortForward(remote).localPort)
             assertEquals(listOf(forward), f.client.state.value.portForwards)

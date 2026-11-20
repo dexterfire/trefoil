@@ -342,7 +342,7 @@ class PortForwardingTest {
             forwarder.recordSuccess()
             forwarder.recordFailure(PortForwardError.PortRefused)
             forwarder.recordFailure(PortForwardError.TunnelDisabled)
-            assertEquals(PortForward("env", 4105, null, PortForwardStatus.Failed, PortForwardError.Unauthorized), forwarder.snapshot())
+            assertEquals(PortForward("env", 4105, null, PortForwardStatus.Failed, PortForwardError.Unauthorized, instance = forwarder.instance), forwarder.snapshot())
             repeat(200) { round ->
                 val racing = f.forwarder(4106).also { it.bind() }
                 val start = CyclicBarrier(4)
@@ -441,7 +441,11 @@ class PortForwardingTest {
         TunnelFixture().use { f ->
             val forwarder = LoopbackPortForwarder("env", 5000, f.http, f::tunnelUrl, f.tickets, {}, binder = { throw IOException("no ports") })
             assertFalse(forwarder.bind())
-            assertEquals(PortForward("env", 5000, null, PortForwardStatus.Failed, PortForwardError.LocalBindFailed), forwarder.snapshot())
+            assertEquals(PortForward("env", 5000, null, PortForwardStatus.Failed, PortForwardError.LocalBindFailed, instance = forwarder.instance), forwarder.snapshot())
+            // A retry on the same port is another listener: holds made for this one never carry over.
+            val retry = LoopbackPortForwarder("env", 5000, f.http, f::tunnelUrl, f.tickets, {}, binder = { throw IOException("no ports") })
+            assertNotEquals(forwarder.instance, retry.instance)
+            assertNotEquals(forwarder.snapshot(), retry.snapshot().copy(status = PortForwardStatus.Failed, error = PortForwardError.LocalBindFailed))
         }
     }
 

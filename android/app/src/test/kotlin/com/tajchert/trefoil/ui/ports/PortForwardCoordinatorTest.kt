@@ -13,7 +13,8 @@ class PortForwardCoordinatorTest {
             localServers = LocalServerCatalog(listOf(DiscoveredLocalServer("127.0.0.1", 5173, "http://127.0.0.1:5173", processName = "vite")), live = true)))
         val started = mutableListOf<Int>()
         val stopped = mutableListOf<Int>()
-        var next: (Int) -> PortForward = { PortForward(environment.id, it, localPort = it + 20_000, status = PortForwardStatus.Active) }
+        private var instances = 0L
+        var next: (Int) -> PortForward = { PortForward(environment.id, it, localPort = it + 20_000, status = PortForwardStatus.Active, instance = ++instances) }
         var failure: Exception? = null
         override suspend fun startPortForward(remotePort: Int): PortForward {
             started += remotePort
@@ -41,18 +42,41 @@ class PortForwardCoordinatorTest {
         try { block(client, coordinator, errors) } finally { scope.cancel() }
     }
 
-    private val held = setOf(ExternalForward("fixture", 5173))
+    /** Opens [port] externally with a UI collecting requests, and confirms that a browser took the URL. */
+    private suspend fun CoroutineScope.openInBrowser(coordinator: PortForwardCoordinator, port: Int): ExternalOpenRequest {
+        val requests = mutableListOf<ExternalOpenRequest>()
+        val ui = launch(start = CoroutineStart.UNDISPATCHED) { coordinator.externalUrls.toList(requests) }
+        coordinator.openExternal(port)
+        yield(); ui.cancel()
+        return requests.single().also { coordinator.externalOpened(it) }
+    }
 
-    @Test fun anExternalOpenHoldsItsForwardUntilTheUserStopsIt() = run { client, coordinator, _ ->
+    @Test fun aForwardIsHeldOnlyOnceABrowserTookItsUrlAndUntilTheUserStopsIt() = run { client, coordinator, _ ->
+        val requests = mutableListOf<ExternalOpenRequest>()
+        val ui = launch(start = CoroutineStart.UNDISPATCHED) { coordinator.externalUrls.toList(requests) }
         coordinator.openExternal(5173)
-        assertEquals(held, coordinator.externalForwards.value)
+        yield(); ui.cancel()
+        val request = requests.single()
+        assertEquals("http://localhost:25173/", request.url)
+        // Requested, not yet taken by a browser.
+        assertTrue(coordinator.externalForwards.value.isEmpty())
+        coordinator.externalOpened(request)
+        assertEquals(setOf(request.forward), coordinator.externalForwards.value)
         assertEquals(1, holdChanges)
         coordinator.inBackground = true
         coordinator.stop(5173)
         assertTrue(coordinator.externalForwards.value.isEmpty())
         assertEquals(2, holdChanges)
         // The user stopped it: nothing to explain on return.
-        assertNull(coordinator.stoppedNotice.value)
+        assertTrue(coordinator.stoppedNotices.value.isEmpty())
+    }
+
+    /** "Open in browser", then Home before the bind finished: the UI stopped collecting and the request is lost. */
+    @Test fun aRequestNoUiReceivedHoldsNothing() = run { client, coordinator, _ ->
+        coordinator.openExternal(5173)
+        assertEquals(listOf(5173), client.started)
+        assertTrue(coordinator.externalForwards.value.isEmpty())
+        assertEquals(0, holdChanges)
     }
 
     @Test fun anInAppOpenNeverHolds() = run { _, coordinator, _ ->
@@ -61,48 +85,101 @@ class PortForwardCoordinatorTest {
         assertEquals(0, holdChanges)
     }
 
-    @Test fun theHoldEndsWhenTheForwardGoesAwayAndExplainsItOnlyInTheBackground() = run { client, coordinator, _ ->
+    @Test fun aReplacementForwardOnTheSamePortNeverInheritsTheHold() = run { client, coordinator, _ ->
+        val first = openInBrowser(coordinator, 5173)
+        // The failed listener was replaced (a retry from the app) before the collector saw the failure: first Starting...
+        client.state.update { it.copy(portForwards = listOf(PortForward("fixture", 5173, status = PortForwardStatus.Starting, instance = first.forward.instance + 1))) }
+        assertTrue(coordinator.externalForwards.value.isEmpty())
+
+        // ...or already Active on the same local port, with every intermediate state conflated away.
+        client.state.update { it.copy(portForwards = emptyList()) }
+        val second = openInBrowser(coordinator, 5173)
+        client.state.update { it.copy(portForwards = listOf(PortForward("fixture", 5173, 25173, PortForwardStatus.Active, instance = second.forward.instance + 1))) }
+        assertTrue(coordinator.externalForwards.value.isEmpty())
+    }
+
+    @Test fun aRequestForAListenerThatWasReplacedMeanwhileHoldsNothing() = run { client, coordinator, _ ->
+        val requests = mutableListOf<ExternalOpenRequest>()
+        val ui = launch(start = CoroutineStart.UNDISPATCHED) { coordinator.externalUrls.toList(requests) }
         coordinator.openExternal(5173)
+        yield(); ui.cancel()
+        client.state.update { it.copy(portForwards = listOf(PortForward("fixture", 5173, 25173, PortForwardStatus.Active, instance = requests.single().forward.instance + 1))) }
+        coordinator.externalOpened(requests.single())
+        assertTrue(coordinator.externalForwards.value.isEmpty())
+    }
+
+    @Test fun lossesAreExplainedOnlyInTheBackgroundAndAccumulate() = run { client, coordinator, _ ->
+        openInBrowser(coordinator, 5173)
         client.state.update { it.copy(connection = ConnectionStatus.Disconnected, portForwards = emptyList()) }
         assertTrue(coordinator.externalForwards.value.isEmpty())
-        assertNull(coordinator.stoppedNotice.value)
+        assertTrue(coordinator.stoppedNotices.value.isEmpty())
 
         client.state.update { it.copy(connection = ConnectionStatus.Connected) }
-        coordinator.openExternal(5173)
+        val vite = openInBrowser(coordinator, 5173)
+        val api = openInBrowser(coordinator, 3000)
         coordinator.inBackground = true
+        // 3000 fails first; 5173 goes later with the connection. Both are reported.
+        client.state.update { state -> state.copy(portForwards = state.portForwards.map {
+            if (it.remotePort == 3000) it.copy(status = PortForwardStatus.Failed, localPort = null, error = PortForwardError.Unauthorized) else it }) }
+        assertEquals(setOf(vite.forward), coordinator.externalForwards.value)
         client.state.update { it.copy(connection = ConnectionStatus.Disconnected, portForwards = emptyList()) }
-        assertTrue(coordinator.externalForwards.value.isEmpty())
-        val notice = coordinator.stoppedNotice.value!!
-        assertEquals("fixture", notice.environmentId)
-        assertTrue(notice.message.contains("port 5173") && notice.message.contains("connection ended"))
+        val notice = coordinator.stoppedNotices.value.getValue("fixture")
+        assertEquals(mapOf(3000 to ForwardLoss.Failed, 5173 to ForwardLoss.ConnectionEnded), notice.lost)
+        assertTrue(notice.message.contains("port 3000 failed") && notice.message.contains("port 5173 stopped because the connection ended"))
         assertFalse(notice.message.contains("localhost"))
-        coordinator.dismissStoppedNotice()
-        assertNull(coordinator.stoppedNotice.value)
+        assertEquals(api.forward.environmentId, notice.environmentId)
+
+        // Announced app-wide once; dismissing clears it.
+        assertEquals(notice.message, coordinator.announceStopped("fixture"))
+        assertNull(coordinator.announceStopped("fixture"))
+        assertNull(coordinator.announceStopped("other"))
+        coordinator.dismissStoppedNotice("fixture")
+        assertTrue(coordinator.stoppedNotices.value.isEmpty())
     }
 
-    @Test fun theHoldEndsOnAFailedForwardAndOnAnEnvironmentSwitch() = run { client, coordinator, _ ->
-        coordinator.openExternal(5173)
+    @Test fun anEnvironmentSwitchEndsTheHoldAndANewOpenClearsTheNotice() = run { client, coordinator, _ ->
+        openInBrowser(coordinator, 5173)
         coordinator.inBackground = true
-        client.state.update { it.copy(portForwards = listOf(PortForward("fixture", 5173, status = PortForwardStatus.Failed, error = PortForwardError.Unauthorized))) }
-        assertTrue(coordinator.externalForwards.value.isEmpty())
-        assertTrue(coordinator.stoppedNotice.value!!.message.contains("failed"))
-
-        coordinator.inBackground = false
-        client.state.update { it.copy(portForwards = emptyList()) }
-        coordinator.openExternal(5173)
-        // A new open clears the old notice.
-        assertNull(coordinator.stoppedNotice.value)
-        assertEquals(held, coordinator.externalForwards.value)
         client.state.update { it.copy(environment = client.environment.copy(id = "other")) }
         assertTrue(coordinator.externalForwards.value.isEmpty())
+        assertNotNull(coordinator.stoppedNotices.value["fixture"])
+        client.state.update { it.copy(environment = client.environment, portForwards = emptyList()) }
+        coordinator.inBackground = false
+        openInBrowser(coordinator, 5173)
+        assertTrue(coordinator.stoppedNotices.value.isEmpty())
     }
 
-    @Test fun noBrowserForTheUrlReleasesTheHold() = run { _, coordinator, _ ->
-        coordinator.openExternal(5173)
-        coordinator.externalOpenFailed("http://localhost:9/")
-        assertEquals(held, coordinator.externalForwards.value)
-        coordinator.externalOpenFailed("http://localhost:25173/")
+    @Test fun releaseAllEndsEveryHoldWithoutANotice() = run { client, coordinator, _ ->
+        openInBrowser(coordinator, 5173)
+        coordinator.inBackground = true
+        coordinator.releaseAll()
         assertTrue(coordinator.externalForwards.value.isEmpty())
+        client.state.update { it.copy(connection = ConnectionStatus.Disconnected, portForwards = emptyList()) }
+        assertTrue(coordinator.stoppedNotices.value.isEmpty())
+    }
+
+    @Test fun anIdleHeldForwardStopsHoldingAfterTheLimit() = kotlinx.coroutines.test.runTest {
+        val scope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler))
+        val client = FakeClient()
+        val coordinator = PortForwardCoordinator(scope, client, onExternalForwardsChanged = { holdChanges++ }) {}
+        try {
+            val request = openInBrowser(coordinator, 5173)
+            coordinator.inBackground = true
+            // An open page keeps it held however long it stays open.
+            client.state.update { s -> s.copy(portForwards = s.portForwards.map { it.copy(activeConnections = 1) }) }
+            testScheduler.advanceTimeBy(EXTERNAL_FORWARD_IDLE_MS * 3); testScheduler.runCurrent()
+            assertEquals(setOf(request.forward), coordinator.externalForwards.value)
+            // The tab closed: the clock starts now.
+            client.state.update { s -> s.copy(portForwards = s.portForwards.map { it.copy(activeConnections = 0) }) }
+            testScheduler.advanceTimeBy(EXTERNAL_FORWARD_IDLE_MS - 1); testScheduler.runCurrent()
+            assertEquals(setOf(request.forward), coordinator.externalForwards.value)
+            testScheduler.advanceTimeBy(1); testScheduler.runCurrent()
+            assertTrue(coordinator.externalForwards.value.isEmpty())
+            // The forward itself stays; only the hold ended, and the return explains why.
+            assertEquals(1, client.state.value.portForwards.size)
+            assertEquals(mapOf(5173 to ForwardLoss.Idle), coordinator.stoppedNotices.value.getValue("fixture").lost)
+            assertTrue(coordinator.stoppedNotices.value.getValue("fixture").message.contains("10 minutes"))
+        } finally { scope.cancel() }
     }
 
     @Test fun openInAppForwardsThenShowsLoopbackUrlTitledByProcessName() = run { client, coordinator, errors ->
@@ -120,7 +197,7 @@ class PortForwardCoordinatorTest {
 
     @Test fun openExternalEmitsTheUrlOnceAndLeavesTheBrowserClosed() = run { client, coordinator, _ ->
         val urls = mutableListOf<String>()
-        val job = launch(start = CoroutineStart.UNDISPATCHED) { coordinator.externalUrls.toList(urls) }
+        val job = launch(start = CoroutineStart.UNDISPATCHED) { coordinator.externalUrls.collect { urls += it.url } }
         coordinator.openExternal(5173)
         yield()
         assertEquals(listOf("http://localhost:25173/"), urls)

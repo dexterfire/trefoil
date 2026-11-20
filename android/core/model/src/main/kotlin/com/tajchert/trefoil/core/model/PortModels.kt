@@ -64,6 +64,8 @@ data class PortForward(
      * never resolve to an IPv6 listener of another app.
      */
     val localHost: String = LOCALHOST,
+    /** Identifies one listener: a forward that replaces this one on the same port (a retry after a failure) gets a new value. */
+    val instance: Long = 0L,
 ) {
     /** URL that the in-app WebView or an external browser opens; null until bound. */
     val localUrl: String? get() = localPort?.let { "http://$localHost:$it/" }

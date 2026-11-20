@@ -83,8 +83,8 @@ fun TrefoilApp(
     onStopPortForward: (Int) -> Unit = {},
     onForwardPort: (Int) -> Unit = {},
     onClosePortBrowser: () -> Unit = {},
-    stoppedForwards: StoppedForwardNotice? = null,
-    onDismissStoppedForwards: () -> Unit = {},
+    stoppedForwards: Map<String, StoppedForwardNotice> = emptyMap(),
+    onDismissStoppedForwards: (environmentId: String) -> Unit = {},
 ) {
     TrefoilTheme {
         val conversationState = rememberSaveableStateHolder()
@@ -133,8 +133,8 @@ fun TrefoilApp(
             threadTitles = remember(state.threads) { state.threads.associate { it.id to it.title } },
             live = state.localServers.live, supported = state.localServers.supported, tunnelsDisabled = state.previewTunnelDisabled,
             canWrite = state.canWrite && state.connection == ConnectionStatus.Connected, selectedThreadId = state.selectedThreadId,
-            stoppedNotice = stoppedForwards?.takeIf { it.environmentId == state.environment?.id }?.message)
-        val portsActions = PortsActions({ showPorts = false }, onOpenPortInApp, onOpenPortExternal, onStopPortForward, onForwardPort, onDismissStoppedForwards)
+            stoppedNotice = state.environment?.id?.let { stoppedForwards[it] }?.message)
+        val portsActions = PortsActions({ showPorts = false }, onOpenPortInApp, onOpenPortExternal, onStopPortForward, onForwardPort) { state.environment?.id?.let(onDismissStoppedForwards) }
         var screenFullscreen by rememberSaveable { mutableStateOf(false) }
         LaunchedEffect(state.environment?.id, screenViewer.target) { if (screenViewer.target == null) screenFullscreen = false }
         var showThread by rememberSaveable { mutableStateOf(false) }

@@ -69,8 +69,8 @@ class TrefoilViewModel internal constructor(application: Application, private va
     val notice = _notice.asStateFlow()
     /** Dev-server forwards and the in-app tunnel browser; failures surface as [notice] like other actions. */
     val portForwards = com.tajchert.trefoil.ui.ports.PortForwardCoordinator(viewModelScope, client, onExternalForwardsChanged = { checkKeepAlive() }) { _notice.value = it }
-    /** The device has no app that can open a forwarded dev server's [url]. */
-    fun externalOpenFailed(url: String) { portForwards.externalOpenFailed(url); _notice.value = "No browser found to open the dev server." }
+    /** The device has no app that can open a forwarded dev server's URL. */
+    fun externalOpenFailed() { _notice.value = "No browser found to open the dev server." }
     private val _working = MutableStateFlow(false)
     val working = _working.asStateFlow()
     private val _isRefreshing = MutableStateFlow(false)
@@ -612,6 +612,8 @@ class TrefoilViewModel internal constructor(application: Application, private va
         // The disconnect below waits for connectionMutex; a check posted before then must not restart the service.
         keepAliveLatched = true
         stopKeepAlive(releaseBackground = false)
+        // Asked for (also from the keep-alive notification), so ending the forwards it held is not a loss to report.
+        portForwards.releaseAll()
         action("Could not disconnect.") { connectionMutex.withLock { disconnectCurrent() } }
     }
 
@@ -696,6 +698,12 @@ class TrefoilViewModel internal constructor(application: Application, private va
             }
         }
     }
+    /** Dismisses the lost-forward notice of [environmentId] on its ports screen and the app-wide banner that announced it. */
+    fun dismissStoppedForwards(environmentId: String) {
+        val message = portForwards.stoppedNotices.value[environmentId]?.message
+        portForwards.dismissStoppedNotice(environmentId)
+        if (message != null && _notice.value == message) _notice.value = null
+    }
     fun resume() {
         foreground = true
         portForwards.inBackground = false
@@ -719,8 +727,9 @@ class TrefoilViewModel internal constructor(application: Application, private va
             (state.value.connection != ConnectionStatus.Connected || state.value.environment?.id != target.id ||
                 (client.millisSinceLastPong()?.let { it > RETAINED_CONNECTION_FRESHNESS_MS } != false))) connect(target)
         else if (environment != null && !reconnectInFlight && state.value.environment?.id == environment.id) refreshRetainedShell()
-        // Set after any connect above (which clears notices), so the user learns why a page in their browser stopped loading.
-        portForwards.stoppedNotice.value?.let { _notice.value = it.message }
+        // Set after any connect above (which clears notices), so the user learns why a page in their browser stopped
+        // loading; once, and only while the machine it is about is the one shown.
+        state.value.environment?.id?.let(portForwards::announceStopped)?.let { _notice.value = it }
         probeMachines(skipId = target?.id)
     }
 
