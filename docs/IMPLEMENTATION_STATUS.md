@@ -139,8 +139,9 @@ signed APK upgraded 0.6.3 in place on the isolated Android 17 tablet with the or
 an isolated T3 server (devReplay provider, no real providers or user data), the app created a Supervised
 thread from its first message, approved a request, switched mode, reconnected and sent a follow-up,
 staying connected throughout. The user's exact "Disconnected without error" banner wasn't reproduced
-directly; the likely silent paths are fixed. Plan mode, worktree launch, attachments and persisted drafts
-across process death remain follow-ups.
+directly; the likely silent paths are fixed. Plan mode, worktree launch and attachments remain follow-ups.
+Composer drafts (new-thread prompts and thread replies) persist locally and encrypted across restarts; they never
+sync to the server, as in T3 Code.
 
 ## Keep connected in background (0.16.0)
 

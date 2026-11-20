@@ -22,6 +22,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.remember
+import com.tajchert.trefoil.ui.ComposerDraftUi
 import com.tajchert.trefoil.ui.TrefoilApp
 import com.tajchert.trefoil.ui.FileDownloadUi
 import com.tajchert.trefoil.downloads.CompletedDownload
@@ -124,6 +126,10 @@ class MainActivity : ComponentActivity() {
             val usage by model.usage.collectAsStateWithLifecycle()
             val keepConnected by model.keepConnected.collectAsStateWithLifecycle()
             val refreshing by model.isRefreshing.collectAsStateWithLifecycle()
+            val composerDrafts by model.composerDrafts.collectAsStateWithLifecycle()
+            val composerDraftUi = remember(composerDrafts) {
+                ComposerDraftUi(composerDrafts, model::composerDraft, model::updateComposerDraft, model::clearComposerDraft, model::restoreComposerDraft, model::moveComposerDraft)
+            }
             TrefoilApp(
                 onThreadShown = model::setThreadShown,
                 usageOpenRequest = usageRequest,
@@ -144,6 +150,7 @@ class MainActivity : ComponentActivity() {
                 onThreadAction = model::threadAction,
                 isRefreshing = refreshing,
                 onRefresh = model::refresh,
+                composerDrafts = composerDraftUi,
                 onUndoSettlement = model::undoSettlement,
                 onLoadActivity = model::loadActivity,
                 screenViewer = screenViewer,

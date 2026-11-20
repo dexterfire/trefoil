@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tajchert.trefoil.R
 import com.tajchert.trefoil.core.model.*
+import com.tajchert.trefoil.core.session.ComposerDraftKey
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
@@ -62,6 +63,8 @@ internal fun Conversation(
     onOpenThread: ((String) -> Unit)? = null,
     /** Other threads waiting for the user; shown as a badge on the back arrow. */
     otherNeedsYou: Int = 0,
+    /** Local unsent reply text; the composer starts from it and writes every change back. */
+    composerDrafts: ComposerDraftUi = ComposerDraftUi(),
 ) {
     val c = Tf.colors
     // A draft hides whatever thread was previously selected; its first message creates the real thread.
@@ -81,13 +84,20 @@ internal fun Conversation(
         return
     }
     val composerKey = if (draft != null) "draft" else state.selectedThreadId
-    var text by rememberSaveable(state.environment?.id, composerKey) { mutableStateOf("") }
+    val replyKey = state.environment?.id?.let { environment -> state.selectedThreadId?.takeIf { draft == null }?.let { ComposerDraftKey.Reply(environment, it) } }
+    var text by rememberSaveable(state.environment?.id, composerKey) { mutableStateOf(replyKey?.let { composerDrafts.get(it)?.text }.orEmpty()) }
+    // The store loads asynchronously: a stored reply that arrives later fills an untouched, empty composer, never one the user edited.
+    var edited by rememberSaveable(state.environment?.id, composerKey) { mutableStateOf(false) }
+    val storedReply = replyKey?.let { composerDrafts.drafts[it]?.text }
+    LaunchedEffect(replyKey, storedReply) { if (!edited && text.isBlank() && storedReply != null) text = storedReply }
+    fun editText(value: String) { text = value; edited = true; replyKey?.let { composerDrafts.update(it, value, null, null, null, null) } }
     var submitted by rememberSaveable(state.environment?.id, composerKey) { mutableStateOf<String?>(null) }
     var messageIdsAtSend by rememberSaveable(state.environment?.id, composerKey) { mutableStateOf(arrayListOf<String>()) }
     val canSend = state.canWrite && !state.busy
     /** The one send path: the Send button and the seeded first prompt both go through here. */
     fun submit(value: String): Boolean {
         if (value.isBlank() || submitted != null || !canSend) return false
+        edited = true // the accepted send clears the stored draft; a late-loading one must not refill the composer
         messageIdsAtSend = ArrayList(state.messages.map { it.id })
         submitted = value
         send(value)
@@ -245,7 +255,7 @@ internal fun Conversation(
             Column(Modifier.windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))) {
                 QuickReplies(state.requests, canSend, respond)
                 if (thread != null && thread.isProviderNativeSubagentThread()) ReadOnlySubagentBar(thread, clock, onOpenParent)
-                else ConversationComposer(state, draft, text, { text = it }, submitted != null, onSetRuntimeMode, onSetModel, onSetModelOption, interrupt) { submit(text) }
+                else ConversationComposer(state, draft, text, ::editText, submitted != null, onSetRuntimeMode, onSetModel, onSetModelOption, interrupt) { submit(text) }
             }
         }
     }

@@ -69,6 +69,7 @@ fun TrefoilApp(
     onAllowLocalNetworkHttp: (String, Boolean) -> Unit = { _, _ -> },
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
+    composerDrafts: ComposerDraftUi = ComposerDraftUi(),
 ) {
     TrefoilTheme {
         val conversationState = rememberSaveableStateHolder()
@@ -86,6 +87,13 @@ fun TrefoilApp(
         var pairLink by remember { mutableStateOf<Pair<Long, String>?>(null) }
         LaunchedEffect(pairing) { if (!pairing) pairLink = null }
         var creating by rememberSaveable { mutableStateOf(false) }
+        // Project of the draft row that opened the sheet; null when opened from "+".
+        var creatingProject by rememberSaveable { mutableStateOf<String?>(null) }
+        val uiScope = rememberCoroutineScope()
+        val discardDraft: (com.tajchert.trefoil.core.session.ComposerDraft) -> Unit = { discarded ->
+            composerDrafts.clear(discarded.key)
+            uiScope.launch { if (snackbar.showSnackbar("Draft discarded", "Undo", duration = SnackbarDuration.Long) == SnackbarResult.ActionPerformed) composerDrafts.restore(discarded) }
+        }
         // First prompt typed in the new-thread sheet; the draft conversation sends it via its composer.
         var seedPrompt by rememberSaveable { mutableStateOf<String?>(null) }
         var showScreens by rememberSaveable(state.environment?.id) { mutableStateOf(false) }
@@ -232,10 +240,11 @@ fun TrefoilApp(
                                 val list: @Composable (Modifier) -> Unit = { modifier ->
                                     Box(modifier.statusBarsPadding()) {
                                         conversationState.SaveableStateProvider("thread-list:${state.environment?.id}") {
-                                            ThreadList(state, select, { creating = true }, onThreadAction,
+                                            ThreadList(state, select, { creatingProject = null; creating = true }, onThreadAction,
                                                 selectedId = if (twoPane && draft == null) state.selectedThreadId else null,
                                                 shell = shell, railLayout = layout == ShellLayout.Rail,
                                                 isRefreshing = isRefreshing, onRefresh = onRefresh,
+                                                composerDrafts = composerDrafts, onOpenDraft = { creatingProject = it; creating = true }, onDiscardDraft = discardDraft,
                                                 banner = { ConnectionBanner(state, onReconnect) })
                                         }
                                     }
@@ -245,7 +254,7 @@ fun TrefoilApp(
                                         if (!twoPane) ConnectionBanner(state, onReconnect)
                                         Box(Modifier.weight(1f)) {
                                             conversationState.SaveableStateProvider("${state.environment?.id}:${if (draft != null) "draft" else state.selectedThreadId}") {
-                                                Conversation(state, onSend, onInterrupt, onRespond, onLoadActivity = onLoadActivity, fileDownloadUi = fileDownloadUi,
+                                                Conversation(state, onSend, onInterrupt, onRespond, onLoadActivity = onLoadActivity, composerDrafts = composerDrafts, fileDownloadUi = fileDownloadUi,
                                                     draft = draft, onSetRuntimeMode = onSetRuntimeMode, onSetModel = onSetModel, onSetModelOption = onSetModelOption, sendFailed = sendFailed,
                                                     onBack = if (backParent != null) ({ select(backParent.id) }) else if (twoPane) null else ({ cancelDraft(); showThread = false }),
                                                     onOpenParent = parentThread?.let { p -> { select(p.id) } },
@@ -298,10 +307,10 @@ fun TrefoilApp(
             PairDialog(state.busy, { pairing = false; submittedPair = false; onCancelSsh() }, connectionAttempt.takeIf { it.kind == ConnectionKind.Pairing } ?: ConnectionAttempt(), pairLink?.second.orEmpty()) { url, name, insecure -> submittedPair = true; onPair(url, name, insecure) }
         }
         if (showAgents && roster != null) ThreadAgentsSheet(roster, state.providers, state.models, steadyWrite, { showAgents = false }, openAgent, onStopSubagent)
-        if (creating) NewThreadSheet(state, { creating = false }) { newDraft, prompt ->
+        if (creating) NewThreadSheet(state, { creating = false }, { newDraft, prompt ->
             seedPrompt = prompt.trim().takeIf { it.isNotEmpty() }
             onStartDraft(newDraft); creating = false; showThread = true
-        }
+        }, composerDrafts, creatingProject)
     }
 }
 

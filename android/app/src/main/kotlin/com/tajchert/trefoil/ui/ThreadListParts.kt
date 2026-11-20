@@ -38,6 +38,8 @@ import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tajchert.trefoil.core.model.*
+import com.tajchert.trefoil.core.session.ComposerDraft
+import com.tajchert.trefoil.core.session.ComposerDraftKey
 
 /* ---------- Header ---------- */
 
@@ -203,7 +205,7 @@ internal fun threadRowTime(thread: ThreadSummary, now: Long): String {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun ThreadRow(state: ClientState, thread: ThreadSummary, project: Project?, now: Long, selected: Boolean,
-                       onAction: (ThreadTarget, ThreadAction, String?) -> Unit, select: () -> Unit) {
+                       onAction: (ThreadTarget, ThreadAction, String?) -> Unit, replyDraft: ComposerDraft? = null, select: () -> Unit) {
     val c = Tf.colors
     val indicator = threadIndicator(thread)
     val mark = threadRowMark(thread)
@@ -228,7 +230,15 @@ internal fun ThreadRow(state: ClientState, thread: ThreadSummary, project: Proje
                 }
                 val preview = thread.latestMessage.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }
                 val needs = indicator.kind in setOf("attention", "input")
+                // An unsent reply replaces the latest message unless the thread is open (its composer shows the text).
+                val draftLine = replyDraft?.takeIf { !selected }?.let(::draftFirstLine)
                 when {
+                    draftLine != null && needs -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(indicator.label, style = TrefoilType.preview, color = c.amber, maxLines = 1, softWrap = false)
+                        Text(" · ", style = TrefoilType.preview, color = c.muted, maxLines = 1)
+                        DraftPreview(draftLine, Modifier.weight(1f, fill = false))
+                    }
+                    draftLine != null -> DraftPreview(draftLine)
                     // A waiting thread always names what it wants; the label keeps its width and the preview gives way.
                     needs -> Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(indicator.label, style = TrefoilType.preview, color = c.amber, maxLines = 1, softWrap = false)
@@ -251,6 +261,47 @@ internal fun ThreadRow(state: ClientState, thread: ThreadSummary, project: Proje
             }
         }
         if (hasMenu) ThreadActionsDropdown(state, thread, onAction, menu, { menu = it }, offset = DpOffset(74.dp, 0.dp))
+    }
+}
+
+/** First non-blank line of a draft's text, trimmed; null when there is none. */
+internal fun draftFirstLine(draft: ComposerDraft): String? = draft.text.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }
+
+/** Pencil plus "Draft: <first line>" in the accent colour. */
+@Composable
+internal fun DraftPreview(firstLine: String, modifier: Modifier = Modifier) {
+    val c = Tf.colors
+    Row(modifier.semantics(mergeDescendants = true) { contentDescription = "Draft: $firstLine" }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        Icon(TfIcons.Edit, null, Modifier.size(13.dp), tint = c.accent)
+        Text("Draft: $firstLine", style = TrefoilType.preview, color = c.accent, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** Relative age of a draft edited at [updatedAtMillis], in the same units as the thread rows. */
+internal fun relativeDraftTime(updatedAtMillis: Long, now: Long): String = relativeThreadTime(java.time.Instant.ofEpochMilli(updatedAtMillis).toString(), now)
+
+/** One unsent new-thread prompt: pencil, project tile, first line, "Draft" label and age. Tap reopens the sheet; the trailing button discards. */
+@Composable
+internal fun DraftRow(draft: ComposerDraft, project: Project, now: Long, onOpen: () -> Unit, onDiscard: () -> Unit) {
+    val c = Tf.colors
+    val title = draftFirstLine(draft) ?: "Untitled draft"
+    Row(Modifier.fillMaxWidth().clickable(onClickLabel = "Open draft", onClick = onOpen).semantics(mergeDescendants = true) { contentDescription = "Draft in ${project.title}: $title" }
+        .padding(start = 20.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.Top) {
+        ProjectTile(project.title, size = 40.dp, key = project.id)
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(TfIcons.Edit, null, Modifier.size(15.dp), tint = c.accent)
+                Text(title, Modifier.weight(1f), style = TrefoilType.rowTitle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                val time = relativeDraftTime(draft.updatedAtMillis, now)
+                if (time.isNotEmpty()) Text(time, style = TrefoilType.meta, color = c.muted, maxLines = 1)
+            }
+            Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Draft", style = TrefoilType.preview, color = c.accent, maxLines = 1, softWrap = false)
+                Text("· ${project.title}", Modifier.weight(1f, fill = false), style = TrefoilType.meta, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        IconButton(onClick = onDiscard, Modifier.size(40.dp)) { Icon(TfIcons.Close, "Discard draft", Modifier.size(18.dp), tint = c.muted) }
     }
 }
 

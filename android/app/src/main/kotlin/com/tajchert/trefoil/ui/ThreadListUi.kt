@@ -15,6 +15,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.tajchert.trefoil.core.model.*
+import com.tajchert.trefoil.core.session.ComposerDraft
+import com.tajchert.trefoil.core.session.ComposerDraftKey
+import com.tajchert.trefoil.core.session.hasContent
 import java.time.Instant
 import java.util.Locale
 import kotlinx.coroutines.delay
@@ -173,7 +176,20 @@ internal fun threadFilterCounts(shelves: List<ThreadShelf>): Map<ThreadFilter, I
     ThreadFilter.Working to threadSections(shelves, ThreadFilter.Working).sumOf { it.threads.size },
 )
 
-private val defaultExpanded = listOf("Needs you", "Pinned", "Working", "Recent")
+private val defaultExpanded = listOf("Drafts", "Needs you", "Pinned", "Working", "Recent")
+
+/**
+ * Unsent new-thread prompts to list for [environmentId], newest first: only drafts with text whose project is in [projects]
+ * (a draft of a missing project stays stored but hidden), narrowed by the project filter and the search query.
+ */
+internal fun threadDraftRows(drafts: Map<ComposerDraftKey, ComposerDraft>, environmentId: String?, projects: Map<String, Project>, projectId: String?, query: String = ""): List<Pair<ComposerDraft, Project>> =
+    drafts.values.mapNotNull { draft ->
+        val key = draft.key as? ComposerDraftKey.NewThread ?: return@mapNotNull null
+        if (key.environmentId != environmentId || !draft.hasContent() || (projectId != null && key.projectId != projectId)) return@mapNotNull null
+        val project = projects[key.projectId] ?: return@mapNotNull null
+        if (query.isNotBlank() && !draft.text.contains(query.trim(), ignoreCase = true) && !project.title.contains(query.trim(), ignoreCase = true)) return@mapNotNull null
+        draft to project
+    }.sortedByDescending { it.first.updatedAtMillis }
 
 /**
  * Threads list: header (machine pill or machine title on the rail layout), inline search, filter chips,
@@ -190,6 +206,9 @@ internal fun ThreadList(
     banner: @Composable () -> Unit = {},
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
+    composerDrafts: ComposerDraftUi = ComposerDraftUi(),
+    onOpenDraft: (String) -> Unit = {},
+    onDiscardDraft: (ComposerDraft) -> Unit = {},
 ) {
     var query by rememberSaveable(state.environment?.id) { mutableStateOf("") }
     var searching by rememberSaveable(state.environment?.id) { mutableStateOf(false) }
@@ -206,6 +225,10 @@ internal fun ThreadList(
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     val shelves = remember(filtered, now) { threadShelves(filtered, now) }
     val sections = remember(shelves, filter) { threadSections(shelves, filter) }
+    // Drafts belong to "All": the Needs you and Working chips are about threads.
+    val draftRows = remember(composerDrafts.drafts, state.environment?.id, projects, projectId, query, filter) {
+        if (filter == ThreadFilter.All) threadDraftRows(composerDrafts.drafts, state.environment?.id, projects, projectId, query) else emptyList()
+    }
     val counts = remember(shelves) { threadFilterCounts(shelves) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val liveTiming = remember(filtered) { filtered.any { thread ->
@@ -233,8 +256,17 @@ internal fun ThreadList(
         PullToRefreshBox(isRefreshing, onRefresh, Modifier.weight(1f).fillMaxWidth()) {
             val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottomInset + if (railLayout) 24.dp else 96.dp)) {
-                if (sections.isEmpty() && !state.busy) item(key = "empty") {
+                if (sections.isEmpty() && draftRows.isEmpty() && !state.busy) item(key = "empty") {
                     ThreadListEmpty(searching = query.isNotBlank() || filter != ThreadFilter.All || projectId != null)
+                }
+                if (draftRows.isNotEmpty()) {
+                    val draftsOpen = query.isNotBlank() || "Drafts" in expanded
+                    item(key = "shelf:Drafts", contentType = "shelf") {
+                        ShelfLabel("Drafts", draftRows.size, draftsOpen, dot = null) { expanded = if ("Drafts" in expanded) expanded - "Drafts" else expanded + "Drafts" }
+                    }
+                    if (draftsOpen) items(draftRows, key = { (draft, _) -> "draft:${(draft.key as ComposerDraftKey.NewThread).projectId}" }, contentType = { "draft" }) { (draft, project) ->
+                        DraftRow(draft, project, now, { onOpenDraft(project.id) }) { onDiscardDraft(draft) }
+                    }
                 }
                 sections.forEach { section ->
                     val open = query.isNotBlank() || filter != ThreadFilter.All || section.title in expanded
@@ -244,7 +276,8 @@ internal fun ThreadList(
                         else ShelfLabel(section.title, section.threads.size, open, dot = if (section.title == "Needs you") c.amber else null, toggle = toggle)
                     }
                     if (open) items(section.threads, key = { "thread:${section.title}:${it.id}" }, contentType = { "thread" }) { thread ->
-                        ThreadRow(state, thread, projects[thread.projectId], now, selected = thread.id == selectedId, onAction = onAction) { select(thread.id) }
+                        ThreadRow(state, thread, projects[thread.projectId], now, selected = thread.id == selectedId, onAction = onAction,
+                            replyDraft = composerDrafts.drafts[ComposerDraftKey.Reply(state.environment?.id.orEmpty(), thread.id)]?.takeIf { it.hasContent() }) { select(thread.id) }
                     }
                 }
             }

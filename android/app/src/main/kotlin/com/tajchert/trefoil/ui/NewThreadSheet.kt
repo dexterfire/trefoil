@@ -33,6 +33,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tajchert.trefoil.core.model.*
+import com.tajchert.trefoil.core.session.ComposerDraft
+import com.tajchert.trefoil.core.session.ComposerDraftKey
+import com.tajchert.trefoil.core.session.hasContent
 
 /** Modes the model supports; an empty or missing list means every mode is allowed. */
 internal fun allowedRuntimeModes(model: ModelOption?): List<RuntimeMode> =
@@ -54,13 +57,31 @@ internal fun resolveRuntimeMode(preferred: RuntimeMode?, allowed: List<RuntimeMo
     preferred?.takeIf { it in allowed } ?: allowed.first()
 
 /**
+ * The local, unsent composer drafts as the UI sees them: [drafts] holds those with text (empty until loaded),
+ * [get] also returns a settings-only new-thread draft. The callbacks write through to the view model's store.
+ */
+class ComposerDraftUi(
+    val drafts: Map<ComposerDraftKey, ComposerDraft> = emptyMap(),
+    val get: (ComposerDraftKey) -> ComposerDraft? = { drafts[it] },
+    val update: (key: ComposerDraftKey, text: String, modelInstanceId: String?, model: String?, runtimeMode: String?, effort: String?) -> Unit = { _, _, _, _, _, _ -> },
+    val clear: (ComposerDraftKey) -> Unit = {},
+    val restore: (ComposerDraft) -> Unit = {},
+    val move: (from: ComposerDraftKey, to: ComposerDraftKey, keepSource: Boolean) -> Unit = { _, _, _ -> },
+)
+
+/** The most recently edited new-thread draft with text for [environmentId] whose project still exists. */
+internal fun recentNewThreadDraft(drafts: Map<ComposerDraftKey, ComposerDraft>, environmentId: String?, projects: List<Project>): ComposerDraft? =
+    drafts.values.filter { it.key is ComposerDraftKey.NewThread && it.key.environmentId == environmentId && it.hasContent() && projects.any { p -> p.id == (it.key as ComposerDraftKey.NewThread).projectId } }
+        .maxByOrNull { it.updatedAtMillis }
+
+/**
  * New thread: pick project, model and mode, optionally type the first prompt.
  * [start] receives the draft and the prompt (blank when none); the shell starts the draft and
  * hands the prompt to the conversation, which sends it through its normal composer path.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun NewThreadSheet(state: ClientState, dismiss: () -> Unit, start: (ThreadDraft, String) -> Unit) {
+internal fun NewThreadSheet(state: ClientState, dismiss: () -> Unit, start: (ThreadDraft, String) -> Unit, composerDrafts: ComposerDraftUi = ComposerDraftUi(), openProjectId: String? = null) {
     val c = Tf.colors
     ModalBottomSheet(
         onDismissRequest = dismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -68,18 +89,30 @@ internal fun NewThreadSheet(state: ClientState, dismiss: () -> Unit, start: (Thr
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
         contentWindowInsets = { WindowInsets(0) },
         dragHandle = { Box(Modifier.padding(top = 12.dp, bottom = 8.dp).size(36.dp, 4.dp).background(c.s3, RoundedCornerShape(2.dp))) },
-    ) { NewThreadSheetContent(state, dismiss, start, Modifier.imePadding().navigationBarsPadding()) }
+    ) { NewThreadSheetContent(state, dismiss, start, Modifier.imePadding().navigationBarsPadding(), composerDrafts = composerDrafts, openProjectId = openProjectId) }
 }
 
 /** Sheet body, separate from the [ModalBottomSheet] chrome so it renders and tests standalone. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun NewThreadSheetContent(state: ClientState, dismiss: () -> Unit, start: (ThreadDraft, String) -> Unit, modifier: Modifier = Modifier, initiallyCollapsed: Boolean? = null) {
+internal fun NewThreadSheetContent(
+    state: ClientState, dismiss: () -> Unit, start: (ThreadDraft, String) -> Unit, modifier: Modifier = Modifier, initiallyCollapsed: Boolean? = null,
+    composerDrafts: ComposerDraftUi = ComposerDraftUi(), openProjectId: String? = null,
+) {
     val c = Tf.colors
-    var projectId by rememberSaveable { mutableStateOf(state.projects.firstOrNull()?.id.orEmpty()) }
+    val environmentId = state.environment?.id
+    // A project from a draft row wins; from "+" the most recent draft's project is reopened. Drafts load asynchronously, so
+    // the effect below can still adopt one that arrives later while nothing was touched.
+    var projectId by rememberSaveable {
+        mutableStateOf(openProjectId?.takeIf { id -> state.projects.any { it.id == id } }
+            ?: recentNewThreadDraft(composerDrafts.drafts, environmentId, state.projects)?.let { (it.key as ComposerDraftKey.NewThread).projectId }
+            ?: state.projects.firstOrNull()?.id.orEmpty())
+    }
     var modelIndex by rememberSaveable { mutableIntStateOf(0) }
     var chosenMode by rememberSaveable { mutableStateOf((state.defaultRuntimeMode ?: RuntimeMode.ApprovalRequired).wire) }
-    var prompt by rememberSaveable { mutableStateOf("") }
+    var prompt by rememberSaveable { mutableStateOf(composerDrafts.get(ComposerDraftKey.NewThread(environmentId.orEmpty(), projectId))?.text.orEmpty()) }
+    // True once the user changed text, project or settings: a draft that loads later must not overwrite that.
+    var touched by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
     var searching by rememberSaveable { mutableStateOf(false) }
     var expanded by rememberSaveable { mutableStateOf(false) }
@@ -97,8 +130,51 @@ internal fun NewThreadSheetContent(state: ClientState, dismiss: () -> Unit, star
     val reasoning = model?.reasoning?.takeIf { it.selectableChoices.isNotEmpty() }
     val explicitOptions: ModelOptionValues = if (reasoning != null && chosenEffort != null) model.validOptions(mapOf(reasoning.id to chosenEffort!!)) else emptyMap()
     LaunchedEffect(model, reasoning) { if (chosenEffort != null && explicitOptions.isEmpty()) chosenEffort = null }
+    // Seed from the stored draft: it may arrive after the sheet opens (the store loads asynchronously) and is applied
+    // only while the user has not touched anything.
+    LaunchedEffect(composerDrafts.drafts, state.models, state.projects, environmentId) {
+        if (touched || environmentId == null) return@LaunchedEffect
+        if (openProjectId == null) recentNewThreadDraft(composerDrafts.drafts, environmentId, state.projects)?.let { recent ->
+            val recentProject = (recent.key as ComposerDraftKey.NewThread).projectId
+            if (recentProject != projectId && prompt.isBlank() && composerDrafts.get(ComposerDraftKey.NewThread(environmentId, projectId))?.hasContent() != true) projectId = recentProject
+        }
+        val saved = composerDrafts.get(ComposerDraftKey.NewThread(environmentId, projectId)) ?: return@LaunchedEffect
+        if (prompt.isBlank() && saved.text.isNotBlank()) prompt = saved.text
+        state.models.indexOfFirst { it.instanceId == saved.modelInstanceId && it.model == saved.model }.takeIf { it >= 0 }?.let { modelIndex = it }
+        saved.runtimeMode?.let { chosenMode = it }
+        saved.effort?.let { chosenEffort = it }
+    }
     val allowedModes = allowedRuntimeModes(model)
     val mode = resolveRuntimeMode(RuntimeMode.fromWire(chosenMode), allowedModes)
+    // Write-through: every user change goes to the store (it debounces); initial composition never writes, so it cannot
+    // overwrite a draft that has not loaded yet.
+    fun persist(text: String = prompt, index: Int = modelIndex, modeWire: String = chosenMode, effort: String? = chosenEffort, id: String = projectId) {
+        val env = environmentId ?: return
+        if (id.isEmpty()) return
+        val chosen = state.models.getOrNull(index)
+        composerDrafts.update(ComposerDraftKey.NewThread(env, id), text, chosen?.instanceId, chosen?.model, modeWire.takeIf { chosen != null }, effort.takeIf { chosen != null })
+    }
+    /** Switching project keeps the typed prompt: a draft already stored for the target wins and leaves this one in place; otherwise the draft moves. */
+    fun pickProject(id: String) {
+        if (id == projectId) return
+        touched = true
+        val env = environmentId
+        val target = env?.let { composerDrafts.get(ComposerDraftKey.NewThread(it, id)) }
+        if (env != null && target != null && target.hasContent()) {
+            persist()
+            projectId = id
+            prompt = target.text
+            state.models.indexOfFirst { it.instanceId == target.modelInstanceId && it.model == target.model }.takeIf { it >= 0 }?.let { modelIndex = it }
+            target.runtimeMode?.let { chosenMode = it }
+            chosenEffort = target.effort
+        } else {
+            if (env != null && prompt.isNotBlank()) {
+                persist()
+                composerDrafts.move(ComposerDraftKey.NewThread(env, projectId), ComposerDraftKey.NewThread(env, id), false)
+            }
+            projectId = id
+        }
+    }
     val canStart = state.canLaunchThreads && !state.busy && selectedProject != null && model != null
 
     val filtered = state.projects.filter { query.isBlank() || it.title.contains(query.trim(), ignoreCase = true) }
@@ -132,10 +208,10 @@ internal fun NewThreadSheetContent(state: ClientState, dismiss: () -> Unit, star
             else Column {
                 if (searching) OutlinedTextField(query, { query = it }, singleLine = true, placeholder = { Text("Search projects") }, shape = TfFieldShape, colors = tfFieldColors(),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(onSearch = { filtered.singleOrNull()?.let { projectId = it.id; collapsePicker() } }), modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp))
+                    keyboardActions = KeyboardActions(onSearch = { filtered.singleOrNull()?.let { pickProject(it.id); collapsePicker() } }), modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp))
                 if (state.projects.isEmpty()) Text("No projects reported by this environment.", style = TrefoilType.preview, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = 6.dp))
                 FlowRow(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    shown.forEach { project -> ProjectChip(project, project.id == projectId) { projectId = project.id; collapsePicker() } }
+                    shown.forEach { project -> ProjectChip(project, project.id == projectId) { pickProject(project.id); collapsePicker() } }
                     if (hidden > 0) Box(
                         Modifier.height(40.dp).clip(RoundedCornerShape(14.dp)).border(1.dp, c.line, RoundedCornerShape(14.dp))
                             .clickable(role = Role.Button, onClick = { expanded = true }).padding(horizontal = 14.dp)
@@ -148,7 +224,7 @@ internal fun NewThreadSheetContent(state: ClientState, dismiss: () -> Unit, star
 
         Column(Modifier.padding(top = 20.dp).fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(c.s1).border(1.dp, c.line, RoundedCornerShape(24.dp))) {
             TextField(
-                prompt, { prompt = it }, Modifier.fillMaxWidth().heightIn(min = 140.dp).onFocusChanged { if (it.isFocused && selectedProject != null) collapsePicker() }, minLines = 5, maxLines = 10, enabled = !state.busy,
+                prompt, { prompt = it; touched = true; persist(text = it) }, Modifier.fillMaxWidth().heightIn(min = 140.dp).onFocusChanged { if (it.isFocused && selectedProject != null) collapsePicker() }, minLines = 5, maxLines = 10, enabled = !state.busy,
                 textStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 24.sp),
                 placeholder = { Text("What should the agent do?", fontSize = 17.sp, lineHeight = 24.sp) },
                 colors = TextFieldDefaults.colors(
@@ -177,7 +253,7 @@ internal fun NewThreadSheetContent(state: ClientState, dismiss: () -> Unit, star
                         DropdownMenuItem(
                             text = { Column { Text(option.label); Text(option.instanceId, style = TrefoilType.mono, color = c.muted) } },
                             trailingIcon = { if (index == modelIndex) Icon(TfIcons.Check, null, Modifier.size(18.dp), tint = c.accent) },
-                            onClick = { modelIndex = index; modelMenu = false })
+                            onClick = { modelIndex = index; touched = true; persist(index = index); modelMenu = false })
                     }
                 }
             }
@@ -194,7 +270,7 @@ internal fun NewThreadSheetContent(state: ClientState, dismiss: () -> Unit, star
                                 text = { Column { Text(option.label); option.description?.let { Text(it, style = TrefoilType.meta, color = c.muted) } } },
                                 leadingIcon = { Icon(TfIcons.effort(effortBarCount(index, choices.size)), null, Modifier.size(18.dp), tint = c.muted) },
                                 trailingIcon = { if (option.id == current?.id) Icon(TfIcons.Check, null, Modifier.size(18.dp), tint = c.accent) },
-                                onClick = { chosenEffort = option.id; effortMenu = false })
+                                onClick = { chosenEffort = option.id; touched = true; persist(effort = option.id); effortMenu = false })
                         }
                     }
                 }
@@ -207,7 +283,7 @@ internal fun NewThreadSheetContent(state: ClientState, dismiss: () -> Unit, star
                             text = { Column { Text(option.label); Text(option.description, style = TrefoilType.meta, color = c.muted) } },
                             leadingIcon = { Icon(option.icon, null, Modifier.size(18.dp), tint = c.muted) },
                             trailingIcon = { if (option == mode) Icon(TfIcons.Check, null, Modifier.size(18.dp), tint = c.accent) },
-                            onClick = { chosenMode = option.wire; modeMenu = false })
+                            onClick = { chosenMode = option.wire; touched = true; persist(modeWire = option.wire); modeMenu = false })
                     }
                 }
             }
