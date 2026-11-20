@@ -126,9 +126,13 @@ class MainActivity : ComponentActivity() {
             val usage by model.usage.collectAsStateWithLifecycle()
             val keepConnected by model.keepConnected.collectAsStateWithLifecycle()
             val refreshing by model.isRefreshing.collectAsStateWithLifecycle()
-            val composerDrafts by model.composerDrafts.collectAsStateWithLifecycle()
-            val composerDraftUi = remember(composerDrafts) {
-                ComposerDraftUi(composerDrafts, model::composerDraft, model::updateComposerDraft, model::clearComposerDraft, model::restoreComposerDraft, model::moveComposerDraft)
+            // New-thread records and first-line reply previews change only on visible edits, not on every reply keystroke.
+            val newThreadDrafts by model.newThreadComposerDrafts.collectAsStateWithLifecycle()
+            val replyPreviews by model.replyDraftPreviews.collectAsStateWithLifecycle()
+            val draftsLoaded by model.composerDraftsLoaded.collectAsStateWithLifecycle()
+            val composerDraftUi = remember(newThreadDrafts, replyPreviews, draftsLoaded) {
+                ComposerDraftUi(newThreadDrafts + replyPreviews, model::composerDraft, model::updateComposerDraft, model::clearComposerDraft,
+                    model::discardComposerDraft, model::restoreComposerDraft, model::moveComposerDraft, model::updateComposerDraftText, draftsLoaded)
             }
             TrefoilApp(
                 onThreadShown = model::setThreadShown,

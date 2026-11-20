@@ -58,6 +58,9 @@ interface ComposerDraftPersistence {
     suspend fun save(json: String?)
 }
 
+/** Undo token of [ComposerDraftStore.discard]: restores [draft] only while its key is untouched since. */
+data class ComposerDraftDiscard(val draft: ComposerDraft, val revision: Long)
+
 class CorruptComposerDraftsException(cause: Throwable? = null) : Exception("Stored composer drafts are unreadable", cause)
 
 /**
@@ -79,10 +82,16 @@ class ComposerDraftStore(
 
     private val lock = Any()
     private var all: Map<ComposerDraftKey, ComposerDraft> = emptyMap()
-        set(value) { field = value; _drafts.value = value.filterValues { it.hasContent() } }
+        set(value) { field = value; _records.value = value; _drafts.value = value.filterValues { it.hasContent() } }
     private val _drafts = MutableStateFlow<Map<ComposerDraftKey, ComposerDraft>>(emptyMap())
     /** Drafts with content, by key. Empty until the persisted drafts are loaded. */
     val drafts: StateFlow<Map<ComposerDraftKey, ComposerDraft>> = _drafts.asStateFlow()
+    private val _records = MutableStateFlow<Map<ComposerDraftKey, ComposerDraft>>(emptyMap())
+    /** Every draft, including settings-only NewThread drafts. */
+    val records: StateFlow<Map<ComposerDraftKey, ComposerDraft>> = _records.asStateFlow()
+    private val _loaded = MutableStateFlow(false)
+    /** True once the first load attempt finished; editors must not write before (a write could replace a stored draft). */
+    val loaded: StateFlow<Boolean> = _loaded.asStateFlow()
     private val writeMutex = Mutex()
     private var dirty = false
     private var pendingWrite: Job? = null
@@ -94,7 +103,10 @@ class ComposerDraftStore(
     private val touchedBeforeLoad = mutableSetOf<ComposerDraftKey>()
     private val environmentsClearedBeforeLoad = mutableSetOf<String>()
 
-    private val loading: Job = scope.launch { load() }
+    private val loading: Job = scope.launch { try { load() } finally { _loaded.value = true } }
+
+    /** Suspends until the first load attempt finished. */
+    suspend fun awaitLoaded() = loading.join()
 
     /** The draft for [key], including a settings-only NewThread draft. */
     fun get(key: ComposerDraftKey): ComposerDraft? = synchronized(lock) { all[key] }
@@ -113,6 +125,21 @@ class ComposerDraftStore(
         if (current != null && current.copy(updatedAtMillis = next.updatedAtMillis) == next) return
         if (!next.hasContent() && !next.hasSettings()) return clear(key)
         mutate(key) { it + (key to next) }
+    }
+
+    /** Writes [text] keeping the draft's settings and pending launch (the conversation composer edits text only). */
+    fun updateText(key: ComposerDraftKey, text: String): Unit = synchronized(lock) {
+        val current = all[key]
+        if (key is ComposerDraftKey.NewThread && current != null) update(key, text, current.modelInstanceId, current.model, current.runtimeMode, current.effort)
+        else update(key, text)
+    }
+
+    /**
+     * The revision to clear [key] with once a send of [text] is accepted, or null when the stored text is not what
+     * is being sent (another editor changed it): then the accepted send must not clear it.
+     */
+    fun revisionIfText(key: ComposerDraftKey, text: String): Long? = synchronized(lock) {
+        if (all[key]?.text?.let { sameSubmission(it, text) } != true) null else revision(key)
     }
 
     fun clear(key: ComposerDraftKey): Unit = synchronized(lock) {
@@ -138,35 +165,62 @@ class ComposerDraftStore(
     }
 
     /**
-     * Moves the draft at [from] to [to] (the sheet changed project), replacing any draft at [to]; [from] stays when
-     * [keepSource]. A pending launch belongs to the old project and is dropped from the moved copy.
+     * Moves the draft at [from] to [to] (the sheet changed project) and returns true, or returns false and changes
+     * nothing when [to] already holds a draft, [from] holds none, or the stored drafts are not loaded yet. [from]
+     * stays when [keepSource] or when it carries a pending launch (that launch belongs to its project); the moved
+     * copy never carries the launch identity.
      */
-    fun move(from: ComposerDraftKey, to: ComposerDraftKey, keepSource: Boolean = false): Unit = synchronized(lock) {
-        if (from == to) return
-        val source = all[from] ?: return
-        val moved = source.copy(key = to, pendingLaunch = null, updatedAtMillis = clock())
-        if (loadState != LoadState.Loaded) { touchedBeforeLoad += to; if (!keepSource) touchedBeforeLoad += from }
+    fun move(from: ComposerDraftKey, to: ComposerDraftKey, keepSource: Boolean = false): Boolean = synchronized(lock) {
+        if (from == to || loadState != LoadState.Loaded || to in all) return false
+        val source = all[from] ?: return false
+        val keep = keepSource || source.pendingLaunch != null
         revisions[to] = ++nextRevision
-        if (!keepSource) revisions[from] = ++nextRevision
-        all = (if (keepSource) all else all - from) + (to to moved)
+        if (!keep) revisions[from] = ++nextRevision
+        all = (if (keep) all else all - from) + (to to source.copy(key = to, pendingLaunch = null, updatedAtMillis = clock()))
         scheduleWrite()
+        true
     }
 
-    /** Puts back a discarded [draft] unchanged (snackbar undo). */
-    fun restore(draft: ComposerDraft): Unit = synchronized(lock) {
-        if (!draft.hasContent() && !draft.hasSettings()) return
-        mutate(draft.key) { it + (draft.key to draft.copy(text = draft.text.take(MAX_TEXT))) }
+    /** Removes the draft at [key] and returns the token to undo that with [restore], or null when there was none. */
+    fun discard(key: ComposerDraftKey): ComposerDraftDiscard? = synchronized(lock) {
+        val draft = all[key] ?: return null
+        clear(key)
+        ComposerDraftDiscard(draft, revision(key))
+    }
+
+    /** Puts a discarded draft back, only if nothing wrote its key since (a replacement draft is never overwritten). */
+    fun restore(discard: ComposerDraftDiscard): Boolean = synchronized(lock) {
+        val key = discard.draft.key
+        if (revision(key) != discard.revision || key in all) return false
+        mutate(key) { it + (key to discard.draft) }
+        true
     }
 
     /**
-     * Records that the NewThread draft at [key] is being launched as [threadId]/[commandId]. Not an edit: the
-     * revision stays. Nothing is recorded without a draft (there is nothing to relaunch later).
+     * Records, before the launch is dispatched, that [key] is being launched as [threadId]/[commandId] with [text],
+     * and writes it right away (no debounce). A record for the same [commandId] stays as first written: the server
+     * replays that original payload. Not an edit: the revision stays. Returns false when it could not be persisted
+     * (the launch may still go out; only a retry after a restart loses its identity).
      */
-    fun markLaunching(key: ComposerDraftKey.NewThread, threadId: String, commandId: String): Unit = synchronized(lock) {
+    suspend fun recordLaunch(key: ComposerDraftKey.NewThread, threadId: String, commandId: String, text: String): Boolean {
+        loading.join()
+        synchronized(lock) {
+            val current = all[key]
+            if (current?.pendingLaunch?.commandId != commandId) {
+                val base = current ?: ComposerDraft(key, text.take(MAX_TEXT), updatedAtMillis = clock())
+                all = all + (key to base.copy(pendingLaunch = PendingLaunch(threadId, commandId, text.take(MAX_TEXT))))
+                dirty = true
+            }
+            pendingWrite?.cancel(); pendingWrite = null
+        }
+        return write()
+    }
+
+    /** Forgets the launch identity [commandId] of [key] (that launch definitely failed); the text stays. */
+    fun dropLaunch(key: ComposerDraftKey.NewThread, commandId: String): Unit = synchronized(lock) {
         val current = all[key] ?: return
-        val launch = PendingLaunch(threadId, commandId, current.text)
-        if (current.pendingLaunch == launch) return
-        all = all + (key to current.copy(pendingLaunch = launch))
+        if (current.pendingLaunch?.commandId != commandId) return
+        all = all + (key to current.copy(pendingLaunch = null))
         scheduleWrite()
     }
 
@@ -183,7 +237,7 @@ class ComposerDraftStore(
         val settled = all.values.filter { it.key.environmentId == environmentId && it.pendingLaunch?.threadId?.let(exists) == true }
         if (settled.isEmpty()) return
         settled.forEach { draft ->
-            if (draft.text == draft.pendingLaunch?.text) clear(draft.key)
+            if (draft.pendingLaunch?.text?.let { sameSubmission(draft.text, it) } == true) clear(draft.key)
             else all = all + (draft.key to draft.copy(pendingLaunch = null))
         }
         scheduleWrite()
@@ -229,25 +283,30 @@ class ComposerDraftStore(
         return true
     }
 
-    private suspend fun write() {
+    /** True when everything is persisted afterwards. */
+    private suspend fun write(): Boolean {
         // Writing before the stored drafts are merged would replace them. A cancelled load leaves nothing safe to write.
         loading.join()
-        writeMutex.withLock {
+        return writeMutex.withLock {
             // One retry of an unreadable load before the first write; after that the file is left alone.
             if (synchronized(lock) { loadState } == LoadState.Unreadable && !load()) synchronized(lock) { loadState = LoadState.Blocked }
             val snapshot = synchronized(lock) {
-                if (!dirty || loadState != LoadState.Loaded) return
+                if (loadState != LoadState.Loaded) return@withLock false
+                if (!dirty) return@withLock true
                 dirty = false
                 all
             }
-            try { persistence.save(if (snapshot.isEmpty()) null else encode(snapshot)) }
+            try { persistence.save(if (snapshot.isEmpty()) null else encode(snapshot)); true }
             catch (e: CancellationException) { synchronized(lock) { dirty = true }; throw e }
-            catch (_: Exception) { synchronized(lock) { dirty = true } }
+            catch (_: Exception) { synchronized(lock) { dirty = true }; false }
         }
     }
 
     companion object {
         const val MAX_TEXT = 100_000
+
+        /** Whether stored draft text [a] is what was submitted as [b] (a seeded prompt is sent trimmed). */
+        fun sameSubmission(a: String, b: String): Boolean = a.take(MAX_TEXT).trim() == b.take(MAX_TEXT).trim()
         private const val VERSION = 1
         private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
 

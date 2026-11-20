@@ -154,18 +154,48 @@ class ConnectionPlanTest {
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
-    @Test fun launchRecordsItsIdentityAndClearsTheDraftOnlyWhenAccepted() = runTest {
-        val state = MutableStateFlow(ClientState(environment = SavedEnvironment("env", "Mac", "https://mac.example/", "token")))
-        val store = ComposerDraftStore(MemoryDrafts(), backgroundScope).also { runCurrent() }
+    @Test fun launchPersistsItsIdentityBeforeDispatchAndClearsTheDraftOnlyWhenAccepted() = runTest {
+        val state = MutableStateFlow(ClientState(environment = SavedEnvironment("env", "Mac", "https://mac.example/", "token"), connection = ConnectionStatus.Connected))
+        val disk = MemoryDrafts()
+        val store = ComposerDraftStore(disk, backgroundScope).also { runCurrent() }
         val key = ComposerDraftKey.NewThread("env", "p1")
         store.update(key, "prompt")
         val draft = ThreadDraft("p1", ModelOption("codex", "gpt"))
-        val uncertain = ComposerDraftSettlingClient(SendOnlyClient(state, onLaunch = { throw UncertainOutcomeException("lost") }) {}, store)
+        var onDiskAtDispatch: Boolean? = null
+        val uncertain = ComposerDraftSettlingClient(SendOnlyClient(state, onLaunch = {
+            onDiskAtDispatch = disk.stored?.let { draft.commandId in it && draft.threadId in it }
+            throw UncertainOutcomeException("lost")
+        }) {}, store)
         assertTrue(runCatching { uncertain.launchThread(draft, "prompt") }.isFailure)
+        assertEquals("on disk before the launch went out", true, onDiskAtDispatch)
         assertEquals(PendingLaunch(draft.threadId, draft.commandId, "prompt"), store.get(key)?.pendingLaunch)
-        val accepted = ComposerDraftSettlingClient(SendOnlyClient(state, onLaunch = { it.threadId }) {}, store)
-        accepted.launchThread(draft, "prompt")
+        // A fresh session (other ids) relaunching the same text reuses the recorded ids.
+        var dispatched: ThreadDraft? = null
+        val accepted = ComposerDraftSettlingClient(SendOnlyClient(state, onLaunch = { dispatched = it; it.threadId }) {}, store)
+        accepted.launchThread(ThreadDraft("p1", ModelOption("codex", "gpt")), "prompt")
+        assertEquals(draft.threadId, dispatched?.threadId); assertEquals(draft.commandId, dispatched?.commandId)
         assertNull(store.get(key))
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun editedRetryNeverReusesTheIdsOfADifferentPrompt() = runTest {
+        val state = MutableStateFlow(ClientState(environment = SavedEnvironment("env", "Mac", "https://mac.example/", "token"), connection = ConnectionStatus.Connected))
+        val store = ComposerDraftStore(MemoryDrafts(), backgroundScope).also { runCurrent() }
+        val key = ComposerDraftKey.NewThread("env", "p1")
+        store.update(key, "A")
+        store.recordLaunch(key, "thread-A", "command-A", "A")
+        store.update(key, "B")
+        var dispatched: ThreadDraft? = null
+        val client = ComposerDraftSettlingClient(SendOnlyClient(state, onLaunch = { dispatched = it; it.threadId }) {}, store)
+        val retry = ThreadDraft("p1", ModelOption("codex", "gpt"), threadId = "thread-A", commandId = "command-A")
+        assertTrue("unconfirmed: fails without dispatching", runCatching { client.launchThread(retry, "B") }.isFailure)
+        assertNull(dispatched)
+        assertEquals("B", store.get(key)?.text)
+        state.value = state.value.copy(threads = listOf(ThreadSummary("thread-A", "p1", "A")))
+        client.launchThread(retry, "B")
+        assertNotEquals("A was accepted: B launches as a new thread", "thread-A", dispatched?.threadId)
+        assertNotEquals("command-A", dispatched?.commandId)
+        assertNull("B was accepted too", store.get(key))
     }
 
     private class SendOnlyClient(

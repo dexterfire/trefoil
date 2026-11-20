@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.core.session.ComposerDraft
+import com.tajchert.trefoil.core.session.ComposerDraftDiscard
 import com.tajchert.trefoil.core.session.ComposerDraftKey
 import com.tajchert.trefoil.core.session.hasContent
 
@@ -57,16 +58,21 @@ internal fun resolveRuntimeMode(preferred: RuntimeMode?, allowed: List<RuntimeMo
     preferred?.takeIf { it in allowed } ?: allowed.first()
 
 /**
- * The local, unsent composer drafts as the UI sees them: [drafts] holds those with text (empty until loaded),
- * [get] also returns a settings-only new-thread draft. The callbacks write through to the view model's store.
+ * The local, unsent composer drafts as the UI sees them: [drafts] holds the new-thread drafts (settings-only ones
+ * too) and reply drafts reduced to their first line, empty until [loaded]; [get] returns a full stored draft.
+ * Editors write nothing before [loaded]. The callbacks write through to the view model's store.
  */
 class ComposerDraftUi(
     val drafts: Map<ComposerDraftKey, ComposerDraft> = emptyMap(),
     val get: (ComposerDraftKey) -> ComposerDraft? = { drafts[it] },
     val update: (key: ComposerDraftKey, text: String, modelInstanceId: String?, model: String?, runtimeMode: String?, effort: String?) -> Unit = { _, _, _, _, _, _ -> },
     val clear: (ComposerDraftKey) -> Unit = {},
-    val restore: (ComposerDraft) -> Unit = {},
-    val move: (from: ComposerDraftKey, to: ComposerDraftKey, keepSource: Boolean) -> Unit = { _, _, _ -> },
+    val discard: (ComposerDraftKey) -> ComposerDraftDiscard? = { null },
+    val restore: (ComposerDraftDiscard) -> Unit = {},
+    /** False (nothing changed) when the target already holds a draft; see `ComposerDraftStore.move`. */
+    val move: (from: ComposerDraftKey, to: ComposerDraftKey, keepSource: Boolean) -> Boolean = { _, _, _ -> false },
+    val updateText: (ComposerDraftKey, String) -> Unit = { _, _ -> },
+    val loaded: Boolean = true,
 )
 
 /** The most recently edited new-thread draft with text for [environmentId] whose project still exists. */
@@ -113,6 +119,10 @@ internal fun NewThreadSheetContent(
     var prompt by rememberSaveable { mutableStateOf(composerDrafts.get(ComposerDraftKey.NewThread(environmentId.orEmpty(), projectId))?.text.orEmpty()) }
     // True once the user changed text, project or settings: a draft that loads later must not overwrite that.
     var touched by rememberSaveable { mutableStateOf(false) }
+    // Projects whose draft this sheet session created: only those may be moved away from; older drafts stay put.
+    var createdHere by rememberSaveable { mutableStateOf(listOf<String>()) }
+    // Nothing is editable before the stored drafts load, so no edit can replace a stored prompt or settings.
+    val loaded = composerDrafts.loaded
     var query by rememberSaveable { mutableStateOf("") }
     var searching by rememberSaveable { mutableStateOf(false) }
     var expanded by rememberSaveable { mutableStateOf(false) }
@@ -132,8 +142,8 @@ internal fun NewThreadSheetContent(
     LaunchedEffect(model, reasoning) { if (chosenEffort != null && explicitOptions.isEmpty()) chosenEffort = null }
     // Seed from the stored draft: it may arrive after the sheet opens (the store loads asynchronously) and is applied
     // only while the user has not touched anything.
-    LaunchedEffect(composerDrafts.drafts, state.models, state.projects, environmentId) {
-        if (touched || environmentId == null) return@LaunchedEffect
+    LaunchedEffect(composerDrafts.drafts, loaded, state.models, state.projects, environmentId) {
+        if (touched || environmentId == null || !loaded) return@LaunchedEffect
         if (openProjectId == null) recentNewThreadDraft(composerDrafts.drafts, environmentId, state.projects)?.let { recent ->
             val recentProject = (recent.key as ComposerDraftKey.NewThread).projectId
             if (recentProject != projectId && prompt.isBlank() && composerDrafts.get(ComposerDraftKey.NewThread(environmentId, projectId))?.hasContent() != true) projectId = recentProject
@@ -150,28 +160,36 @@ internal fun NewThreadSheetContent(
     // overwrite a draft that has not loaded yet.
     fun persist(text: String = prompt, index: Int = modelIndex, modeWire: String = chosenMode, effort: String? = chosenEffort, id: String = projectId) {
         val env = environmentId ?: return
-        if (id.isEmpty()) return
+        if (id.isEmpty() || !loaded) return
         val chosen = state.models.getOrNull(index)
+        if (composerDrafts.get(ComposerDraftKey.NewThread(env, id)) == null && id !in createdHere) createdHere = createdHere + id
         composerDrafts.update(ComposerDraftKey.NewThread(env, id), text, chosen?.instanceId, chosen?.model, modeWire.takeIf { chosen != null }, effort.takeIf { chosen != null })
     }
-    /** Switching project keeps the typed prompt: a draft already stored for the target wins and leaves this one in place; otherwise the draft moves. */
+    /**
+     * Switching project keeps the typed prompt. A draft already stored for the target is never overwritten: one with
+     * text is opened instead (this one stays where it is); a settings-only one takes the prompt and keeps its settings.
+     * Otherwise the draft moves, or is copied when it existed before this sheet opened or has a pending launch.
+     */
     fun pickProject(id: String) {
-        if (id == projectId) return
+        if (id == projectId || !loaded) return
         touched = true
         val env = environmentId
-        val target = env?.let { composerDrafts.get(ComposerDraftKey.NewThread(it, id)) }
-        if (env != null && target != null && target.hasContent()) {
-            persist()
+        if (env == null) { projectId = id; return }
+        val from = ComposerDraftKey.NewThread(env, projectId)
+        val target = composerDrafts.get(ComposerDraftKey.NewThread(env, id))
+        if (target != null) {
             projectId = id
-            prompt = target.text
+            if (target.hasContent()) prompt = target.text
             state.models.indexOfFirst { it.instanceId == target.modelInstanceId && it.model == target.model }.takeIf { it >= 0 }?.let { modelIndex = it }
             target.runtimeMode?.let { chosenMode = it }
             chosenEffort = target.effort
-        } else {
-            if (env != null && prompt.isNotBlank()) {
+            if (!target.hasContent() && prompt.isNotBlank()) {
                 persist()
-                composerDrafts.move(ComposerDraftKey.NewThread(env, projectId), ComposerDraftKey.NewThread(env, id), false)
+                val source = composerDrafts.get(from)
+                if (from.projectId in createdHere && source?.pendingLaunch == null && source != null) composerDrafts.clear(from)
             }
+        } else {
+            if (prompt.isNotBlank() && composerDrafts.move(from, ComposerDraftKey.NewThread(env, id), from.projectId !in createdHere)) createdHere = createdHere + id
             projectId = id
         }
     }
@@ -224,7 +242,7 @@ internal fun NewThreadSheetContent(
 
         Column(Modifier.padding(top = 20.dp).fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(c.s1).border(1.dp, c.line, RoundedCornerShape(24.dp))) {
             TextField(
-                prompt, { prompt = it; touched = true; persist(text = it) }, Modifier.fillMaxWidth().heightIn(min = 140.dp).onFocusChanged { if (it.isFocused && selectedProject != null) collapsePicker() }, minLines = 5, maxLines = 10, enabled = !state.busy,
+                prompt, { prompt = it; touched = true; persist(text = it) }, Modifier.fillMaxWidth().heightIn(min = 140.dp).onFocusChanged { if (it.isFocused && selectedProject != null) collapsePicker() }, minLines = 5, maxLines = 10, enabled = !state.busy && loaded,
                 textStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 24.sp),
                 placeholder = { Text("What should the agent do?", fontSize = 17.sp, lineHeight = 24.sp) },
                 colors = TextFieldDefaults.colors(
@@ -253,7 +271,7 @@ internal fun NewThreadSheetContent(
                         DropdownMenuItem(
                             text = { Column { Text(option.label); Text(option.instanceId, style = TrefoilType.mono, color = c.muted) } },
                             trailingIcon = { if (index == modelIndex) Icon(TfIcons.Check, null, Modifier.size(18.dp), tint = c.accent) },
-                            onClick = { modelIndex = index; touched = true; persist(index = index); modelMenu = false })
+                            onClick = { if (loaded) { modelIndex = index; touched = true; persist(index = index) }; modelMenu = false })
                     }
                 }
             }
@@ -270,7 +288,7 @@ internal fun NewThreadSheetContent(
                                 text = { Column { Text(option.label); option.description?.let { Text(it, style = TrefoilType.meta, color = c.muted) } } },
                                 leadingIcon = { Icon(TfIcons.effort(effortBarCount(index, choices.size)), null, Modifier.size(18.dp), tint = c.muted) },
                                 trailingIcon = { if (option.id == current?.id) Icon(TfIcons.Check, null, Modifier.size(18.dp), tint = c.accent) },
-                                onClick = { chosenEffort = option.id; touched = true; persist(effort = option.id); effortMenu = false })
+                                onClick = { if (loaded) { chosenEffort = option.id; touched = true; persist(effort = option.id) }; effortMenu = false })
                         }
                     }
                 }
@@ -283,7 +301,7 @@ internal fun NewThreadSheetContent(
                             text = { Column { Text(option.label); Text(option.description, style = TrefoilType.meta, color = c.muted) } },
                             leadingIcon = { Icon(option.icon, null, Modifier.size(18.dp), tint = c.muted) },
                             trailingIcon = { if (option == mode) Icon(TfIcons.Check, null, Modifier.size(18.dp), tint = c.accent) },
-                            onClick = { chosenMode = option.wire; touched = true; persist(modeWire = option.wire); modeMenu = false })
+                            onClick = { if (loaded) { chosenMode = option.wire; touched = true; persist(modeWire = option.wire) }; modeMenu = false })
                     }
                 }
             }

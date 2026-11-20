@@ -226,8 +226,10 @@ internal fun ThreadList(
     val shelves = remember(filtered, now) { threadShelves(filtered, now) }
     val sections = remember(shelves, filter) { threadSections(shelves, filter) }
     // Drafts belong to "All": the Needs you and Working chips are about threads.
-    val draftRows = remember(composerDrafts.drafts, state.environment?.id, projects, projectId, query, filter) {
-        if (filter == ThreadFilter.All) threadDraftRows(composerDrafts.drafts, state.environment?.id, projects, projectId, query) else emptyList()
+    // Keyed on the new-thread drafts only (equal maps): typing a reply does not rebuild the shelf.
+    val newThreadDrafts = remember(composerDrafts.drafts) { composerDrafts.drafts.filterKeys { it is ComposerDraftKey.NewThread } }
+    val draftRows = remember(newThreadDrafts, state.environment?.id, projects, projectId, query, filter) {
+        if (filter == ThreadFilter.All) threadDraftRows(newThreadDrafts, state.environment?.id, projects, projectId, query) else emptyList()
     }
     val counts = remember(shelves) { threadFilterCounts(shelves) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle

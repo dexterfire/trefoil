@@ -10,6 +10,7 @@ import com.tajchert.trefoil.core.session.EnvironmentTokenRenewer
 import com.tajchert.trefoil.core.session.T3Client
 import com.tajchert.trefoil.core.session.withTokenOf
 import com.tajchert.trefoil.core.session.ComposerDraft
+import com.tajchert.trefoil.core.session.ComposerDraftDiscard
 import com.tajchert.trefoil.core.session.ComposerDraftKey
 import com.tajchert.trefoil.core.session.ComposerDraftStore
 import com.tajchert.trefoil.core.session.ThreadDraftController
@@ -25,6 +26,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.coroutineContext
 
@@ -76,6 +78,16 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     private val composerDraftStore = ComposerDraftFileStore.get(application)
     /** Local unsent composer text with content, per thread reply and per (environment, project) new thread; never synced. */
     val composerDrafts: StateFlow<Map<ComposerDraftKey, ComposerDraft>> = composerDraftStore.drafts
+    /** False until the stored drafts are loaded; editors must not write before. */
+    val composerDraftsLoaded: StateFlow<Boolean> = composerDraftStore.loaded
+    /** NewThread drafts, including settings-only ones; unchanged while only replies are typed. */
+    val newThreadComposerDrafts: StateFlow<Map<ComposerDraftKey, ComposerDraft>> = composerDraftStore.records
+        .map { all -> all.filterKeys { it is ComposerDraftKey.NewThread } }.distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
+    /** Reply drafts with content reduced to their first line (the thread-row preview); unchanged while typing past it. */
+    val replyDraftPreviews: StateFlow<Map<ComposerDraftKey, ComposerDraft>> = composerDraftStore.drafts
+        .map { all -> all.filterKeys { it is ComposerDraftKey.Reply }.mapValues { (_, d) -> d.copy(text = d.text.lineSequence().map { it.trim() }.first { it.isNotEmpty() }, updatedAtMillis = 0) } }
+        .distinctUntilChanged().stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
     private val drafts = ThreadDraftController(viewModelScope, ComposerDraftSettlingClient(MutationTrackingClient(client, mutationsInFlight), composerDraftStore)) { _notice.value = it }
     /** Unsent new conversation; while non-null the UI shows the draft instead of the selected thread. */
     val draft: StateFlow<ThreadDraft?> = drafts.draft
@@ -491,11 +503,14 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     /** Writes through the composer state (debounced); blank text without settings removes it. Allowed while disconnected. */
     fun updateComposerDraft(key: ComposerDraftKey, text: String, modelInstanceId: String? = null, model: String? = null, runtimeMode: String? = null, effort: String? = null) =
         composerDraftStore.update(key, text, modelInstanceId, model, runtimeMode, effort)
+    /** Writes text only, keeping a NewThread draft's settings (the conversation composer). */
+    fun updateComposerDraftText(key: ComposerDraftKey, text: String) = composerDraftStore.updateText(key, text)
     fun clearComposerDraft(key: ComposerDraftKey) = composerDraftStore.clear(key)
-    /** Moves the sheet's draft to another project; the old key stays when this sheet session did not create it. */
-    fun moveComposerDraft(from: ComposerDraftKey, to: ComposerDraftKey, keepSource: Boolean) = composerDraftStore.move(from, to, keepSource)
-    /** Undo of a discard. */
-    fun restoreComposerDraft(draft: ComposerDraft) = composerDraftStore.restore(draft)
+    /** Moves the sheet's draft to another project; false (nothing changed) when the target holds a draft. See [ComposerDraftStore.move]. */
+    fun moveComposerDraft(from: ComposerDraftKey, to: ComposerDraftKey, keepSource: Boolean): Boolean = composerDraftStore.move(from, to, keepSource)
+    /** Discards a draft; the token undoes it while nothing replaced it. */
+    fun discardComposerDraft(key: ComposerDraftKey): ComposerDraftDiscard? = composerDraftStore.discard(key)
+    fun restoreComposerDraft(discard: ComposerDraftDiscard) { composerDraftStore.restore(discard) }
     fun flushComposerDrafts() { composerDraftStore.flushInBackground() }
     fun cancelDraft() = clearDraft()
     private fun clearDraft() = drafts.clear()
@@ -1024,14 +1039,47 @@ internal class ComposerDraftSettlingClient(private val inner: TrefoilClient, pri
     override suspend fun sendMessage(text: String) {
         val state = inner.state.value
         val key = state.environment?.id?.let { environment -> state.selectedThreadId?.let { ComposerDraftKey.Reply(environment, it) } }
-        val revision = key?.let(store::revision)
+        // Only a draft that holds exactly the sent text may be cleared by its ack.
+        val revision = key?.let { store.revisionIfText(it, text) }
         inner.sendMessage(text)
         if (key != null && revision != null) store.clearIfUnchanged(key, revision)
     }
+
+    /**
+     * Picks the launch identity after the stored drafts are loaded: a pending launch of the same text is resent
+     * with its ids (the server replays it). A pending launch of different text is not reused, since the server would
+     * replay the original and drop the new prompt: once its thread is listed it settles and the new text launches
+     * with fresh ids, otherwise this fails without dispatching. The identity is persisted before dispatch; if that
+     * write fails the launch still goes out (fail open: only a retry after a restart loses its identity).
+     */
     override suspend fun launchThread(draft: ThreadDraft, firstMessage: String): String {
-        val environment = inner.state.value.environment?.id
-        environment?.let { store.markLaunching(ComposerDraftKey.NewThread(it, draft.projectId), draft.threadId, draft.commandId) }
-        return inner.launchThread(draft, firstMessage).also { environment?.let { store.settleLaunched(it, draft.threadId) } }
+        val environment = inner.state.value.environment?.id ?: return inner.launchThread(draft, firstMessage)
+        val key = ComposerDraftKey.NewThread(environment, draft.projectId)
+        store.awaitLoaded()
+        var launch = draft
+        var resend = false
+        val pending = store.get(key)?.pendingLaunch
+        if (pending != null && ComposerDraftStore.sameSubmission(pending.text, firstMessage)) {
+            launch = draft.copy(threadId = pending.threadId, commandId = pending.commandId); resend = true
+        } else if (pending != null) {
+            val state = inner.state.value
+            if (state.connection != ConnectionStatus.Connected || state.environment?.id != environment || state.threads.none { it.id == pending.threadId })
+                throw IllegalStateException(UNCONFIRMED_LAUNCH)
+            store.settleLaunched(environment, pending.threadId)
+            if (draft.threadId == pending.threadId || draft.commandId == pending.commandId)
+                launch = draft.copy(threadId = UUID.randomUUID().toString(), commandId = UUID.randomUUID().toString())
+        }
+        store.recordLaunch(key, launch.threadId, launch.commandId, firstMessage)
+        val id = try { inner.launchThread(launch, firstMessage) }
+        catch (e: CancellationException) { throw e }
+        catch (e: UncertainOutcomeException) { throw e }
+        catch (e: Exception) { if (!resend) store.dropLaunch(key, launch.commandId); throw e }
+        store.settleLaunched(environment, launch.threadId)
+        return id
+    }
+
+    private companion object {
+        const val UNCONFIRMED_LAUNCH = "An earlier start of this draft is not confirmed yet. Reconnect so it can be checked, send the original prompt again, or discard the draft."
     }
 }
 

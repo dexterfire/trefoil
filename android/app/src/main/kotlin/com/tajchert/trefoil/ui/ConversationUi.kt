@@ -83,14 +83,18 @@ internal fun Conversation(
         }
         return
     }
-    val composerKey = if (draft != null) "draft" else state.selectedThreadId
-    val replyKey = state.environment?.id?.let { environment -> state.selectedThreadId?.takeIf { draft == null }?.let { ComposerDraftKey.Reply(environment, it) } }
-    var text by rememberSaveable(state.environment?.id, composerKey) { mutableStateOf(replyKey?.let { composerDrafts.get(it)?.text }.orEmpty()) }
-    // The store loads asynchronously: a stored reply that arrives later fills an untouched, empty composer, never one the user edited.
+    // A new-thread conversation edits its project's NewThread draft; a thread edits its Reply draft.
+    val composerKey = if (draft != null) "draft:${draft.projectId}" else state.selectedThreadId
+    val editorKey = state.environment?.id?.let { environment ->
+        if (draft != null) ComposerDraftKey.NewThread(environment, draft.projectId) else state.selectedThreadId?.let { ComposerDraftKey.Reply(environment, it) }
+    }
+    var text by rememberSaveable(state.environment?.id, composerKey) { mutableStateOf(editorKey?.let { composerDrafts.get(it)?.text }.orEmpty()) }
+    // The store loads asynchronously: a stored draft that arrives later fills an untouched, empty composer, never one the user edited.
     var edited by rememberSaveable(state.environment?.id, composerKey) { mutableStateOf(false) }
-    val storedReply = replyKey?.let { composerDrafts.drafts[it]?.text }
-    LaunchedEffect(replyKey, storedReply) { if (!edited && text.isBlank() && storedReply != null) text = storedReply }
-    fun editText(value: String) { text = value; edited = true; replyKey?.let { composerDrafts.update(it, value, null, null, null, null) } }
+    LaunchedEffect(editorKey, composerDrafts.loaded) {
+        if (composerDrafts.loaded && !edited && text.isBlank()) editorKey?.let { composerDrafts.get(it)?.text }?.takeIf { it.isNotBlank() }?.let { text = it }
+    }
+    fun editText(value: String) { text = value; edited = true; if (composerDrafts.loaded) editorKey?.let { composerDrafts.updateText(it, value) } }
     var submitted by rememberSaveable(state.environment?.id, composerKey) { mutableStateOf<String?>(null) }
     var messageIdsAtSend by rememberSaveable(state.environment?.id, composerKey) { mutableStateOf(arrayListOf<String>()) }
     val canSend = state.canWrite && !state.busy

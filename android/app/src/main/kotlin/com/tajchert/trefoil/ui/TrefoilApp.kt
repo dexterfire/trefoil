@@ -91,8 +91,9 @@ fun TrefoilApp(
         var creatingProject by rememberSaveable { mutableStateOf<String?>(null) }
         val uiScope = rememberCoroutineScope()
         val discardDraft: (com.tajchert.trefoil.core.session.ComposerDraft) -> Unit = { discarded ->
-            composerDrafts.clear(discarded.key)
-            uiScope.launch { if (snackbar.showSnackbar("Draft discarded", "Undo", duration = SnackbarDuration.Long) == SnackbarResult.ActionPerformed) composerDrafts.restore(discarded) }
+            // The token restores only while nothing replaced the draft meanwhile.
+            val undo = composerDrafts.discard(discarded.key)
+            if (undo != null) uiScope.launch { if (snackbar.showSnackbar("Draft discarded", "Undo", duration = SnackbarDuration.Long) == SnackbarResult.ActionPerformed) composerDrafts.restore(undo) }
         }
         // First prompt typed in the new-thread sheet; the draft conversation sends it via its composer.
         var seedPrompt by rememberSaveable { mutableStateOf<String?>(null) }
@@ -253,7 +254,7 @@ fun TrefoilApp(
                                     Column(modifier.statusBarsPadding().windowInsetsPadding(BottomBarsAndIme)) {
                                         if (!twoPane) ConnectionBanner(state, onReconnect)
                                         Box(Modifier.weight(1f)) {
-                                            conversationState.SaveableStateProvider("${state.environment?.id}:${if (draft != null) "draft" else state.selectedThreadId}") {
+                                            conversationState.SaveableStateProvider("${state.environment?.id}:${if (draft != null) "draft:${draft.projectId}" else state.selectedThreadId}") {
                                                 Conversation(state, onSend, onInterrupt, onRespond, onLoadActivity = onLoadActivity, composerDrafts = composerDrafts, fileDownloadUi = fileDownloadUi,
                                                     draft = draft, onSetRuntimeMode = onSetRuntimeMode, onSetModel = onSetModel, onSetModelOption = onSetModelOption, sendFailed = sendFailed,
                                                     onBack = if (backParent != null) ({ select(backParent.id) }) else if (twoPane) null else ({ cancelDraft(); showThread = false }),

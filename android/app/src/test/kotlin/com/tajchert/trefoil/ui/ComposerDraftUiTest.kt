@@ -7,6 +7,8 @@ import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.core.session.ComposerDraft
 import com.tajchert.trefoil.core.session.ComposerDraftKey
 import org.junit.Assert.*
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.performClick
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -57,5 +59,25 @@ class ComposerDraftUiTest {
         compose.onNodeWithText("resume me").performTextInput("!")
         assertEquals(ComposerDraftKey.NewThread("e", "p2"), written.last().first)
         assertTrue(written.last().second.contains("resume me") && written.last().second.contains("!"))
+    }
+
+    @Test fun sheetWritesNothingBeforeTheDraftsLoad() {
+        val state = ClientState(environment = SavedEnvironment("e", "E", "https://e.test", "t"), projects = listOf(alpha, beta), models = listOf(ModelOption("codex", "gpt-5")))
+        val written = mutableListOf<ComposerDraftKey>()
+        val ui = ComposerDraftUi(emptyMap(), update = { key, _, _, _, _, _ -> written += key }, move = { _, _, _ -> written += ComposerDraftKey.NewThread("moved", ""); true }, loaded = false)
+        compose.setContent { TrefoilTheme { NewThreadSheetContent(state, {}, { _, _ -> }, composerDrafts = ui, initiallyCollapsed = false) } }
+        compose.onNodeWithText("What should the agent do?").assertIsNotEnabled()
+        compose.onNodeWithText("beta").performClick()
+        assertTrue(written.isEmpty())
+    }
+
+    @Test fun projectChangeCopiesADraftThatExistedBeforeTheSheet() {
+        val state = ClientState(environment = SavedEnvironment("e", "E", "https://e.test", "t"), projects = listOf(alpha, beta), models = listOf(ModelOption("codex", "gpt-5")))
+        val moves = mutableListOf<Triple<ComposerDraftKey, ComposerDraftKey, Boolean>>()
+        val drafts = byKey(newThread("e", "p1", "older prompt", 1))
+        val ui = ComposerDraftUi(drafts, move = { from, to, keep -> moves += Triple(from, to, keep); true })
+        compose.setContent { TrefoilTheme { NewThreadSheetContent(state, {}, { _, _ -> }, composerDrafts = ui, openProjectId = "p1", initiallyCollapsed = false) } }
+        compose.onNodeWithText("beta").performClick()
+        assertEquals(listOf(Triple<ComposerDraftKey, ComposerDraftKey, Boolean>(ComposerDraftKey.NewThread("e", "p1"), ComposerDraftKey.NewThread("e", "p2"), true)), moves)
     }
 }
