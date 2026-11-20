@@ -19,6 +19,8 @@ data class PortsUiState(
     val tunnelsDisabled: Boolean = false,
     val canWrite: Boolean = true,
     val selectedThreadId: String? = null,
+    /** Why forwards opened in an external browser stopped while Trefoil was in the background; null when none did. */
+    val stoppedNotice: String? = null,
 ) {
     /** Opening or forwarding is possible: supported, tunnels not off, and the user may write. */
     val canForward: Boolean get() = supported && !tunnelsDisabled && canWrite
@@ -34,6 +36,7 @@ class PortsActions(
     val onStopForward: (port: Int) -> Unit,
     /** A port typed by hand, already validated to 1..65535. Forward it and open it in-app. */
     val onForwardManual: (port: Int) -> Unit,
+    val onDismissStoppedNotice: () -> Unit = {},
 )
 
 enum class PortOwnerKind { Agent, Terminal, None }

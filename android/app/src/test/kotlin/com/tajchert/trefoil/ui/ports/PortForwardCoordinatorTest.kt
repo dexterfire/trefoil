@@ -32,11 +32,77 @@ class PortForwardCoordinatorTest {
         override fun close() {}
     }
 
+    private var holdChanges = 0
+
     private fun run(block: suspend CoroutineScope.(FakeClient, PortForwardCoordinator, MutableList<String>) -> Unit) = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         val client = FakeClient(); val errors = mutableListOf<String>()
-        val coordinator = PortForwardCoordinator(scope, client) { errors += it }
+        val coordinator = PortForwardCoordinator(scope, client, onExternalForwardsChanged = { holdChanges++ }) { errors += it }
         try { block(client, coordinator, errors) } finally { scope.cancel() }
+    }
+
+    private val held = setOf(ExternalForward("fixture", 5173))
+
+    @Test fun anExternalOpenHoldsItsForwardUntilTheUserStopsIt() = run { client, coordinator, _ ->
+        coordinator.openExternal(5173)
+        assertEquals(held, coordinator.externalForwards.value)
+        assertEquals(1, holdChanges)
+        coordinator.inBackground = true
+        coordinator.stop(5173)
+        assertTrue(coordinator.externalForwards.value.isEmpty())
+        assertEquals(2, holdChanges)
+        // The user stopped it: nothing to explain on return.
+        assertNull(coordinator.stoppedNotice.value)
+    }
+
+    @Test fun anInAppOpenNeverHolds() = run { _, coordinator, _ ->
+        coordinator.openInApp(5173)
+        assertTrue(coordinator.externalForwards.value.isEmpty())
+        assertEquals(0, holdChanges)
+    }
+
+    @Test fun theHoldEndsWhenTheForwardGoesAwayAndExplainsItOnlyInTheBackground() = run { client, coordinator, _ ->
+        coordinator.openExternal(5173)
+        client.state.update { it.copy(connection = ConnectionStatus.Disconnected, portForwards = emptyList()) }
+        assertTrue(coordinator.externalForwards.value.isEmpty())
+        assertNull(coordinator.stoppedNotice.value)
+
+        client.state.update { it.copy(connection = ConnectionStatus.Connected) }
+        coordinator.openExternal(5173)
+        coordinator.inBackground = true
+        client.state.update { it.copy(connection = ConnectionStatus.Disconnected, portForwards = emptyList()) }
+        assertTrue(coordinator.externalForwards.value.isEmpty())
+        val notice = coordinator.stoppedNotice.value!!
+        assertEquals("fixture", notice.environmentId)
+        assertTrue(notice.message.contains("port 5173") && notice.message.contains("connection ended"))
+        assertFalse(notice.message.contains("localhost"))
+        coordinator.dismissStoppedNotice()
+        assertNull(coordinator.stoppedNotice.value)
+    }
+
+    @Test fun theHoldEndsOnAFailedForwardAndOnAnEnvironmentSwitch() = run { client, coordinator, _ ->
+        coordinator.openExternal(5173)
+        coordinator.inBackground = true
+        client.state.update { it.copy(portForwards = listOf(PortForward("fixture", 5173, status = PortForwardStatus.Failed, error = PortForwardError.Unauthorized))) }
+        assertTrue(coordinator.externalForwards.value.isEmpty())
+        assertTrue(coordinator.stoppedNotice.value!!.message.contains("failed"))
+
+        coordinator.inBackground = false
+        client.state.update { it.copy(portForwards = emptyList()) }
+        coordinator.openExternal(5173)
+        // A new open clears the old notice.
+        assertNull(coordinator.stoppedNotice.value)
+        assertEquals(held, coordinator.externalForwards.value)
+        client.state.update { it.copy(environment = client.environment.copy(id = "other")) }
+        assertTrue(coordinator.externalForwards.value.isEmpty())
+    }
+
+    @Test fun noBrowserForTheUrlReleasesTheHold() = run { _, coordinator, _ ->
+        coordinator.openExternal(5173)
+        coordinator.externalOpenFailed("http://localhost:9/")
+        assertEquals(held, coordinator.externalForwards.value)
+        coordinator.externalOpenFailed("http://localhost:25173/")
+        assertTrue(coordinator.externalForwards.value.isEmpty())
     }
 
     @Test fun openInAppForwardsThenShowsLoopbackUrlTitledByProcessName() = run { client, coordinator, errors ->

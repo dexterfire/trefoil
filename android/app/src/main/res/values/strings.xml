@@ -44,6 +44,7 @@
     <string name="ports_manual_invalid">Enter a number from 1 to 65535.</string>
     <string name="ports_manual_confirm">Forward</string>
     <string name="ports_cancel">Cancel</string>
+    <string name="ports_notice_dismiss">Dismiss</string>
     <string name="ports_chip_single">Dev server :%1$d</string>
     <string name="ports_chip_multiple">%1$d dev servers</string>
     <string name="ports_chip_description_single">Dev server on port %1$d. Show dev servers.</string>

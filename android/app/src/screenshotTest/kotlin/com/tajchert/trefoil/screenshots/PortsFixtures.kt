@@ -34,6 +34,10 @@ object PortsFixtures {
     val failed = PortsUiState(
         servers = listOf(docs), forwards = listOf(failedDocs), threadTitles = titles, live = true,
     )
+    val stoppedInBackground = PortsUiState(
+        servers = listOf(api, vite), threadTitles = titles, live = true, selectedThreadId = "t-approval",
+        stoppedNotice = "The forward for port 5173 stopped because the connection ended while Trefoil was in the background. Open it again to keep using it in your browser.",
+    )
     val readOnly = PortsUiState(servers = listOf(vite), threadTitles = titles, live = true, canWrite = false, selectedThreadId = "t-approval")
 
     val actions = PortsActions(onBack = {}, onOpenInApp = {}, onOpenExternal = {}, onStopForward = {}, onForwardManual = {})

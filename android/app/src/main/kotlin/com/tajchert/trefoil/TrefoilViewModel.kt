@@ -68,9 +68,9 @@ class TrefoilViewModel internal constructor(application: Application, private va
     private val _notice = MutableStateFlow<String?>(null)
     val notice = _notice.asStateFlow()
     /** Dev-server forwards and the in-app tunnel browser; failures surface as [notice] like other actions. */
-    val portForwards = com.tajchert.trefoil.ui.ports.PortForwardCoordinator(viewModelScope, client) { _notice.value = it }
-    /** The device has no app that can open a forwarded dev server's URL. */
-    fun externalOpenFailed() { _notice.value = "No browser found to open the dev server." }
+    val portForwards = com.tajchert.trefoil.ui.ports.PortForwardCoordinator(viewModelScope, client, onExternalForwardsChanged = { checkKeepAlive() }) { _notice.value = it }
+    /** The device has no app that can open a forwarded dev server's [url]. */
+    fun externalOpenFailed(url: String) { portForwards.externalOpenFailed(url); _notice.value = "No browser found to open the dev server." }
     private val _working = MutableStateFlow(false)
     val working = _working.asStateFlow()
     private val _isRefreshing = MutableStateFlow(false)
@@ -663,6 +663,7 @@ class TrefoilViewModel internal constructor(application: Application, private va
         if (!foreground) return
         screenSessions.pause()
         foreground = false
+        portForwards.inBackground = true
         updateThreadViewing()
         backgroundedAt = android.os.SystemClock.elapsedRealtime()
         // Route switches and machine probes wait for the foreground.
@@ -697,6 +698,7 @@ class TrefoilViewModel internal constructor(application: Application, private va
     }
     fun resume() {
         foreground = true
+        portForwards.inBackground = false
         updateThreadViewing()
         backgroundDisconnectJob?.cancel(); backgroundDisconnectJob = null
         postKeepAliveCheck()
@@ -717,6 +719,8 @@ class TrefoilViewModel internal constructor(application: Application, private va
             (state.value.connection != ConnectionStatus.Connected || state.value.environment?.id != target.id ||
                 (client.millisSinceLastPong()?.let { it > RETAINED_CONNECTION_FRESHNESS_MS } != false))) connect(target)
         else if (environment != null && !reconnectInFlight && state.value.environment?.id == environment.id) refreshRetainedShell()
+        // Set after any connect above (which clears notices), so the user learns why a page in their browser stopped loading.
+        portForwards.stoppedNotice.value?.let { _notice.value = it.message }
         probeMachines(skipId = target?.id)
     }
 
@@ -911,7 +915,10 @@ class TrefoilViewModel internal constructor(application: Application, private va
             liveEnvironment != null ||
             // An attempt that replaces a kept connection (reconnect, route or machine switch); a first connect does not start it.
             (keepAlive && _working.value)
-        val wanted = !keepAliveLatched && keepAliveWanted(_keepConnected.value, current.connection, reconnectPending)
+        // A forward opened in an external browser holds the connection while it lives (setting off or not); it never
+        // holds a reconnect, since nothing restarts a forward after a drop.
+        val forwardHold = portForwards.externalForwards.value.isNotEmpty() && current.connection == ConnectionStatus.Connected
+        val wanted = !keepAliveLatched && (keepAliveWanted(_keepConnected.value, current.connection, reconnectPending) || forwardHold)
         if (!wanted) keepAliveRefused = false
         // Keeps the shown name while the client has no environment, so fallbacks never flap the notification.
         val machine = current.environment?.name ?: keepAliveMachine ?: liveEnvironment?.name ?: reconnectWhenOnline?.name ?: selectedEnvironment?.name ?: "your machine"

@@ -53,6 +53,11 @@ fun Ports_Unsupported_Light() { PortsShot(PortsFixtures.unsupported) }
 @PreviewTest
 @Preview(showBackground = true, widthDp = 400, heightDp = 800)
 @Composable
+fun Ports_StoppedInBackground_Light() { PortsShot(PortsFixtures.stoppedInBackground) }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, heightDp = 800)
+@Composable
 fun Ports_Disabled_Light() { PortsShot(PortsFixtures.disabled) }
 
 @PreviewTest

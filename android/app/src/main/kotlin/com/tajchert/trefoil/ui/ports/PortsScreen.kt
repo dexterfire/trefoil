@@ -82,6 +82,7 @@ fun PortsScreen(state: PortsUiState, actions: PortsActions, modifier: Modifier =
             }
         }
         HorizontalDivider(color = c.line)
+        state.stoppedNotice?.let { message -> StoppedNotice(message, actions.onDismissStoppedNotice) }
         Box(Modifier.weight(1f).fillMaxWidth()) { PortsBody(state, actions) { manualDialog = true } }
     }
     if (manualDialog) ForwardPortDialog(onDismiss = { manualDialog = false }, onConfirm = { port -> manualDialog = false; actions.onForwardManual(port) })
@@ -131,6 +132,18 @@ private fun Notice(@StringRes message: Int) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Icon(TfIcons.Alert, null, Modifier.size(18.dp))
             Text(stringResource(message), style = TrefoilType.meta, color = c.amber)
+        }
+    }
+}
+
+@Composable
+private fun StoppedNotice(message: String, onDismiss: () -> Unit) {
+    val c = Tf.colors
+    Surface(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp), shape = RoundedCornerShape(12.dp), color = c.amberSoft, contentColor = c.amber) {
+        Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Icon(TfIcons.Alert, null, Modifier.size(18.dp))
+            Text(message, Modifier.weight(1f).padding(vertical = 6.dp), style = TrefoilType.meta, color = c.amber)
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.ports_notice_dismiss), color = c.amber) }
         }
     }
 }

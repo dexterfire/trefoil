@@ -27,6 +27,7 @@ import com.tajchert.trefoil.ui.screens.ScreenSessionsScreen
 import com.tajchert.trefoil.ui.ports.PortBrowserState
 import com.tajchert.trefoil.ui.ports.PortsActions
 import com.tajchert.trefoil.ui.ports.PortsScreen
+import com.tajchert.trefoil.ui.ports.StoppedForwardNotice
 import com.tajchert.trefoil.ui.ports.PortsUiState
 import com.tajchert.trefoil.ui.ports.ThreadPortsChip
 import com.tajchert.trefoil.ui.ports.TunnelBrowserScreen
@@ -82,6 +83,8 @@ fun TrefoilApp(
     onStopPortForward: (Int) -> Unit = {},
     onForwardPort: (Int) -> Unit = {},
     onClosePortBrowser: () -> Unit = {},
+    stoppedForwards: StoppedForwardNotice? = null,
+    onDismissStoppedForwards: () -> Unit = {},
 ) {
     TrefoilTheme {
         val conversationState = rememberSaveableStateHolder()
@@ -129,8 +132,9 @@ fun TrefoilApp(
             servers = state.localServers.servers, forwards = state.portForwards,
             threadTitles = remember(state.threads) { state.threads.associate { it.id to it.title } },
             live = state.localServers.live, supported = state.localServers.supported, tunnelsDisabled = state.previewTunnelDisabled,
-            canWrite = state.canWrite && state.connection == ConnectionStatus.Connected, selectedThreadId = state.selectedThreadId)
-        val portsActions = PortsActions({ showPorts = false }, onOpenPortInApp, onOpenPortExternal, onStopPortForward, onForwardPort)
+            canWrite = state.canWrite && state.connection == ConnectionStatus.Connected, selectedThreadId = state.selectedThreadId,
+            stoppedNotice = stoppedForwards?.takeIf { it.environmentId == state.environment?.id }?.message)
+        val portsActions = PortsActions({ showPorts = false }, onOpenPortInApp, onOpenPortExternal, onStopPortForward, onForwardPort, onDismissStoppedForwards)
         var screenFullscreen by rememberSaveable { mutableStateOf(false) }
         LaunchedEffect(state.environment?.id, screenViewer.target) { if (screenViewer.target == null) screenFullscreen = false }
         var showThread by rememberSaveable { mutableStateOf(false) }

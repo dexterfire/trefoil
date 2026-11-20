@@ -154,3 +154,6 @@ The ongoing notification shows only the machine name and has a Disconnect action
 machine, turning the setting off or closing the app stops the service. A refused start behaves as if the setting
 were off. On Android 13+ enabling it asks for notification permission; denying it keeps the service running with
 the notification hidden. Covered by Robolectric lifecycle and service tests; not yet exercised on a device.
+With the setting off, the same service also runs while a dev-server forward opened with "Open in browser" is
+active (see `protocol/PORTS.md`), so the page keeps loading while the user is in the browser; it never holds a
+reconnect, and a forward lost in the background is explained on return.

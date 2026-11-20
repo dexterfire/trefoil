@@ -168,6 +168,67 @@ class KeepAliveLifecycleTest {
         assertEquals(ConnectionStatus.Disconnected, model.state.value.connection)
     }
 
+    private val forward = PortForward("fixture", 5173, localPort = 25173, status = PortForwardStatus.Active)
+    /** As after "Open in browser": the forward is live and its URL went to an external browser. */
+    private fun openForwardExternally() {
+        mutable.value = mutable.value.copy(portForwards = listOf(forward))
+        model.portForwards.holdExternal(forward); advance(0)
+    }
+
+    @Test fun anExternallyOpenedForwardKeepsTheConnectionPastTheGraceWithTheSettingOff() {
+        openForwardExternally()
+        assertEquals(listOf("Fixture"), control.starts)
+        assertTrue(model.keepAliveActive.value)
+        model.pause(); advance(BACKGROUND_CONNECTION_GRACE_MS + 1_000)
+        assertEquals(ConnectionStatus.Connected, model.state.value.connection)
+        assertEquals(listOf(forward), model.state.value.portForwards)
+        assertEquals(0, control.stops)
+    }
+
+    @Test fun aForwardUsedOnlyInTheAppDoesNotHoldTheConnection() {
+        mutable.value = mutable.value.copy(portForwards = listOf(forward)); advance(0)
+        assertTrue(control.starts.isEmpty())
+        model.pause(); advance(BACKGROUND_CONNECTION_GRACE_MS + 1)
+        assertEquals(ConnectionStatus.Disconnected, model.state.value.connection)
+    }
+
+    @Test fun stoppingTheLastExternalForwardEndsTheHoldAndRestoresTheGrace() {
+        openForwardExternally()
+        model.pause(); advance(30_000)
+        model.portForwards.stop(5173); advance(0)
+        assertFalse(model.keepAliveActive.value)
+        assertEquals(1, control.stops)
+        advance(BACKGROUND_CONNECTION_GRACE_MS + 1)
+        assertEquals(ConnectionStatus.Disconnected, model.state.value.connection)
+    }
+
+    @Test fun aForwardLostInTheBackgroundEndsTheHoldAndIsExplainedOnReturn() {
+        openForwardExternally()
+        model.pause(); advance(30_000)
+        dropConnection(); mutable.value = mutable.value.copy(portForwards = emptyList()); advance(0)
+        assertFalse(model.keepAliveActive.value)
+        model.resume(); advance(0)
+        assertTrue(model.portForwards.stoppedNotice.value!!.message.contains("port 5173"))
+        assertTrue(model.notice.value!!.contains("port 5173"))
+    }
+
+    @Test fun anExplicitDisconnectEndsTheHold() {
+        openForwardExternally()
+        model.disconnect(); advance(0)
+        assertFalse(model.keepAliveActive.value)
+        assertTrue(model.portForwards.externalForwards.value.isEmpty())
+        assertEquals(ConnectionStatus.Disconnected, model.state.value.connection)
+    }
+
+    @Test fun keepAliveUsersSeeNoChangeWhenTheirExternalForwardStops() {
+        enableKeepAlive()
+        openForwardExternally()
+        model.portForwards.stop(5173); advance(0)
+        assertTrue(model.keepAliveActive.value)
+        assertEquals(listOf("Fixture"), control.starts)
+        assertEquals(0, control.stops)
+    }
+
     @Test fun connectionEndingWithoutAReconnectStopsTheService() {
         enableKeepAlive()
         dropConnection(); advance(0)
