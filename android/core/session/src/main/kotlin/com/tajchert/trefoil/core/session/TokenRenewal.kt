@@ -7,8 +7,13 @@ import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -113,15 +118,28 @@ class EnvironmentTokenRenewer(
         suspend fun request() = withContext(Dispatchers.IO) {
             Request.Builder().url(tokenUrl).post(form).header("DPoP", authorizer.proof("POST", tokenUrl, null)).build()
         }
-        suspend fun exchange(request: Request): Pair<Int, JsonObject?> = withContext(Dispatchers.IO) {
+        // A cancelled caller (a route probe that gave up) cancels the blocking call, so the renewal lock is released
+        // promptly. The call runs non-cancellable otherwise: a response already read is returned, and stored, even when
+        // the caller was cancelled meanwhile, because the host has already moved the session.
+        suspend fun exchange(request: Request): Pair<Int, JsonObject?> {
             val call = http.newCall(request)
+            val abort = CoroutineScope(currentCoroutineContext()).launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
+                try { awaitCancellation() } finally { call.cancel() }
+            }
             try {
-                call.execute().use { response ->
-                    if (!response.isSuccessful) return@use response.code to if (authorizer.shouldRetry(response)) RETRY else null
-                    response.code to (EffectRpc.json.parseToJsonElement(response.body?.string().orEmpty()) as? JsonObject)
-                }
-            } catch (error: IOException) { throw TokenRenewalUnavailable(error) }
-            catch (error: kotlinx.serialization.SerializationException) { throw TokenRenewalUnavailable(error) }
+                // Two steps on purpose: returning from an IO hop straight into a cancelled caller would drop the result.
+                return withContext(NonCancellable) { withContext(Dispatchers.IO) {
+                    try {
+                        call.execute().use { response ->
+                            if (!response.isSuccessful) return@use response.code to if (authorizer.shouldRetry(response)) RETRY else null
+                            response.code to (EffectRpc.json.parseToJsonElement(response.body?.string().orEmpty()) as? JsonObject)
+                        }
+                    } catch (error: IOException) {
+                        if (call.isCanceled()) throw CancellationException("Token renewal cancelled").apply { initCause(error) }
+                        throw TokenRenewalUnavailable(error)
+                    } catch (error: kotlinx.serialization.SerializationException) { throw TokenRenewalUnavailable(error) }
+                } }
+            } finally { abort.cancel() }
         }
         var (status, body) = exchange(request())
         // `replay` or clock skew: one retry with a fresh proof, as for any DPoP request.
