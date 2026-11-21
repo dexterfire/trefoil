@@ -114,7 +114,7 @@ class MainActivity : ComponentActivity() {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 model.portForwards.externalUrls.collect { request ->
                     val opened = try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(request.url)).addCategory(Intent.CATEGORY_BROWSABLE)); true }
-                    catch (_: Exception) { model.externalOpenFailed(request); false }
+                    catch (_: Exception) { model.externalOpenFailed(); false }
                     // Only a URL a browser took holds the forward; this runs before onStop, so the hold starts in the foreground.
                     if (opened) model.portForwards.externalOpened(request)
                 }

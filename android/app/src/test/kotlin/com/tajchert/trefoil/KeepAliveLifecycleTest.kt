@@ -297,20 +297,64 @@ class KeepAliveLifecycleTest {
         assertEquals(setOf(ExternalForward("fixture", 5173, 7)), model.portForwards.externalForwards.value)
     }
 
-    /** A Reconnect tap or a connection failure never swallows the lost-forward announcement. */
-    @Test fun aConnectionAttemptOrFailureDoesNotConsumeTheAnnouncement() {
+    private fun failConnection(message: String) {
+        TrefoilViewModel::class.java.getDeclaredMethod("connectionFailed", java.lang.Long.TYPE, ConnectionKind::class.java, String::class.java)
+            .apply { isAccessible = true }.invoke(model, 99L, ConnectionKind.Saved, message)
+    }
+
+    private fun loseForwardInTheBackgroundAndReturn(): String {
         openForwardExternally()
         model.pause(); advance(1_000)
         mutable.value = mutable.value.copy(portForwards = listOf(forward.copy(status = PortForwardStatus.Failed, localPort = null))); advance(0)
         model.resume()
-        val message = model.notice.value!!
+        return model.notice.value!!
+    }
+
+    /** Seen: a Reconnect tap with the banner on screen consumes it, so failed attempts never bring it back. */
+    @Test fun aReconnectTapWithTheBannerShowingConsumesIt() {
+        loseForwardInTheBackgroundAndReturn()
         model.reconnect()
-        assertEquals(message, model.notice.value)
-        TrefoilViewModel::class.java.getDeclaredMethod("connectionFailed", java.lang.Long.TYPE, ConnectionKind::class.java, String::class.java)
-            .apply { isAccessible = true }.invoke(model, 99L, ConnectionKind.Saved, "Could not reconnect.")
+        assertNull(model.notice.value)
+        failConnection("Could not reconnect.")
+        model.reconnect()
+        assertNull(model.notice.value)
+        // The ports screen keeps its record.
+        assertNotNull(model.portForwards.stoppedNotices.value["fixture"])
+    }
+
+    /** Unseen: a failure that replaced the banner before the user acted gives it back once, never again. */
+    @Test fun aBannerAFailureReplacedBeforeTheUserActedComesBackOnce() {
+        val message = loseForwardInTheBackgroundAndReturn()
+        failConnection("Could not reconnect.")
         assertEquals("Could not reconnect.", model.notice.value)
         model.reconnect()
         assertEquals(message, model.notice.value)
+        failConnection("Could not reconnect.")
+        model.reconnect()
+        assertNull(model.notice.value)
+    }
+
+    @Test fun aFailedReopenLeavesTheEarlierHoldAndItsDeadline() {
+        openForwardExternally()
+        model.pause(); advance(1_000)
+        // The same forward opened again, and this time the browser launch threw.
+        model.externalOpenFailed()
+        assertEquals(setOf(ExternalForward("fixture", 5173, 7)), model.portForwards.externalForwards.value)
+        advance(EXTERNAL_FORWARD_HOLD_MS - 1_001)
+        assertTrue(model.keepAliveActive.value)
+        advance(1)
+        assertTrue(model.portForwards.externalForwards.value.isEmpty())
+    }
+
+    @Test fun aNetworkCallbackAfterDeepSleepEndsAHoldPastItsDeadline() {
+        var now = 5_000_000L
+        model.forwardClock = { now }
+        openForwardExternally()
+        model.pause(); advance(1_000)
+        now += EXTERNAL_FORWARD_HOLD_MS
+        model.onDefaultNetworkLost(42)
+        assertTrue(model.portForwards.externalForwards.value.isEmpty())
+        assertFalse(model.keepAliveActive.value)
     }
 
     /** A worker publishes the failure while the app returns: the collector runs only after resume. */

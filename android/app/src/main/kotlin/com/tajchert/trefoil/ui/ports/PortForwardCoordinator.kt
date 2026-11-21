@@ -137,6 +137,8 @@ class PortForwardCoordinator(
 
     /** Ends the holds whose deadline passed; true when one ended. */
     private fun expireDue(publish: Boolean): Boolean {
+        // No clock read without a hold: most state updates find none.
+        if (holds.isEmpty()) return false
         val now = clock()
         val due = holds.filterValues { it.deadline <= now }.keys
         if (due.isEmpty()) return false
@@ -152,10 +154,15 @@ class PortForwardCoordinator(
     fun checkDeadlines(): Boolean = expireDue(publish = true)
 
     /**
-     * The background grace is about to disconnect: forwards whose hold the cap ended (while no hold remains) lose their
-     * connection because of the cap, so their stop is reported as [ForwardLoss.HoldExpired].
+     * The background grace is about to disconnect: forwards whose hold the cap ended (while no hold remains) and that
+     * still run now lose their connection because of the cap, so their stop is reported as [ForwardLoss.HoldExpired].
+     * One already stopped (the socket failed on its own, its update not collected yet) stays a connection loss.
      */
-    fun graceDisconnecting() { if (holds.isEmpty()) endedByCap += expired }
+    fun graceDisconnecting() {
+        if (holds.isNotEmpty()) return
+        val state = client.state.value
+        endedByCap += expired.filter { state.liveForward(it) != null }
+    }
 
     private fun publishHolds() {
         mutableExternalForwards.value = holds.keys.toSet()
@@ -212,9 +219,6 @@ class PortForwardCoordinator(
         holds[mark] = Hold(deadline, timer)
         publishHolds()
     }
-
-    /** The browser launch for [request] threw: that forward is not held, also not by an earlier open. */
-    fun externalOpenFailed(request: ExternalOpenRequest) = release(setOf(request.forward))
 
     /** Ends every hold without a notice: the user asked to disconnect or left the machine. */
     fun releaseAll() {

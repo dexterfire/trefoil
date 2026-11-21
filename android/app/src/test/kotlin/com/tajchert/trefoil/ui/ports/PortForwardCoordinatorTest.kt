@@ -222,14 +222,28 @@ class PortForwardCoordinatorTest {
         assertNotEquals(vite.forward, api.forward)
     }
 
-    @Test fun aThrowingReopenEndsTheEarlierHoldAndItsTimer() = runVirtual { _, coordinator, time ->
-        val request = openInBrowser(coordinator, 5173)
-        coordinator.externalOpenFailed(request)
-        assertTrue(coordinator.externalForwards.value.isEmpty())
-        val changes = holdChanges
-        time.advance(EXTERNAL_FORWARD_HOLD_MS * 2)
-        assertEquals(changes, holdChanges)
-        assertTrue(coordinator.stoppedNotices.value.isEmpty())
+    /** The grace fires just as the socket failed on its own: forwards already gone are not the limit's doing. */
+    @Test fun theGraceBlamesTheLimitOnlyForForwardsItStops() = kotlinx.coroutines.test.runTest {
+        // A standard dispatcher queues the collector, as the main looper does for an update from the socket thread.
+        val scope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.test.StandardTestDispatcher(testScheduler))
+        val client = FakeClient()
+        val coordinator = PortForwardCoordinator(scope, client, clock = { testScheduler.currentTime }) {}
+        try {
+            testScheduler.runCurrent()
+            client.state.update { it.copy(portForwards = listOf(PortForward("fixture", 5173, 25173, PortForwardStatus.Active, instance = 1),
+                PortForward("fixture", 3000, 23000, PortForwardStatus.Active, instance = 2))) }
+            testScheduler.runCurrent()
+            coordinator.externalOpened(ExternalOpenRequest("http://localhost:25173/", ExternalForward("fixture", 5173, 1)))
+            coordinator.externalOpened(ExternalOpenRequest("http://localhost:23000/", ExternalForward("fixture", 3000, 2)))
+            testScheduler.advanceTimeBy(EXTERNAL_FORWARD_HOLD_MS + 1); testScheduler.runCurrent()
+            assertTrue(coordinator.externalForwards.value.isEmpty())
+            // 3000's listener already failed; the collector has not seen it when the grace callback runs.
+            client.state.update { s -> s.copy(portForwards = s.portForwards.filter { it.remotePort != 3000 }) }
+            coordinator.graceDisconnecting()
+            client.state.update { it.copy(connection = ConnectionStatus.Disconnected, portForwards = emptyList()) }
+            testScheduler.runCurrent()
+            assertEquals(mapOf(5173 to ForwardLoss.HoldExpired, 3000 to ForwardLoss.ConnectionEnded), coordinator.stoppedNotices.value.getValue("fixture").lost)
+        } finally { scope.cancel() }
     }
 
     @Test fun reopeningRestartsTheCap() = runVirtual { client, coordinator, time ->
