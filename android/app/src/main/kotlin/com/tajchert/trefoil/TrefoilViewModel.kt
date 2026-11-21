@@ -417,9 +417,16 @@ class TrefoilViewModel internal constructor(application: Application, private va
         selectedEnvironment = environment.forStorage()
         val plan = environment.candidateRoutes().let { plan -> startAt?.let { start -> plan.dropWhile { !sameRoute(it, start) } }?.ifEmpty { null } ?: plan }
         val input = environment.ssh?.let { environment.sshInput() }
+        // No leg connects for a machine forgotten while the plan runs; one that connected anyway is closed again.
+        val wasSaved = _environments.value.any { it.id == environment.id }
+        fun ensureSaved() { if (wasSaved && _environments.value.none { it.id == environment.id }) throw MachineRemovedException() }
         val outcome = walkConnectionPlan(plan, input?.hasSavedLogin() == true, ::connectionStage,
-            direct = { routes -> client.connect(environment, routes) },
-            ssh = { openSsh(checkNotNull(input)) },
+            direct = { routes ->
+                ensureSaved()
+                client.connect(environment, routes)
+                try { ensureSaved() } catch (e: MachineRemovedException) { client.disconnect(); throw e }
+            },
+            ssh = { ensureSaved(); openSsh(checkNotNull(input)) },
         )
         if (outcome == PlanOutcome.NeedsSshLogin) {
             if (interactive && input != null) throw SshLoginRequired(input)
@@ -433,6 +440,8 @@ class TrefoilViewModel internal constructor(application: Application, private va
         val normalized = input.copy(host = input.host.trim(), username = input.username.trim())
         initialized.await()
         val saved = normalized.savedEnvironmentId?.let { id -> _environments.value.firstOrNull { it.id == id && it.ssh != null } }
+        // A reconnect of a machine forgotten meanwhile must not turn into a new pairing.
+        if (normalized.savedEnvironmentId?.let { id -> _environments.value.none { it.id == id } } == true) throw MachineRemovedException()
         val expected = hostKeys.firstOrNull { it.host.equals(normalized.host, ignoreCase = true) && it.port == normalized.port }?.fingerprint
             ?: saved?.ssh?.takeIf { it.host.equals(normalized.host, ignoreCase = true) && it.port == normalized.port }?.fingerprint
         pendingInput = normalized
@@ -462,8 +471,9 @@ class TrefoilViewModel internal constructor(application: Application, private va
                     else stored.withReconnected(configured)
                 }
             }
-            // Forgotten while this reconnect was in flight: do not adopt a session for a machine that is no longer saved.
-            check(_environments.value.any { it.id == configured.id }) { "This machine was removed while connecting" }
+            // Forgotten while this reconnect was in flight: do not adopt a session for a machine that is no longer saved
+            // (the finally block closes the tunnel and the client), and do not let the plan try another route.
+            if (_environments.value.none { it.id == configured.id }) throw MachineRemovedException()
             selectedEnvironment = _environments.value.firstOrNull { it.id == configured.id } ?: configured.forStorage()
             tunnel = opened; adopted = true
             tunnelMonitor = viewModelScope.launch {
@@ -990,6 +1000,9 @@ internal fun keepAliveStep(wanted: Boolean, active: Boolean, foreground: Boolean
 
 internal enum class PlanOutcome { Connected, NeedsSshLogin }
 
+/** The machine was forgotten while connecting: the whole connection plan stops, no route may connect for it. */
+internal class MachineRemovedException : Exception("This machine was removed while connecting")
+
 /** Every route before SSH failed, SSH is the last option and its login is not saved. */
 internal class SshLoginRequired(val input: SshConnectionInput) : Exception("SSH login required")
 
@@ -1013,8 +1026,8 @@ internal fun routeStage(routes: List<EnvironmentRoute>): String =
 /**
  * Walks [plan] in order: each run of direct routes goes to [direct] in one call; an Ssh step runs [ssh] when
  * [sshLoginSaved]. Without a saved login SSH is skipped when a later route exists, and as the last option the walk
- * returns [PlanOutcome.NeedsSshLogin]. A failed step continues with the next; SSH host key problems stop the walk (they
- * are the user's decision). When every step fails, the last failure is thrown.
+ * returns [PlanOutcome.NeedsSshLogin]. A failed step continues with the next; SSH host key problems (the user's decision)
+ * and a machine removed meanwhile stop the walk. When every step fails, the last failure is thrown.
  */
 internal suspend fun walkConnectionPlan(
     plan: List<EnvironmentRoute>,
@@ -1034,6 +1047,7 @@ internal suspend fun walkConnectionPlan(
             try { ssh(); return PlanOutcome.Connected }
             catch (e: CancellationException) { throw e }
             catch (e: SshHostKeyException) { throw e }
+            catch (e: MachineRemovedException) { throw e }
             catch (e: Exception) { failure = e }
         } else {
             val run = plan.drop(index).takeWhile { it.kind != RouteKind.Ssh }
@@ -1041,6 +1055,7 @@ internal suspend fun walkConnectionPlan(
             stage(routeStage(run))
             try { direct(run); return PlanOutcome.Connected }
             catch (e: CancellationException) { throw e }
+            catch (e: MachineRemovedException) { throw e }
             catch (e: Exception) { failure = e }
         }
     }

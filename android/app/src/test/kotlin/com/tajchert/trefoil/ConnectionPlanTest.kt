@@ -82,6 +82,22 @@ class ConnectionPlanTest {
         assertTrue(calls.isEmpty())
     }
 
+    @Test fun aMachineRemovedWhileConnectingStopsTheWholePlan() = runBlocking {
+        val walk = Walk()
+        // Removed while SSH was opening: the tunnel route after it must not connect for a machine no longer stored.
+        val error = runCatching {
+            walkConnectionPlan(listOf(ssh, tunnel), true, {}, direct = { walk.calls += "direct" }, ssh = { throw MachineRemovedException() })
+        }.exceptionOrNull()
+        assertTrue(error is MachineRemovedException)
+        assertTrue(walk.calls.isEmpty())
+        // Removed during a direct run: the SSH step after it does not open.
+        val second = runCatching {
+            walkConnectionPlan(listOf(lan, ssh), true, {}, direct = { throw MachineRemovedException() }, ssh = { walk.calls += "ssh" })
+        }.exceptionOrNull()
+        assertTrue(second is MachineRemovedException)
+        assertTrue(walk.calls.isEmpty())
+    }
+
     @Test fun hintsArePersistedOnlyWhenTheyChangeTheMachine() {
         val env = SavedEnvironment("env", "Mac", "https://mac.example/", "token")
         val other = SavedEnvironment("other", "Other", "https://other.example/", "token")
