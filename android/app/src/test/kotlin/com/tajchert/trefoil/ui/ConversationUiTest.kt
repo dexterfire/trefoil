@@ -506,7 +506,7 @@ class ConversationUiTest {
 
     @Test fun queuedStripRoutesSendNowAndRemoveAndResume() {
         val steered = mutableListOf<String>(); val cancelled = mutableListOf<String>(); var resumed = 0
-        val state = runningThread.copy(canSteer = true, queueHeld = true, queuedMessages = listOf(QueuedMessage("q1", "m1", "First", held = true), QueuedMessage("q2", "m2", "Second", held = true)))
+        val state = runningThread.copy(canSteer = true, queueHeld = true, queuedMessages = listOf(QueuedMessage("q1", "m1", "First", held = true, canSendNow = true), QueuedMessage("q2", "m2", "Second", held = true, canSendNow = true)))
         compose.setContent { MaterialTheme { Conversation(state, {}, {}, { _, _, _ -> }, onSteerQueued = { steered += it }, onCancelQueued = { cancelled += it }, onResumeQueue = { resumed++ }) } }
         compose.onNodeWithText("Queue paused").assertExists()
         compose.onNodeWithText("Resume").performClick()
@@ -515,15 +515,51 @@ class ConversationUiTest {
         compose.runOnIdle { assertEquals(1, resumed); assertEquals(listOf("q2"), steered); assertEquals(listOf("q1"), cancelled) }
     }
 
-    @Test fun sendNowIsDisabledWhileARunCannotBeSteered() {
-        val state = runningThread.copy(queuedMessages = listOf(QueuedMessage("q1", "m1", "First")))
+    @Test fun sendNowFollowsEachRowsEligibilityNotTheRunsSteerability() {
+        val state = runningThread.copy(canSteer = true, queuedMessages = listOf(
+            QueuedMessage("q1", "m1", "First", canSendNow = false), QueuedMessage("q2", "m2", "Second", canSendNow = true)))
         compose.setContent { MaterialTheme { Conversation(state, {}, {}, { _, _, _ -> }) } }
-        compose.onNodeWithText("Send now").assertIsNotEnabled()
+        compose.onAllNodesWithText("Send now")[0].assertIsNotEnabled()
+        compose.onAllNodesWithText("Send now")[1].assertIsEnabled()
         compose.onNodeWithText("Queue paused").assertDoesNotExist()
     }
 
+    @Test fun anIneligibleRowStaysDisabledEvenWhenWritesAreOn() {
+        val state = runningThread.copy(canSteer = true, queuedMessages = listOf(QueuedMessage("q1", "m1", "First")))
+        compose.setContent { MaterialTheme { Conversation(state, {}, {}, { _, _, _ -> }) } }
+        compose.onNodeWithText("Send now").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Remove queued message").assertIsEnabled()
+    }
+
+    @Test fun aSubmissionRestoredAfterProcessDeathIsSettledAsFailedAndKeepsItsText() {
+        val restoration = androidx.compose.ui.test.junit4.StateRestorationTester(compose)
+        val inFlight = mutableStateOf(emptySet<String>())
+        val sent = Sent()
+        restoration.setContent { MaterialTheme { Conversation(runningThread, {}, {}, { _, _, _ -> }, submitMessage = { s, m -> sent.submissions += s to m }, sendsInFlight = inFlight.value) } }
+        compose.onNodeWithText("Queue a message…").performTextInput("later")
+        compose.onNodeWithContentDescription("Queue message").performClick()
+        compose.onNodeWithText("Waiting for server confirmation…").assertExists()
+        // The fresh process knows neither an outcome nor an in-flight record for the restored id.
+        restoration.emulateSavedInstanceStateRestore()
+        compose.onNodeWithText("Waiting for server confirmation…").assertDoesNotExist()
+        compose.onNodeWithText("later").assertExists()
+        compose.onNodeWithContentDescription("Queue message").assertIsEnabled()
+    }
+
+    @Test fun aRestoredSubmissionThatIsStillInFlightKeepsWaiting() {
+        val restoration = androidx.compose.ui.test.junit4.StateRestorationTester(compose)
+        val inFlight = mutableStateOf(emptySet<String>())
+        val sent = Sent()
+        restoration.setContent { MaterialTheme { Conversation(runningThread, {}, {}, { _, _, _ -> }, submitMessage = { s, m -> sent.submissions += s to m }, sendsInFlight = inFlight.value) } }
+        compose.onNodeWithText("Queue a message…").performTextInput("later")
+        compose.onNodeWithContentDescription("Queue message").performClick()
+        compose.runOnIdle { inFlight.value = setOf(sent.submissions.single().first.id) }
+        restoration.emulateSavedInstanceStateRestore()
+        compose.onNodeWithText("Waiting for server confirmation…").assertExists()
+    }
+
     @Test fun queueActionsFollowTheRawWriteStateNotTheGracePeriod() {
-        val live = runningThread.copy(canSteer = true, canRead = true, canWriteThreads = true, queueHeld = true, queuedMessages = listOf(QueuedMessage("q1", "m1", "First", held = true)))
+        val live = runningThread.copy(canSteer = true, canRead = true, canWriteThreads = true, queueHeld = true, queuedMessages = listOf(QueuedMessage("q1", "m1", "First", held = true, canSendNow = true)))
         val state = mutableStateOf(live)
         compose.mainClock.autoAdvance = false
         compose.setContent { MaterialTheme { Conversation(state.value, {}, {}, { _, _, _ -> }) } }

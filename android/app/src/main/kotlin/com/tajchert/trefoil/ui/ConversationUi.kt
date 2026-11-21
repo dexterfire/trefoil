@@ -74,6 +74,8 @@ internal fun Conversation(
     submitMessage: (ComposerSubmission, FollowUpMode?) -> Unit = { submission, _ -> send(submission.text) },
     /** Outcomes of [submitMessage] calls, by submission id; the composer settles only its own and then calls [onConsumeSendOutcome]. */
     sendOutcomes: Map<String, SendOutcome> = emptyMap(),
+    /** Submissions this process still has in flight; a restored submission id the view model does not know is settled as failed. */
+    sendsInFlight: Set<String> = emptySet(),
     onConsumeSendOutcome: (String) -> Unit = {},
     /** Threads (see [stopKey]) with a Stop in flight: the view model holds each until the thread has nothing left to stop, or 10 s. */
     stopPendingKeys: Set<String> = emptySet(),
@@ -167,6 +169,12 @@ internal fun Conversation(
             SendOutcome.Failed -> settle(clear = false)
             null -> {}
         }
+    }
+    // A submission id restored from saved state that this process knows nothing about (process death) will never be answered:
+    // settle it as failed, keeping the text so it can be sent again. Checked once when the composer is (re)created.
+    LaunchedEffect(state.environment?.id, composerKey) {
+        val id = submissionId
+        if (id != null && id !in sendOutcomes && id !in sendsInFlight) settle(clear = false)
     }
     // Uncorrelated signals only free a send that has no submission of its own (a new-thread launch).
     LaunchedEffect(state.error) { if (state.error != null && submissionId == null) submitted = null }
@@ -423,7 +431,6 @@ private fun PrimaryComposerButton(button: ComposerButton, canSteer: Boolean, sto
 @Composable
 internal fun QueuedMessagesStrip(state: ClientState, canWrite: Boolean, onCancel: (String) -> Unit, onSteer: (String) -> Unit, onResume: () -> Unit) {
     val c = Tf.colors
-    val sendNow = canSendQueuedNow(state, canWrite)
     Surface(Modifier.fillMaxWidth().padding(bottom = 8.dp).testTag("queued-strip"), shape = RoundedCornerShape(16.dp), color = c.s2, contentColor = c.text, border = BorderStroke(1.dp, c.line)) {
         Column(Modifier.padding(vertical = 4.dp)) {
             if (state.queuePaused) Row(Modifier.fillMaxWidth().padding(start = 14.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -434,7 +441,7 @@ internal fun QueuedMessagesStrip(state: ClientState, canWrite: Boolean, onCancel
                 Row(Modifier.fillMaxWidth().padding(start = 14.dp, end = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(TfIcons.Queue, null, Modifier.size(16.dp), tint = c.muted)
                     Text(queued.text, Modifier.weight(1f).padding(horizontal = 8.dp), style = TrefoilType.preview, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    TextButton(onClick = { onSteer(queued.runId) }, enabled = sendNow) { Text("Send now") }
+                    TextButton(onClick = { onSteer(queued.runId) }, enabled = canWrite && queued.canSendNow) { Text("Send now") }
                     IconButton(onClick = { onCancel(queued.runId) }, enabled = canWrite, modifier = Modifier.size(40.dp)) {
                         Icon(TfIcons.Close, "Remove queued message", Modifier.size(18.dp))
                     }

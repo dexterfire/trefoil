@@ -114,6 +114,12 @@ class TrefoilViewModel internal constructor(application: Application, private va
      */
     internal val sendOutcomes: StateFlow<Map<String, SendOutcome>> = _sendOutcomes.asStateFlow()
     internal fun consumeSendOutcome(id: String) = _sendOutcomes.update { it - id }
+    private val _sendsInFlight = MutableStateFlow<Set<String>>(emptySet())
+    /**
+     * Submissions of this process still waiting for their outcome. A composer restored after process death holds an id
+     * that is in neither this set nor [sendOutcomes]: that send is lost, and the composer settles it as failed.
+     */
+    internal val sendsInFlight: StateFlow<Set<String>> = _sendsInFlight.asStateFlow()
     private val stopGuard = StopGuard(android.os.SystemClock::elapsedRealtime)
     /** Threads (see [stopKey]) whose Stop is in flight; each is held until the thread has nothing left to stop, or 10 s. */
     internal val stopPending: StateFlow<Set<String>> = stopGuard.pending
@@ -579,6 +585,7 @@ class TrefoilViewModel internal constructor(application: Application, private va
      * (the user moved on before the tap landed) is refused rather than sent to the wrong conversation.
      */
     internal fun submitMessage(submission: ComposerSubmission, mode: FollowUpMode?) {
+        _sendsInFlight.update { it + submission.id }
         viewModelScope.launch {
             _notice.value = null
             val current = client.state.value
@@ -592,7 +599,9 @@ class TrefoilViewModel internal constructor(application: Application, private va
             catch (_: UncertainOutcomeException) { FOLLOW_UP_UNCERTAIN }
             catch (e: Exception) { e.message ?: "Could not send the message." }
             if (failure != null) _notice.value = failure
+            // Outcome first, so there is never a moment when the id is in neither set.
             _sendOutcomes.update { it + (submission.id to if (failure == null) SendOutcome.Accepted else SendOutcome.Failed) }
+            _sendsInFlight.update { it - submission.id }
         }
     }
     /**

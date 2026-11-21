@@ -47,6 +47,7 @@ fun TrefoilApp(
     onThreadShown: (Boolean) -> Unit = {},
     onSubmitMessage: (ComposerSubmission, FollowUpMode?) -> Unit = { submission, _ -> onSend(submission.text) },
     sendOutcomes: Map<String, SendOutcome> = emptyMap(), onConsumeSendOutcome: (String) -> Unit = {}, stopPendingKeys: Set<String> = emptySet(),
+    sendsInFlight: Set<String> = emptySet(),
     onCancelQueued: (String) -> Unit = {}, onSteerQueued: (String) -> Unit = {}, onResumeQueue: () -> Unit = {},
     keepConnected: Boolean = false, onSetModelOption: (String, Any) -> Unit = { _, _ -> },
     onKeepConnectedChange: (Boolean) -> Unit = {},
@@ -298,7 +299,7 @@ fun TrefoilApp(
                                         if (!twoPane) ConnectionBanner(state, onReconnect)
                                         Box(Modifier.weight(1f)) {
                                             conversationState.SaveableStateProvider("${state.environment?.id}:${if (draft != null) "draft:${draft.projectId}" else state.selectedThreadId}") {
-                                                Conversation(state, onSend, onInterrupt, onRespond, submitMessage = onSubmitMessage, sendOutcomes = sendOutcomes, onConsumeSendOutcome = onConsumeSendOutcome, stopPendingKeys = stopPendingKeys, onCancelQueued = onCancelQueued, onSteerQueued = onSteerQueued, onResumeQueue = onResumeQueue, onLoadActivity = onLoadActivity, composerDrafts = composerDrafts, fileDownloadUi = fileDownloadUi,
+                                                Conversation(state, onSend, onInterrupt, onRespond, submitMessage = onSubmitMessage, sendOutcomes = sendOutcomes, sendsInFlight = sendsInFlight, onConsumeSendOutcome = onConsumeSendOutcome, stopPendingKeys = stopPendingKeys, onCancelQueued = onCancelQueued, onSteerQueued = onSteerQueued, onResumeQueue = onResumeQueue, onLoadActivity = onLoadActivity, composerDrafts = composerDrafts, fileDownloadUi = fileDownloadUi,
                                                     draft = draft, onSetRuntimeMode = onSetRuntimeMode, onSetModel = onSetModel, onSetModelOption = onSetModelOption, sendFailed = sendFailed,
                                                     onBack = if (backParent != null) ({ select(backParent.id) }) else if (twoPane) null else ({ cancelDraft(); showThread = false }),
                                                     onOpenParent = parentThread?.let { p -> { select(p.id) } },

@@ -82,13 +82,6 @@ class ComposerActionsTest {
         assertFalse(sendAccepted("hi", running.copy(messages = listOf(ConversationMessage("a", "assistant", "hi"))), emptyList()))
     }
 
-    @Test fun sendNowNeedsWritesAndEitherSteeringOrAnIdleThread() {
-        assertTrue(canSendQueuedNow(idle))
-        assertFalse(canSendQueuedNow(running))
-        assertTrue(canSendQueuedNow(running.copy(canSteer = true)))
-        assertFalse(canSendQueuedNow(idle.copy(canWrite = false)))
-    }
-
     @Test fun queuePausedFollowsTheHeldFlagOrAHeldRow() {
         assertFalse(idle.queuePaused)
         assertTrue(idle.copy(queueHeld = true).queuePaused)

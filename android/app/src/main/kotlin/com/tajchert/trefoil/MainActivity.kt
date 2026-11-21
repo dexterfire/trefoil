@@ -132,6 +132,7 @@ class MainActivity : ComponentActivity() {
             val draft by model.draft.collectAsStateWithLifecycle()
             val notice by model.notice.collectAsStateWithLifecycle()
             val sendOutcomes by model.sendOutcomes.collectAsStateWithLifecycle()
+            val sendsInFlight by model.sendsInFlight.collectAsStateWithLifecycle()
             val stopPending by model.stopPending.collectAsStateWithLifecycle()
             val working by model.working.collectAsStateWithLifecycle()
             val sshHostKey by model.sshHostKey.collectAsStateWithLifecycle()
@@ -170,6 +171,7 @@ class MainActivity : ComponentActivity() {
                 onConsumeSendOutcome = model::consumeSendOutcome,
                 stopPendingKeys = stopPending,
                 sendOutcomes = sendOutcomes,
+                sendsInFlight = sendsInFlight,
                 onInterrupt = model::stopThread,
                 onCancelQueued = model::cancelQueued,
                 onSteerQueued = model::steerQueued,

@@ -99,7 +99,4 @@ internal fun sendAccepted(pending: String, state: ClientState, idsAtSend: Collec
         state.queuedMessages.any { it.text.trim() == text && it.messageId !in idsAtSend }
 }
 
-/** Sending a queued message now needs a write path and either an active run that accepts steering or an idle thread. */
-internal fun canSendQueuedNow(state: ClientState, canWrite: Boolean = state.canWrite): Boolean = canWrite && (state.canSteer || !state.threadBusy)
-
 internal val ClientState.queuePaused: Boolean get() = queueHeld || queuedMessages.any { it.held }

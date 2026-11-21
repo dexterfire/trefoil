@@ -140,12 +140,12 @@ object ConversationFixtures {
 
     /** Two follow-ups waiting behind the running turn. */
     fun queuedState(): ClientState = steerableState().copy(queuedMessages = listOf(
-        QueuedMessage("queued-1", "qm-1", "Also bump the version and update the changelog before you finish."),
-        QueuedMessage("queued-2", "qm-2", "Then open the PR.")))
+        QueuedMessage("queued-1", "qm-1", "Also bump the version and update the changelog before you finish.", canSendNow = true),
+        QueuedMessage("queued-2", "qm-2", "Then open the PR.", canSendNow = true)))
 
     /** A Stop held the queue: it waits for Resume. */
     fun heldQueueState(): ClientState = chatState().copy(queueHeld = true, queuedMessages = listOf(
-        QueuedMessage("queued-1", "qm-1", "Also bump the version and update the changelog before you finish.", held = true)))
+        QueuedMessage("queued-1", "qm-1", "Also bump the version and update the changelog before you finish.", held = true, canSendNow = true)))
 
     private val longThreadPrompts = listOf("Add a dark theme preview.", "Cover the thread list too.", "Now the settings screen.",
         "Fix the clipped title.", "Run lint.", "Update the README.", "Bump the version.", "Check the widget colors.",
