@@ -51,7 +51,7 @@ class RetainedSessionTest {
                                 "subscribeServerConfig", "subscribeDiscoveredLocalServers" -> Unit
                                 "orchestration.dispatchCommand" -> {
                                     commands.trySend(frame.obj("payload"))
-                                    if (!holdCommands) webSocket.send("""{"_tag":"Exit","requestId":"$id","exit":{"_tag":"Success","value":{}}}""")
+                                    if (!holdCommands) webSocket.send("""{"_tag":"Exit","requestId":"$id","exit":{"_tag":"Success","value":{"sequence":1}}}""")
                                     Unit
                                 }
                                 else -> otherCalls.trySend(frame.string("tag"))

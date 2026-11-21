@@ -37,7 +37,7 @@ internal fun pendingBackgroundWork(projection: JsonObject): List<PendingBackgrou
     val runs = projection.objects("runs")
     if (runs.any { it.string("status") in LIVE_RUN_STATUSES }) return emptyList()
     val thread = projection.obj("thread")
-    val pullRequests = pullRequestWatchTasks(thread.objects("pullRequests"))
+    val pullRequests = pullRequestWatchTasks(thread)
     // As T3's shell: a usage-limited run stays latest while the runs queued after it never started.
     val latestRun = usageLimitRunPresentedAsLatest(runs, projection.objects("turnItems"), providerSessionError(projection))
         ?: latestUnheldRun(runs) ?: return pullRequests
@@ -143,14 +143,16 @@ internal fun usageLimitRunPresentedAsLatest(runs: List<JsonObject>, turnItems: L
     return executed.takeIf { blocked -> runs.any { it.runOrdinal() > blocked.runOrdinal() } }
 }
 
-/** A merged or dismissed pull request's watch holds nothing; one whose checks all finished stays listed but not awaited. */
-private fun pullRequestWatchTasks(pullRequests: List<JsonObject>): List<PendingBackgroundTask> = pullRequests.mapNotNull { link ->
-    val watch = link["watch"] as? JsonObject ?: return@mapNotNull null
-    if (link.string("source") == "stack-dismissed" || link.obj("snapshot").string("state") == "merged") return@mapNotNull null
+/**
+ * T3 `pullRequestWatchTasks`: every visible link with a live watch (merged included). Once every check finished a person
+ * moves the PR next, so it is listed but not awaited, unless the watch runs until merge; a merged PR's watch holds.
+ */
+private fun pullRequestWatchTasks(thread: JsonObject): List<PendingBackgroundTask> = watchedPullRequests(thread).mapNotNull { link ->
+    val watch = link.obj("watch")
     val number = (link["number"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
     PendingBackgroundTask(
         taskId = "$PULL_REQUEST_WATCH_TASK_ID${link.string("host").lowercase()}/${link.string("repository").lowercase()}#$number",
         kind = "monitor", description = "Watching pull request #$number",
-        awaited = watch.flag("checksPending") != false,
+        awaited = watch.flag("checksPending") != false || watch.string("until") == "merged" || link.obj("snapshot").string("state") == "merged",
     )
 }

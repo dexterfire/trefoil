@@ -36,7 +36,7 @@ internal fun activeThreadRun(projection: JsonObject): JsonObject? =
 /**
  * T3 `getUserQueuedThreadRuns` in `deriveThreadQueueWorkflowState` order: `queued` runs, without delegated-completion
  * and notification wakes, sorted by `queuePosition ?? ordinal` then `ordinal`. The text is the queued message's (a guest
- * message shows the guest's words), else [QUEUED_MESSAGE_FALLBACK].
+ * message shows the guest's words), else [QUEUED_MESSAGE_FALLBACK]. [QueuedMessage.canSendNow] is [canSendQueuedNow].
  */
 internal fun queuedMessages(projection: JsonObject): List<QueuedMessage> {
     val runs = projection.objects("runs").filter { it.string("status") == "queued" }
@@ -50,8 +50,23 @@ internal fun queuedMessages(projection: JsonObject): List<QueuedMessage> {
             val message = messages.firstOrNull { it.string("id") == messageId }
             val guest = message?.obj("context")?.obj("guest")?.get("text") as? JsonPrimitive
             val text = guest?.takeIf { it.isString }?.content ?: (message?.get("text") as? JsonPrimitive)?.takeIf { it.isString }?.content
-            QueuedMessage(run.string("id"), messageId, text ?: QUEUED_MESSAGE_FALLBACK, held = run.flag("queueHeld") == true)
+            QueuedMessage(run.string("id"), messageId, text ?: QUEUED_MESSAGE_FALLBACK, held = run.flag("queueHeld") == true,
+                canSendNow = canSendQueuedNow(projection, run))
         }
+}
+
+/**
+ * T3 "send now" eligibility for one queued [run]: with no active run, `canSendNow` (thread neither archived nor deleted)
+ * for `queued-run.start`; with one, `canPromoteToSteer`, and the server's `queued-message.promote-to-steer` rule that a
+ * `freshContext` message cannot steer unless the target is a `/compact` turn (which the server skips instead).
+ */
+internal fun canSendQueuedNow(projection: JsonObject, run: JsonObject): Boolean {
+    if (activeThreadRun(projection) == null) {
+        val thread = projection.obj("thread")
+        return !thread.present("archivedAt") && !thread.present("deletedAt")
+    }
+    val promotion = steerPromotion(projection) ?: return false
+    return promotion.allowed && (promotion.skipsCompaction || run.flag("freshContext") != true)
 }
 
 /** T3 `isHeld`: any queued run (wakes included) is held by a stop or restart until `queue.resume`. */
@@ -61,25 +76,35 @@ internal fun queueHeld(projection: JsonObject): Boolean =
 private fun isCompactionCommand(message: JsonObject): Boolean = message.string("role") == "user" &&
     message.string("text").trim().lowercase() == COMPACT_COMMAND && message.noAttachments()
 
+private class SteerPromotion(val activeRun: JsonObject, val turns: JsonObject?, val allowed: Boolean, val skipsCompaction: Boolean)
+
 /**
- * T3 mobile `canSteerActiveTurn`: `canPromoteToSteer` (the provider session's `capabilities.turns`
- * `supportsActiveSteering` / `supportsSteeringByInterruptRestart`; a setup-phase run with no known session may steer)
- * and not blocked by a running `/compact` or compaction ([compactionBlocksSteering]).
+ * T3 `canPromoteToSteer` for the active run (null when none): the provider session's `capabilities.turns`
+ * `supportsActiveSteering` / `supportsSteeringByInterruptRestart`, a setup-phase run with no known session, or a
+ * `/compact` turn (`promoteSkipsCompaction`).
  */
-internal fun canSteer(projection: JsonObject): Boolean {
-    val activeRun = activeThreadRun(projection) ?: return false
+private fun steerPromotion(projection: JsonObject): SteerPromotion? {
+    val activeRun = activeThreadRun(projection) ?: return null
     val turns = providerSession(projection)?.obj("capabilities")?.get("turns") as? JsonObject
-    val messages = projection.objects("messages")
-    val activeMessage = messages.firstOrNull { it.string("id") == activeRun.string("userMessageId") }
-    val promoteSkipsCompaction = activeMessage != null && isCompactionCommand(activeMessage)
+    val activeMessage = projection.objects("messages").firstOrNull { it.string("id") == activeRun.string("userMessageId") }
+    val skipsCompaction = activeMessage != null && isCompactionCommand(activeMessage)
     val attemptId = activeRun.string("activeAttemptId")
     val steerableTurn = activeRun.string("status") == "running" && attemptId.isNotEmpty() &&
         projection.objects("providerTurns").any { it.string("runAttemptId") == attemptId && it.string("status") == "running" }
     val steers = turns?.flag("supportsActiveSteering") == true || turns?.flag("supportsSteeringByInterruptRestart") == true
-    val canPromote = promoteSkipsCompaction ||
+    val allowed = skipsCompaction ||
         (activeRun.string("status") in setOf("preparing", "starting") && (turns == null || steers)) ||
         (steerableTurn && steers)
-    return canPromote && !compactionBlocksSteering(projection, activeRun, turns?.flag("activeSteeringDuringCompaction") == true)
+    return SteerPromotion(activeRun, turns, allowed, skipsCompaction)
+}
+
+/**
+ * T3 mobile `canSteerActiveTurn` (the composer's Steer): [steerPromotion] allowed and not blocked by a running
+ * `/compact` or compaction ([compactionBlocksSteering]).
+ */
+internal fun canSteer(projection: JsonObject): Boolean {
+    val promotion = steerPromotion(projection)?.takeIf { it.allowed } ?: return false
+    return !compactionBlocksSteering(projection, promotion.activeRun, promotion.turns?.flag("activeSteeringDuringCompaction") == true)
 }
 
 /** T3 `compactionBlocksSteering` with mobile's `compactCommandIsActive` / `compactionRunning` for [activeRun]. */
@@ -115,9 +140,12 @@ internal fun stopRunTarget(projection: JsonObject): String? {
     return latest?.string("id")?.takeIf { it.isNotEmpty() }
 }
 
+/** T3 `visibleThreadPullRequests` with a live `watch` (a merged link's watch still counts until it is turned off). */
+internal fun watchedPullRequests(thread: JsonObject): List<JsonObject> =
+    thread.objects("pullRequests").filter { it["watch"] is JsonObject && it.string("source") != "stack-dismissed" }
+
 /** T3 stops pull request watches with `thread.pull-request.watch {host, repository, number, watching: false}`. */
-internal fun pullRequestUnwatches(projection: JsonObject): List<JsonObject> = projection.obj("thread").objects("pullRequests").mapNotNull { link ->
-    if (link["watch"] !is JsonObject || link.string("source") == "stack-dismissed" || link.obj("snapshot").string("state") == "merged") return@mapNotNull null
+internal fun pullRequestUnwatches(projection: JsonObject): List<JsonObject> = watchedPullRequests(projection.obj("thread")).mapNotNull { link ->
     val number = link["number"] as? JsonPrimitive ?: return@mapNotNull null
     JsonObject(mapOf("host" to JsonPrimitive(link.string("host")), "repository" to JsonPrimitive(link.string("repository")),
         "number" to number, "watching" to JsonPrimitive(false)))

@@ -148,7 +148,7 @@ class T3Client(
         val current = state.value
         current.environment?.id?.let { id ->
             environmentStates.remove(id)
-            environmentStates[id] = current.copy(canWrite = false, canRead = false, canReadUsage = false, canSteer = false, canStop = false, busy = false, error = null, screens = ScreenCatalog(), localServers = LocalServerCatalog(), portForwards = emptyList())
+            environmentStates[id] = current.copy(canWrite = false, canRead = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = null, screens = ScreenCatalog(), localServers = LocalServerCatalog(), portForwards = emptyList())
             while (environmentStates.size > 4) {
                 val evicted = environmentStates.keys.first()
                 environmentStates.remove(evicted)
@@ -240,6 +240,12 @@ class T3Client(
     private class HttpFailure(val status: Int, val dpopRetry: Boolean = false) : IllegalStateException(if (status == 401 || status == 403) "Authorization expired or denied; pair again" else "Server HTTP error $status")
     /** The server answered with a failure Exit: a definite answer, not a lost reply. */
     private class ServerRejected : IllegalStateException("Server rejected request; refresh before trying again")
+    /** A local check stopped the command before anything was transmitted: nothing changed, so the session stays usable. */
+    private class CommandNotSent : IllegalStateException("The thread changed or went stale; the command was not sent")
+    /** A success Exit whose value is not a dispatch receipt (`{sequence: non-negative integer}`): the outcome is uncertain. */
+    private class MalformedReceipt : IllegalStateException("Server answered without a command receipt")
+    /** Part of a stop was sent, but work remains that nothing this client may send can stop. */
+    private class PartialStop : IllegalStateException("Some agent work could not be stopped from here; use another T3 client")
     /** The server answered with an interrupted Exit: it stopped handling the request, so the outcome is unknown. */
     private class RequestInterrupted : IllegalStateException("Server interrupted the request; the outcome is uncertain")
     /** No reply in time. Deliberately not a CancellationException, so callers cannot swallow it as cancellation. */
@@ -337,7 +343,7 @@ class T3Client(
             if (state.value.environment?.id != environment.id) usageCache.clear()
             val retained = environmentStates[environment.id] ?: ClientState()
             projection = JsonObject(emptyMap())
-            update { retained.copy(environment = environment, connection = ConnectionStatus.Connecting, canWrite = false, canRead = false, canReadUsage = false, canSteer = false, canStop = false, busy = false, error = null, settlementUndo = null, threadActionsConfigured = false, activeRoute = null,
+            update { retained.copy(environment = environment, connection = ConnectionStatus.Connecting, canWrite = false, canRead = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = null, settlementUndo = null, threadActionsConfigured = false, activeRoute = null,
                 localServers = LocalServerCatalog(), previewTunnelSetting = null, previewTunnelDisabled = false, portForwards = emptyList()) }
         }
         try {
@@ -524,7 +530,7 @@ class T3Client(
         var sent = false
         try { synchronized(lifecycleLock) {
             context.ensureActive()
-            check(epoch == generation && guard()) { "Session changed; command was not sent" }
+            if (epoch != generation || !guard()) throw CommandNotSent()
             send(EffectRpc.request(id, tag, payload)); sent = true
         }; return withTimeoutOrNull(timeoutMillis) { result.await() } ?: throw RequestTimedOut() }
         finally { if (pending.remove(id) != null && sent) runCatching { send(EffectRpc.signal("Interrupt", id)) } }
@@ -569,7 +575,7 @@ class T3Client(
         resetScreens()
         stopPortForwards()
         undoPlan = null; pendingModelSelections = null
-        update { it.copy(connection =ConnectionStatus.Error, canWrite = false, canRead = false, canReadUsage = false, canSteer = false, canStop = false, busy = false, error = message, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
+        update { it.copy(connection =ConnectionStatus.Error, canWrite = false, canRead = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = message, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
         pending.values.forEach { it.completeExceptionally(IllegalStateException(message)) }; pending.clear()
         streams.clear(); heartbeat?.cancel(); socket?.cancel(); socket = null
     }
@@ -589,7 +595,7 @@ class T3Client(
         resetScreens()
         stopPortForwards()
         undoPlan = null; pendingModelSelections = null
-        update { it.copy(connection =ConnectionStatus.Disconnected, canWrite = false, canRead = false, canReadUsage = false, canSteer = false, canStop = false, busy = false, error = reason ?: it.error, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
+        update { it.copy(connection =ConnectionStatus.Disconnected, canWrite = false, canRead = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = reason ?: it.error, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
     }
 
     private fun usageEnvironment(): SavedEnvironment {
@@ -1196,16 +1202,31 @@ class T3Client(
     private suspend fun dispatchCommand(subject: String, build: () -> JsonObject): Unit = mutating {
         awaitFreshThread()
         val (epoch, payload) = synchronized(lifecycleLock) { requireWrite(); generation to build() }
-        mutation(epoch, subject) { rpc("orchestration.dispatchCommand", payload, epoch) }
+        mutation(epoch, subject) { requireReceipt(rpc("orchestration.dispatchCommand", payload, epoch)) }
+    }
+    /** A dispatch receipt is `{sequence}` with a non-negative integer; anything else is treated as an uncertain outcome. */
+    private fun requireReceipt(result: JsonElement) {
+        val sequence = ((result as? JsonObject)?.get("sequence") as? JsonPrimitive)?.takeUnless { it.isString }?.longOrNull
+        if (sequence == null || sequence < 0) throw MalformedReceipt()
+    }
+    /**
+     * Like [dispatchCommand] for the follow-up, queue and stop commands: [build] runs under the lock with the selected
+     * thread captured, and [sendInSession] re-checks that the same thread is still selected and writable when sending.
+     */
+    private suspend fun dispatchSelected(subject: String, build: () -> JsonObject): Unit = mutating {
+        awaitFreshThread()
+        val (session, payload) = synchronized(lifecycleLock) { requireWrite(); threadSession() to build() }
+        sendInSession(session, subject, payload)
     }
     /**
      * A definite server rejection (a failed Exit with a typed `Fail` or a `Die` defect) changed
-     * nothing, so the session stays usable and the caller gets a clear error. Anything else after
+     * nothing, so the session stays usable and the caller gets a clear error, as does a [CommandNotSent] guard. Anything else after
      * the send (timeout, disconnect, interrupted Exit) leaves server state unknown to this
      * projection: the session fails (writes disabled) until a reconnect reconciles it.
      */
     private suspend fun <T> mutation(epoch: Long, subject: String, block: suspend () -> T): T = try { block() }
     catch (error: Exception) {
+        if (error is CommandNotSent) throw error
         if (error is ServerRejected) throw IllegalStateException("T3 rejected the $subject. Check the conversation and try again.", error)
         val message = "${subject.replaceFirstChar { it.uppercase() }} outcome is uncertain. Reconnect and check the conversation before trying again."
         synchronized(lifecycleLock) { if (epoch == generation) fail(epoch, message) }
@@ -1230,41 +1251,43 @@ class T3Client(
      */
     override suspend fun sendMessage(text: String, mode: FollowUpMode) {
         require(text.isNotBlank()) { "Message is empty" }
-        dispatch("message.dispatch", "message") {
+        dispatchSelected("message") {
             val current = state.value
             val busy = messageDispatchMode(current) == "queue_after_active"
             val steer = busy && mode == FollowUpMode.Steer
             if (steer) check(current.canSteer) { "This turn cannot be steered right now; queue the message instead" }
-            buildJsonObject {
+            command("message.dispatch", buildJsonObject {
                 provenance()
                 put("messageId", UUID.randomUUID().toString()); put("text", text); put("attachments", JsonArray(emptyList()))
                 if (steer) put("deliveryIntent", "steer")
                 put("dispatchMode", buildJsonObject { put("type", if (busy && !steer) "queue_after_active" else "start_immediately") })
-            }
+            })
         }
     }
     private fun queuedRun(runId: String): QueuedMessage =
         state.value.queuedMessages.firstOrNull { it.runId == runId } ?: error("This message is no longer queued")
     override suspend fun cancelQueuedMessage(runId: String) {
-        dispatch("queued-run.cancel", "queue change") { buildJsonObject { put("runId", queuedRun(runId).runId) } }
+        dispatchSelected("queue change") { command("queued-run.cancel", buildJsonObject { put("runId", queuedRun(runId).runId) }) }
     }
-    /** T3 "send now": `queued-run.start` when no run is active, else `queued-message.promote-to-steer` into it (needs [ClientState.canSteer]). */
+    /**
+     * T3 "send now": `queued-run.start` when no run is active, else `queued-message.promote-to-steer` into it. Gated by the
+     * row's [QueuedMessage.canSendNow] (T3 queue eligibility), not the composer's [ClientState.canSteer].
+     */
     override suspend fun steerQueuedMessage(runId: String) {
-        dispatchCommand("queue change") {
+        dispatchSelected("queue change") {
             val queued = queuedRun(runId)
             val active = activeThreadRun(projection)?.string("id")?.takeIf { it.isNotEmpty() }
             if (active == null) {
-                val thread = projection.obj("thread")
-                check(thread.string("archivedAt").isEmpty() && thread.string("deletedAt").isEmpty()) { "This conversation is archived" }
+                check(queued.canSendNow) { "This conversation is archived" }
                 command("queued-run.start", buildJsonObject { put("runId", queued.runId) })
             } else {
-                check(state.value.canSteer) { "This turn cannot be steered right now; the message stays queued" }
+                check(queued.canSendNow) { "This turn cannot take this message now; it stays queued" }
                 command("queued-message.promote-to-steer", buildJsonObject { put("queuedRunId", queued.runId); put("targetRunId", active) })
             }
         }
     }
     override suspend fun resumeQueue() {
-        dispatch("queue.resume", "queue change") { check(state.value.queueHeld) { "The queue is not paused" }; JsonObject(emptyMap()) }
+        dispatchSelected("queue change") { check(state.value.queueHeld) { "The queue is not paused" }; command("queue.resume", JsonObject(emptyMap())) }
     }
     /**
      * Sends the draft's own `threadId` and `commandId`, so an explicit resend after an uncertain
@@ -1512,13 +1535,25 @@ class T3Client(
         session.epoch == generation && session.selection == threadGeneration && state.value.selectedThreadId == session.threadId &&
             authorized && state.value.connection == ConnectionStatus.Connected
     }
-    private fun requireSameSession(session: ThreadSession) = check(sameSession(session)) { "The thread changed; stop was not completed" }
-    /** Sends one command of [session] once. The guard re-checks under the send lock, so a selection change still sends nothing. */
+    private fun writableSession(session: ThreadSession) = synchronized(lifecycleLock) { sameSession(session) && state.value.canWrite }
+    private fun requireSameSession(session: ThreadSession) { if (!sameSession(session)) throw CommandNotSent() }
+    /**
+     * Sends one command of [session] once, after waiting briefly for a stale projection to refresh (an earlier command of
+     * the same stop marks it stale). The guard re-checks selection and [ClientState.canWrite] under the send lock, so a
+     * selection change or a still-stale thread sends nothing ([CommandNotSent], which ends a multi-command stop).
+     */
     private suspend fun sendInSession(session: ThreadSession, subject: String, payload: JsonObject) {
-        requireSameSession(session)
-        mutation(session.epoch, subject) { rpc("orchestration.dispatchCommand", payload, session.epoch, guard = { sameSession(session) }) }
+        if (!state.value.canWrite) withTimeoutOrNull(FRESH_THREAD_WAIT_MS) { state.first { it.canWrite || it.connection != ConnectionStatus.Connected } }
+        if (!writableSession(session)) throw CommandNotSent()
+        mutation(session.epoch, subject) { requireReceipt(rpc("orchestration.dispatchCommand", payload, session.epoch, guard = { writableSession(session) })) }
     }
-    private suspend fun stopSubagentIn(session: ThreadSession, subagent: Subagent) {
+    /**
+     * [stoppedChildren] holds the child threads this batch already stopped: each task still gets its parent `subagent.stop`,
+     * but a child shared by several tasks is stopped once. Without `threadStop` the child gets T3's run-less fallback:
+     * `run.interrupt` on [stopRunTarget] (live run, else the run its background work hangs off), else its pull request
+     * watches unwatched; work that remains with nothing to stop it is a [PartialStop].
+     */
+    private suspend fun stopSubagentIn(session: ThreadSession, subagent: Subagent, stoppedChildren: MutableSet<String> = mutableSetOf()) {
         val parentId = session.threadId
         suspend fun send(payload: JsonObject) = sendInSession(session, "agent stop", payload)
         val parentStop = subagent.runId?.let { runId -> threadCommand("subagent.stop", parentId, buildJsonObject { put("runId", runId); put("subagentId", subagent.id) }) }
@@ -1526,19 +1561,23 @@ class T3Client(
         val childId = subagent.childThreadId ?: error("This agent cannot be stopped from here")
         // The parent ends the task even when its child lost track of it; the child stop below still runs.
         if (parentStop != null) try { send(parentStop) } catch (error: IllegalStateException) { if (error.cause !is ServerRejected) throw error }
+        if (!stoppedChildren.add(childId)) return
         requireSameSession(session)
         if (state.value.threadStopSupported) { send(threadCommand("thread.stop", childId)); return }
         val child = rpc("orchestration.getThreadProjection", buildJsonObject { put("threadId", childId) }, session.epoch).jsonObject
         currentCoroutineContext().ensureActive()
-        val runId = child.objects("runs").lastOrNull { it.string("status") in setOf("preparing", "starting", "running", "waiting") }?.string("id")?.takeIf { it.isNotBlank() } ?: return
-        send(threadCommand("run.interrupt", childId, buildJsonObject { put("runId", runId); put("holdQueue", true) }))
+        stopRunTarget(child)?.let { runId -> send(threadCommand("run.interrupt", childId, buildJsonObject { put("runId", runId); put("holdQueue", true) })); return }
+        pullRequestUnwatches(child).forEach { send(threadCommand("thread.pull-request.watch", childId, it)) }
+        val remaining = pendingBackgroundWork(child).any { !it.taskId.startsWith(PULL_REQUEST_WATCH_TASK_ID) } || subagents(child).any { it.isActive }
+        if (remaining) throw PartialStop()
     }
     /**
      * T3 thread Stop (`interruptThreadTurn` without a run). With `threadStop`: one `thread.stop` (the server stops the live
      * run or the run with pending background work, holding the queue, and the delegated tasks). Without it:
      * `run.interrupt {runId, holdQueue: true}` on [stopRunTarget]; with no run to interrupt, each active stoppable
-     * subagent through [stopSubagentIn] and each pull request watch unwatched, one after another. Nothing to stop fails
-     * locally. Every command is sent once; a definite rejection of one agent does not skip the others.
+     * subagent through [stopSubagentIn] (a shared child stopped once) and each pull request watch unwatched, one after
+     * another. Nothing to stop fails locally. Every command is sent once, only while the same thread stays selected and
+     * writable (a change ends the loop); a definite rejection or a [PartialStop] of one agent does not skip the others.
      */
     override suspend fun stopThread(): Unit = mutating {
         awaitFreshThread()
@@ -1558,9 +1597,10 @@ class T3Client(
             Plan(session, unwatches, agents)
         }
         var failure: Exception? = null
+        val stoppedChildren = mutableSetOf<String>()
         for (agent in plan.agents) {
-            try { stopSubagentIn(plan.session, agent) }
-            catch (error: IllegalStateException) { if (error.cause !is ServerRejected) throw error; if (failure == null) failure = error }
+            try { stopSubagentIn(plan.session, agent, stoppedChildren) }
+            catch (error: IllegalStateException) { if (error !is PartialStop && error.cause !is ServerRejected) throw error; if (failure == null) failure = error }
         }
         for (payload in plan.commands) {
             try { sendInSession(plan.session, "stop", payload) }

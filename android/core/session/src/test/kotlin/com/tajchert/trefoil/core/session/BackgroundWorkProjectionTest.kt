@@ -65,11 +65,14 @@ class BackgroundWorkProjectionTest {
             {"host":"github.com","repository":"acme/app","number":8,"watch":{"checksPending":false}},
             {"host":"github.com","repository":"acme/app","number":9,"watch":{},"snapshot":{"state":"merged"}},
             {"host":"github.com","repository":"acme/app","number":10,"source":"stack-dismissed","watch":{}},
-            {"host":"github.com","repository":"acme/app","number":11}]}"""
+            {"host":"github.com","repository":"acme/app","number":11},
+            {"host":"github.com","repository":"acme/app","number":12,"watch":{"checksPending":false,"until":"merged"}}]}"""
         val work = pendingBackgroundWork(fixture("""{"thread":$prs,"runs":[]}"""))
         assertEquals(listOf(
             PendingBackgroundTask("pull-request-watch:github.com/acme/app#7", "monitor", "Watching pull request #7", awaited = true),
             PendingBackgroundTask("pull-request-watch:github.com/acme/app#8", "monitor", "Watching pull request #8"),
+            PendingBackgroundTask("pull-request-watch:github.com/acme/app#9", "monitor", "Watching pull request #9", awaited = true),
+            PendingBackgroundTask("pull-request-watch:github.com/acme/app#12", "monitor", "Watching pull request #12", awaited = true),
         ), work)
     }
 

@@ -83,8 +83,13 @@ data class ToolActivity(
 )
 /** How a message sent while the thread works is delivered (T3 `ActiveTurnComposerAction` `queue` / `steer`). */
 enum class FollowUpMode { Queue, Steer }
-/** A user message waiting in the selected thread's queue: its queued run and message, with the message text. */
-data class QueuedMessage(val runId: String, val messageId: String, val text: String, val held: Boolean = false)
+/**
+ * A user message waiting in the selected thread's queue: its queued run and message, with the message text.
+ * [canSendNow]: T3 queue eligibility for [TrefoilClient.steerQueuedMessage] — with no active run the thread is not
+ * archived or deleted; with one, the turn accepts a promoted steer (`canPromoteToSteer`) and the message does not start
+ * a fresh session (unless the target is a `/compact` turn, which is skipped instead). Write gating is the caller's job.
+ */
+data class QueuedMessage(val runId: String, val messageId: String, val text: String, val held: Boolean = false, val canSendNow: Boolean = false)
 data class ConversationRun(
     val id: String, val status: String,
     val requestedAt: String? = null, val startedAt: String? = null, val completedAt: String? = null,

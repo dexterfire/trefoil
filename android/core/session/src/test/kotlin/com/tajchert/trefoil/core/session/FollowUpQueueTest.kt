@@ -20,12 +20,14 @@ class FollowUpQueueTest {
     "thread":{"id":"parent","activeProviderThreadId":"pt-1"},
     "providerThreads":[{"id":"pt-1","appThreadId":"parent","providerSessionId":"ps-1"}],
     "providerSessions":[{"id":"ps-1","status":"running","capabilities":{"turns":{"supportsActiveSteering":$steering,"supportsSteeringByInterruptRestart":false}}}]"""
-  private val messages = """"messages":[{"id":"m-1","role":"user","text":"go"},{"id":"m-q","role":"user","text":"later please"}]"""
-  private fun busy(steering: Boolean = true) = """{${session(steering)},$messages,
+  private fun messages(activeText: String = "go") = """"messages":[{"id":"m-1","role":"user","text":"$activeText","attachments":[]},{"id":"m-q","role":"user","text":"later please"}]"""
+  private val messages = messages()
+  /** [freshContext] marks the queued message as starting a new session; [items] are the visible turn items. */
+  private fun busy(steering: Boolean = true, freshContext: Boolean = false, activeText: String = "go", items: String = "[]") = """{${session(steering)},${messages(activeText)},
     "runs":[{"id":"run-1","status":"running","ordinal":1,"userMessageId":"m-1","activeAttemptId":"att-1"},
-            {"id":"q-1","status":"queued","ordinal":2,"userMessageId":"m-q"}],
+            {"id":"q-1","status":"queued","ordinal":2,"userMessageId":"m-q","freshContext":$freshContext}],
     "providerTurns":[{"id":"turn-1","runAttemptId":"att-1","status":"running","ordinal":1}],
-    "turnItems":[],"runtimeRequests":[],"subagents":[]}"""
+    "turnItems":[],"visibleTurnItems":$items,"runtimeRequests":[],"subagents":[]}"""
   /** An unheld queued run is about to start, so T3 reports no background work behind it: [queued] false omits it. */
   private fun idle(held: Boolean = false, queued: Boolean = true, extra: String = """"turnItems":[],"subagents":[]""") = """{${session(true)},$messages,
     "runs":[{"id":"run-1","status":"completed","ordinal":1,"userMessageId":"m-1"}${if (queued) """,
@@ -41,12 +43,21 @@ class FollowUpQueueTest {
   private val backgroundOnly = idle(queued = false, extra = """"turnItems":[{"id":"cmd-1","type":"command_execution","status":"running","runId":"run-1","title":"npm test"}],"subagents":[]""")
   private val unstoppableSubagent = idle(queued = false, extra = """"turnItems":[],"subagents":[{"id":"codex-native","threadId":"parent","runId":"run-1","origin":"provider_native","driver":"codex","prompt":"p","status":"running"}]""")
   private val childProjection = """{"thread":{"id":"child"},"runs":[{"id":"child-run-1","status":"completed"},{"id":"child-run-2","status":"running"}]}"""
+  /** Two app-owned tasks driving the same child thread. */
+  private val sharedChild = idle(queued = false, extra = """"turnItems":[],"subagents":[
+    {"id":"task-a","threadId":"parent","runId":"run-1","origin":"app_owned","driver":"codex","childThreadId":"child","nativeTaskRef":null,"prompt":"p","status":"running"},
+    {"id":"task-b","threadId":"parent","runId":"run-1","origin":"app_owned","driver":"codex","childThreadId":"child","nativeTaskRef":null,"prompt":"p","status":"running"}]""")
+  private val oneChildTask = idle(queued = false, extra = """"turnItems":[],"subagents":[
+    {"id":"task","threadId":"parent","runId":"run-1","origin":"app_owned","driver":"codex","childThreadId":"child","nativeTaskRef":null,"prompt":"p","status":"running"}]""")
 
   private class Harness(val client: T3Client, val dispatched: Channel<JsonObject>, val reads: Channel<String>) {
     fun sent(): List<JsonObject> = generateSequence { dispatched.tryReceive().getOrNull() }.toList()
   }
 
-  private fun connected(projection: String, threadStop: Boolean? = null, reject: Set<String> = emptySet(), block: suspend Harness.() -> Unit) = runBlocking {
+  private fun connected(
+    projection: String, threadStop: Boolean? = null, reject: Set<String> = emptySet(), child: String = childProjection,
+    childGate: CompletableDeferred<Unit>? = null, receipt: String = """{"sequence":9}""", block: suspend Harness.() -> Unit,
+  ) = runBlocking {
     val server = MockWebServer(); server.start()
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default); val client = T3Client(scope)
     val dispatched = Channel<JsonObject>(Channel.UNLIMITED); val reads = Channel<String>(Channel.UNLIMITED)
@@ -61,11 +72,11 @@ class FollowUpQueueTest {
           "server.getConfig" -> success("""{"providers":[],"environment":{"capabilities":$capabilities}}""")
           "orchestration.subscribeShell" -> webSocket.send("""{"_tag":"Chunk","requestId":"$id","values":[{"kind":"snapshot","snapshot":{"projects":[],"threads":[]}},{"kind":"synchronized"}]}""")
           "orchestration.subscribeThread" -> webSocket.send("""{"_tag":"Chunk","requestId":"$id","values":[{"kind":"snapshot","projection":$projection},{"kind":"synchronized"}]}""")
-          "orchestration.getThreadProjection" -> { val threadId = frame.obj("payload").string("threadId"); reads.trySend(threadId); if (threadId == "child") success(childProjection) }
+          "orchestration.getThreadProjection" -> { val threadId = frame.obj("payload").string("threadId"); reads.trySend(threadId); if (threadId == "child") scope.launch { childGate?.await(); success(child) } }
           "orchestration.dispatchCommand" -> {
             val payload = frame.obj("payload"); dispatched.trySend(payload)
             if (payload.string("type") in reject) webSocket.send("""{"_tag":"Exit","requestId":"$id","exit":{"_tag":"Failure","cause":[{"_tag":"Fail","error":{"_tag":"OrchestrationCommandRejected"}}]}}""")
-            else success("""{"sequence":9}""")
+            else success(receipt)
           }
         }
       }
@@ -91,7 +102,7 @@ class FollowUpQueueTest {
   @Test fun busySteerableThreadProjectsQueueSteerAndStop() = connected(busy()) {
     val state = client.state.value
     assertTrue(state.canSteer); assertTrue(state.canStop); assertFalse(state.queueHeld)
-    assertEquals(listOf(QueuedMessage("q-1", "m-q", "later please")), state.queuedMessages)
+    assertEquals(listOf(QueuedMessage("q-1", "m-q", "later please", canSendNow = true)), state.queuedMessages)
   }
 
   @Test fun steerStartsImmediatelyWithSteerIntent() = connected(busy()) {
@@ -208,8 +219,87 @@ class FollowUpQueueTest {
     assertEquals("queue.resume", resume.string("type")); assertEquals(setOf("type", "commandId", "threadId"), resume.keys)
   }
 
-  @Test fun disconnectClearsSteerAndStop() = connected(busy()) {
+  @Test fun disconnectClearsSteerStopAndTheQueue() = connected(idle(held = true)) {
     client.disconnect()
-    assertFalse(client.state.value.canSteer); assertFalse(client.state.value.canStop)
+    val state = client.state.value
+    assertFalse(state.canSteer); assertFalse(state.canStop); assertTrue(state.queuedMessages.isEmpty()); assertFalse(state.queueHeld)
+  }
+
+  @Test fun selectionChangeMidStopEndsTheLoopWithoutFailingTheSession() {
+    val gate = CompletableDeferred<Unit>()
+    connected(subagentsOnly, childGate = gate) {
+      val stop = CoroutineScope(Dispatchers.Default).async { runCatching { client.stopThread() }.exceptionOrNull() }
+      assertEquals("child", withTimeout(5000) { reads.receive() })
+      client.selectThread("other")
+      gate.complete(Unit)
+      val error = withTimeout(5000) { stop.await() }
+      assertTrue("a local abort is a normal error: $error", error is IllegalStateException && error !is UncertainOutcomeException)
+      assertEquals("nothing is sent after the selection changed", listOf("subagent.stop", "subagent.stop"), sent().map { it.string("type") })
+      assertEquals(ConnectionStatus.Connected, client.state.value.connection)
+    }
+  }
+
+  @Test fun malformedReceiptsAreUncertain() {
+    for (receipt in listOf("{}", """{"sequence":-1}""", """{"sequence":"9"}""", """{"sequence":1.5}""", "null")) connected(busy(), receipt = receipt) {
+      val error = runCatching { client.sendMessage("hi", FollowUpMode.Queue) }.exceptionOrNull()
+      assertTrue("$receipt: $error", error is UncertainOutcomeException)
+      assertEquals(1, sent().size)
+      assertEquals(ConnectionStatus.Error, client.state.value.connection); assertFalse(client.state.value.canWrite)
+    }
+  }
+
+  @Test fun childWithOnlyBackgroundWorkInterruptsItsLatestRun() = connected(oneChildTask,
+    child = """{"thread":{"id":"child"},"runs":[{"id":"c-1","status":"completed","ordinal":1}],
+      "turnItems":[{"id":"cmd","type":"command_execution","status":"running","runId":"c-1"}]}""") {
+    client.stopThread()
+    val (parent, interrupt) = sent()
+    assertEquals("subagent.stop", parent.string("type"))
+    assertEquals("run.interrupt", interrupt.string("type")); assertEquals("child", interrupt.string("threadId"))
+    assertEquals("c-1", interrupt.string("runId")); assertEquals(true, interrupt.flag("holdQueue"))
+  }
+
+  @Test fun childWithOnlyAPullRequestWatchIsUnwatched() = connected(oneChildTask,
+    child = """{"thread":{"id":"child","pullRequests":[{"host":"github.com","repository":"o/r","number":5,"watch":{},"snapshot":{"state":"merged"}}]},
+      "runs":[{"id":"c-1","status":"completed","ordinal":1}],"turnItems":[]}""") {
+    client.stopThread()
+    val (_, unwatch) = sent()
+    assertEquals("thread.pull-request.watch", unwatch.string("type")); assertEquals("child", unwatch.string("threadId"))
+    assertEquals(5, unwatch["number"]?.jsonPrimitive?.int); assertEquals(false, unwatch.flag("watching"))
+  }
+
+  @Test fun childWorkNothingCanStopIsAPartialFailure() = connected(oneChildTask,
+    child = """{"thread":{"id":"child"},"runs":[{"id":"c-1","status":"completed","ordinal":1}],"turnItems":[],
+      "subagents":[{"id":"nested","threadId":"child","runId":"c-1","origin":"provider_native","driver":"codex","prompt":"p","status":"running"}]}""") {
+    val error = runCatching { client.stopThread() }.exceptionOrNull()
+    assertTrue("$error", error?.message.orEmpty().contains("could not be stopped"))
+    assertEquals(listOf("subagent.stop"), sent().map { it.string("type") })
+    assertTrue(client.state.value.canWrite)
+  }
+
+  @Test fun aChildSharedByTwoTasksIsStoppedOnce() = connected(sharedChild) {
+    client.stopThread()
+    val sent = sent()
+    assertEquals(listOf("subagent.stop", "run.interrupt", "subagent.stop"), sent.map { it.string("type") })
+    assertEquals(listOf("task-a", "task-b"), sent.filter { it.string("type") == "subagent.stop" }.map { it.string("subagentId") })
+    assertEquals(listOf("child"), generateSequence { reads.tryReceive().getOrNull() }.toList())
+  }
+
+  @Test fun sendNowPromotesDuringCompactionThatBlocksTheComposer() = connected(busy(items =
+    """[{"position":1,"item":{"id":"c","type":"compaction","status":"running","runId":"run-1"}}]""")) {
+    assertFalse(client.state.value.canSteer); assertTrue(client.state.value.queuedMessages.single().canSendNow)
+    client.steerQueuedMessage("q-1")
+    assertEquals("queued-message.promote-to-steer", sent().single().string("type"))
+  }
+
+  @Test fun freshContextMessageCannotBePromoted() = connected(busy(freshContext = true)) {
+    assertTrue(client.state.value.canSteer); assertFalse(client.state.value.queuedMessages.single().canSendNow)
+    assertTrue(runCatching { client.steerQueuedMessage("q-1") }.isFailure)
+    assertTrue(sent().isEmpty()); assertTrue(client.state.value.canWrite)
+  }
+
+  @Test fun freshContextMessageMayReplaceACompactTurn() = connected(busy(steering = false, freshContext = true, activeText = "/compact")) {
+    assertTrue(client.state.value.queuedMessages.single().canSendNow)
+    client.steerQueuedMessage("q-1")
+    assertEquals("queued-message.promote-to-steer", sent().single().string("type"))
   }
 }

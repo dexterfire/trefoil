@@ -35,9 +35,9 @@ class ThreadQueueProjectionTest {
         {"id":"q-note","status":"queued","ordinal":5,"userMessageId":"m-note"},
         {"id":"q-lost","status":"queued","ordinal":6,"userMessageId":"m-gone"}]}""")
     assertEquals(listOf(
-      QueuedMessage("q-b", "m-b", "guest words", held = true),
-      QueuedMessage("q-a", "m-a", "first"),
-      QueuedMessage("q-lost", "m-gone", QUEUED_MESSAGE_FALLBACK),
+      QueuedMessage("q-b", "m-b", "guest words", held = true, canSendNow = true),
+      QueuedMessage("q-a", "m-a", "first", canSendNow = true),
+      QueuedMessage("q-lost", "m-gone", QUEUED_MESSAGE_FALLBACK, canSendNow = true),
     ), queuedMessages(value))
     assertTrue(queueHeld(value))
   }
@@ -70,6 +70,19 @@ class ThreadQueueProjectionTest {
     assertTrue(canSteer(active(items = compactFinished)))
   }
 
+  @Test fun canSendNowFollowsT3QueueEligibility() {
+    fun queued(value: JsonObject, freshContext: Boolean = false) = canSendQueuedNow(value, projection("""{"id":"q","status":"queued","freshContext":$freshContext}"""))
+    assertTrue("idle threads start the queued run", queued(projection("""{"thread":{"id":"t"},"runs":[]}""")))
+    assertFalse(queued(projection("""{"thread":{"id":"t","archivedAt":"2026-01-01T00:00:00Z"},"runs":[]}""")))
+    assertFalse(queued(projection("""{"thread":{"id":"t","deletedAt":"2026-01-01T00:00:00Z"},"runs":[]}""")))
+    assertTrue(queued(active()))
+    assertFalse("promotion ignores the composer's compaction block only", queued(active(turns = """{"supportsActiveSteering":false}""")))
+    val compacting = """[{"position":1,"item":{"id":"c","type":"compaction","status":"running","runId":"r"}}]"""
+    assertFalse(canSteer(active(items = compacting))); assertTrue(queued(active(items = compacting)))
+    assertFalse("a fresh-context message cannot steer", queued(active(), freshContext = true))
+    assertTrue("a /compact turn is skipped instead", queued(active(turns = null, userText = "/compact"), freshContext = true))
+  }
+
   @Test fun canStopCoversRunsBackgroundWorkAndActiveSubagents() {
     fun agent(status: String) = Subagent(id = "s", threadId = "t", runId = "r", origin = "app_owned", driver = "codex", status = status)
     assertFalse(canStopThread(null, emptyList(), emptyList()))
@@ -89,5 +102,10 @@ class ThreadQueueProjectionTest {
     assertNull(stopRunTarget(watchOnly))
     val unwatch = pullRequestUnwatches(watchOnly).single()
     assertEquals("""{"host":"github.com","repository":"o/r","number":7,"watching":false}""", unwatch.toString())
+    val links = projection("""{"thread":{"id":"t","pullRequests":[
+      {"host":"github.com","repository":"o/r","number":1,"watch":{},"snapshot":{"state":"merged"}},
+      {"host":"github.com","repository":"o/r","number":2,"watch":{},"source":"stack-dismissed"},
+      {"host":"github.com","repository":"o/r","number":3}]}}""")
+    assertEquals("a merged link with a live watch is still unwatched", listOf("1"), pullRequestUnwatches(links).map { it["number"].toString() })
   }
 }
