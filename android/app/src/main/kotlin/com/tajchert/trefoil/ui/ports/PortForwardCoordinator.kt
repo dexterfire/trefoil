@@ -23,10 +23,11 @@ import kotlinx.coroutines.launch
 data class PortBrowserState(val environmentId: String, val remotePort: Int, val url: String, val title: String)
 
 /**
- * How long a forward opened in an external browser may have no open tunnelled connection before it stops holding the
- * connection in the background. The forward itself stays until the normal background grace disconnects.
+ * How long a forward handed to an external browser holds the connection, counted from the last time it was handed over.
+ * Trefoil cannot tell whether a browser still uses a forward (connections half-close, pages idle), so the hold is capped;
+ * "Keep connected in background" has no limit.
  */
-const val EXTERNAL_FORWARD_IDLE_MS = 10 * 60_000L
+const val EXTERNAL_FORWARD_HOLD_MS = 30 * 60_000L
 
 /**
  * A forward whose URL an external browser took: one listener ([instance]) of one environment's remote port. Memory only;
@@ -37,11 +38,14 @@ data class ExternalForward(val environmentId: String, val remotePort: Int, val i
 /** A loopback URL for the UI to hand to an external browser; the UI confirms delivery with [PortForwardCoordinator.externalOpened]. */
 data class ExternalOpenRequest(val url: String, val forward: ExternalForward)
 
-/** Why a forward opened in an external browser stopped while Trefoil was in the background. */
-enum class ForwardLoss { Failed, ConnectionEnded, Idle }
+/** Why a forward handed to an external browser stopped without the user stopping it. */
+enum class ForwardLoss { Failed, ConnectionEnded, HoldExpired }
 
-/** Externally opened forwards of [environmentId] lost in the background; [announced] once shown app-wide. */
-data class StoppedForwardNotice(val environmentId: String, val lost: Map<Int, ForwardLoss>, val announced: Boolean = false) {
+/**
+ * Forwards of [environmentId] handed to an external browser that stopped without the user stopping them, by remote
+ * port. [announced] holds the ports the app-wide notice already reported, so each loss is announced once.
+ */
+data class StoppedForwardNotice(val environmentId: String, val lost: Map<Int, ForwardLoss>, val announced: Set<Int> = emptySet()) {
     val message: String get() = stoppedMessage(lost)
 }
 
@@ -63,20 +67,25 @@ class PortForwardCoordinator(
     /** Requests to open a forward externally. A request no collector receives (the UI is stopped) is simply lost. */
     val externalUrls: SharedFlow<ExternalOpenRequest> = mutableExternal.asSharedFlow()
     private val starting = HashSet<Int>()
+    /** Each held forward and its cap timer: one timer per mark, replaced only by a re-open and cancelled with the mark. */
+    private val holds = HashMap<ExternalForward, Job>()
+    /** Forwards whose hold expired and that still run; reported as [ForwardLoss.HoldExpired] if they stop on their own. */
+    private val expired = HashSet<ExternalForward>()
     private val mutableExternalForwards = MutableStateFlow<Set<ExternalForward>>(emptySet())
     /**
      * Forwards an external browser took ([externalOpened]) that are still live. While one exists the view model keeps the
      * connection through the background (the keep-alive service), so the page keeps loading. An entry ends with its
-     * listener (a Stop, a failure, a replacement, a disconnect or reconnect, an environment switch), after
-     * [EXTERNAL_FORWARD_IDLE_MS] without an open connection, or on [releaseAll]. The in-app browser never adds one.
+     * listener (a Stop, a failure, a replacement, a disconnect or reconnect, an environment switch),
+     * [EXTERNAL_FORWARD_HOLD_MS] after it was last handed to a browser, or on [releaseAll]. The in-app browser never adds one.
      */
     val externalForwards: StateFlow<Set<ExternalForward>> = mutableExternalForwards.asStateFlow()
-    private val idleTimers = HashMap<ExternalForward, Job>()
     private val mutableStoppedNotices = MutableStateFlow<Map<String, StoppedForwardNotice>>(emptyMap())
-    /** Lost-forward notices by environment id, each shown only on its own environment's ports screen. */
+    /**
+     * Lost-forward notices by environment id: the one source for both the ports screen of that environment and the
+     * app-wide notice. A loss is recorded whenever a held (or expired) forward stops without the user stopping it, so
+     * whether the app was in the foreground when the update arrived never decides it.
+     */
     val stoppedNotices: StateFlow<Map<String, StoppedForwardNotice>> = mutableStoppedNotices.asStateFlow()
-    /** Set by the view model on pause and resume; only forwards lost in the background get a notice. */
-    var inBackground = false
 
     init {
         scope.launch {
@@ -97,43 +106,34 @@ class PortForwardCoordinator(
         }
     }
 
+    private fun ClientState.failed(mark: ExternalForward) =
+        portForwards.any { it.remotePort == mark.remotePort && it.instance == mark.instance && it.status == PortForwardStatus.Failed }
+
     private fun pruneExternal(state: ClientState) {
-        val external = mutableExternalForwards.value
-        if (external.isEmpty()) return
-        val gone = HashSet<ExternalForward>()
-        for (mark in external) {
-            val forward = state.liveForward(mark)
-            if (forward == null) gone += mark else trackIdle(mark, forward)
-        }
+        val goneExpired = expired.filter { state.liveForward(it) == null }
+        expired.removeAll(goneExpired.toSet())
+        goneExpired.forEach { recordLoss(it, if (state.failed(it)) ForwardLoss.Failed else ForwardLoss.HoldExpired) }
+        val gone = holds.keys.filter { state.liveForward(it) == null }
         if (gone.isEmpty()) return
-        mutableExternalForwards.value = external - gone
-        gone.forEach { idleTimers.remove(it)?.cancel() }
-        if (inBackground) gone.forEach { mark ->
-            val failed = state.portForwards.any { it.remotePort == mark.remotePort && it.instance == mark.instance && it.status == PortForwardStatus.Failed }
-            recordLoss(mark, if (failed) ForwardLoss.Failed else ForwardLoss.ConnectionEnded)
+        gone.forEach { mark ->
+            holds.remove(mark)?.cancel()
+            recordLoss(mark, if (state.failed(mark)) ForwardLoss.Failed else ForwardLoss.ConnectionEnded)
         }
+        publishHolds()
+    }
+
+    private fun publishHolds() {
+        mutableExternalForwards.value = holds.keys.toSet()
         onExternalForwardsChanged()
     }
 
-    /** Starts the idle clock while [forward] has no open connection; any open connection stops it. */
-    private fun trackIdle(mark: ExternalForward, forward: PortForward) {
-        if (forward.activeConnections > 0) { idleTimers.remove(mark)?.cancel(); return }
-        if (idleTimers[mark]?.isActive == true) return
-        idleTimers[mark] = scope.launch {
-            delay(EXTERNAL_FORWARD_IDLE_MS)
-            idleTimers.remove(mark)
-            if (mark !in mutableExternalForwards.value) return@launch
-            mutableExternalForwards.value = mutableExternalForwards.value - mark
-            if (inBackground) recordLoss(mark, ForwardLoss.Idle)
-            onExternalForwardsChanged()
-        }
-    }
-
-    /** Adds to the environment's notice, so losses at different times are all reported. */
+    /** Adds to the environment's notice, so losses at different times are all reported; a port lost again is announced again. */
     private fun recordLoss(mark: ExternalForward, loss: ForwardLoss) {
         mutableStoppedNotices.update { notices ->
-            val lost = (notices[mark.environmentId]?.lost ?: emptyMap()) + (mark.remotePort to loss)
-            notices + (mark.environmentId to StoppedForwardNotice(mark.environmentId, lost))
+            val current = notices[mark.environmentId]
+            val notice = StoppedForwardNotice(mark.environmentId, (current?.lost ?: emptyMap()) + (mark.remotePort to loss),
+                (current?.announced ?: emptySet()) - mark.remotePort)
+            notices + (mark.environmentId to notice)
         }
     }
 
@@ -150,38 +150,55 @@ class PortForwardCoordinator(
         mutableExternal.tryEmit(ExternalOpenRequest(forward.localUrl!!, ExternalForward(forward.environmentId, forward.remotePort, forward.instance)))
     }
 
-    /** An external browser took [request]'s URL: hold its forward while that exact listener stays live. */
+    /**
+     * An external browser took [request]'s URL: hold its forward while that exact listener stays live, for at most
+     * [EXTERNAL_FORWARD_HOLD_MS] from now. Handing the same forward over again restarts that time.
+     */
     fun externalOpened(request: ExternalOpenRequest) {
         val mark = request.forward
-        val forward = client.state.value.liveForward(mark) ?: return
-        if (mark in mutableExternalForwards.value) return
-        mutableExternalForwards.value = mutableExternalForwards.value + mark
-        trackIdle(mark, forward)
-        onExternalForwardsChanged()
+        client.state.value.liveForward(mark) ?: return
+        expired.remove(mark)
+        holds.remove(mark)?.cancel()
+        lateinit var timer: Job
+        timer = scope.launch {
+            delay(EXTERNAL_FORWARD_HOLD_MS)
+            // Only the timer the mark still owns may end it.
+            if (holds[mark] !== timer) return@launch
+            holds.remove(mark)
+            expired += mark
+            publishHolds()
+        }
+        holds[mark] = timer
+        publishHolds()
     }
 
     /** Ends every hold without a notice: the user asked to disconnect. */
     fun releaseAll() {
-        if (mutableExternalForwards.value.isEmpty()) return
-        idleTimers.values.forEach { it.cancel() }; idleTimers.clear()
-        mutableExternalForwards.value = emptySet()
-        onExternalForwardsChanged()
+        expired.clear()
+        if (holds.isEmpty()) return
+        holds.values.forEach { it.cancel() }; holds.clear()
+        publishHolds()
     }
 
-    /** The notice of [environmentId] for the app-wide banner, once; null when there is none or it was shown already. */
+    /**
+     * The losses of [environmentId] the app-wide notice has not reported yet, as a message, and marks them reported;
+     * null when there are none.
+     */
     fun announceStopped(environmentId: String): String? {
-        val notice = mutableStoppedNotices.value[environmentId]?.takeIf { !it.announced } ?: return null
-        mutableStoppedNotices.update { it + (environmentId to notice.copy(announced = true)) }
-        return notice.message
+        val notice = mutableStoppedNotices.value[environmentId] ?: return null
+        val fresh = notice.lost.filterKeys { it !in notice.announced }
+        if (fresh.isEmpty()) return null
+        mutableStoppedNotices.update { it + (environmentId to notice.copy(announced = notice.lost.keys)) }
+        return stoppedMessage(fresh)
     }
 
     fun dismissStoppedNotice(environmentId: String) { mutableStoppedNotices.update { it - environmentId } }
 
     private fun release(entries: Set<ExternalForward>) {
-        if (entries.isEmpty()) return
-        entries.forEach { idleTimers.remove(it)?.cancel() }
-        mutableExternalForwards.value = mutableExternalForwards.value - entries
-        onExternalForwardsChanged()
+        expired.removeAll(entries)
+        if (entries.none { it in holds }) return
+        entries.forEach { holds.remove(it)?.cancel() }
+        publishHolds()
     }
 
     /** A port typed by hand: forward it and open it in-app. */
@@ -190,7 +207,7 @@ class PortForwardCoordinator(
     /** Closing a forward is local cleanup, not a server write, so it stays available offline. */
     fun stop(port: Int) {
         if (mutableBrowser.value?.remotePort == port) mutableBrowser.value = null
-        release(mutableExternalForwards.value.filterTo(HashSet()) { it.remotePort == port })
+        release((holds.keys + expired).filterTo(HashSet()) { it.remotePort == port })
         scope.launch {
             try { client.stopPortForward(port) }
             catch (cancelled: CancellationException) { throw cancelled }
@@ -239,13 +256,14 @@ class PortForwardCoordinator(
 
 private fun stoppedMessage(lost: Map<Int, ForwardLoss>): String {
     fun ports(list: List<Int>) = if (list.size == 1) "The forward for port ${list[0]}" else "The forwards for ports ${list.joinToString(", ")}"
-    val idleMinutes = EXTERNAL_FORWARD_IDLE_MS / 60_000
+    val holdMinutes = EXTERNAL_FORWARD_HOLD_MS / 60_000
     val sentences = ForwardLoss.entries.mapNotNull { loss ->
         val list = lost.filterValues { it == loss }.keys.sorted().takeIf { it.isNotEmpty() } ?: return@mapNotNull null
         when (loss) {
-            ForwardLoss.Failed -> "${ports(list)} failed while Trefoil was in the background."
-            ForwardLoss.ConnectionEnded -> "${ports(list)} stopped because the connection ended while Trefoil was in the background."
-            ForwardLoss.Idle -> "${ports(list)} had no open page for $idleMinutes minutes, so Trefoil stopped keeping the connection open in the background."
+            ForwardLoss.Failed -> "${ports(list)} failed."
+            ForwardLoss.ConnectionEnded -> "${ports(list)} stopped because the connection to the machine ended."
+            ForwardLoss.HoldExpired -> "${ports(list)} stopped in the background: Trefoil keeps a forward opened in your browser connected for " +
+                "$holdMinutes minutes. Turn on Keep connected in background to remove this limit."
         }
     }
     val them = if (lost.size == 1) "it" else "them"

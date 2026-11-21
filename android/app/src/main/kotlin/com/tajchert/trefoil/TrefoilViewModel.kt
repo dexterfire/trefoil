@@ -121,6 +121,8 @@ class TrefoilViewModel internal constructor(application: Application, private va
     private var selectedEnvironment: SavedEnvironment? = null
     private var resumeEnvironment: SavedEnvironment? = null
     private var foreground = true
+    /** The machine and message of the app-wide banner last posted for lost forwards, so clearing the notice clears it. */
+    private var forwardBanner: Pair<String, String>? = null
     /** `SystemClock.elapsedRealtime()` of the last [pause]; null until the first one. */
     private var backgroundedAt: Long? = null
     private var silentShellRefresh: Job? = null
@@ -223,6 +225,7 @@ class TrefoilViewModel internal constructor(application: Application, private va
                 .collect { postKeepAliveCheck() }
         }
         viewModelScope.launch { ConnectionKeepAlive.disconnectRequests.collect { disconnect() } }
+        viewModelScope.launch { portForwards.stoppedNotices.collect(::syncForwardBanner) }
         watchKeepAliveService()
     }
 
@@ -394,6 +397,8 @@ class TrefoilViewModel internal constructor(application: Application, private va
 
     fun connect(environment: SavedEnvironment) {
         if (draft.value != null && environment.id != drafts.environmentId) clearDraft()
+        // Picking another machine stops this one's forwards on purpose: no lost-forward notice for them.
+        if (state.value.environment?.id.let { it != null && it != environment.id }) portForwards.releaseAll()
         val input = environment.ssh?.let { environment.sshInput() }
         // Only SSH is left and its login is not saved: ask right away, without a connection attempt.
         if (input != null && !input.hasSavedLogin() && environment.candidateRoutes().all { it.kind == RouteKind.Ssh }) {
@@ -665,7 +670,6 @@ class TrefoilViewModel internal constructor(application: Application, private va
         if (!foreground) return
         screenSessions.pause()
         foreground = false
-        portForwards.inBackground = true
         updateThreadViewing()
         backgroundedAt = android.os.SystemClock.elapsedRealtime()
         // Route switches and machine probes wait for the foreground.
@@ -698,15 +702,32 @@ class TrefoilViewModel internal constructor(application: Application, private va
             }
         }
     }
-    /** Dismisses the lost-forward notice of [environmentId] on its ports screen and the app-wide banner that announced it. */
-    fun dismissStoppedForwards(environmentId: String) {
-        val message = portForwards.stoppedNotices.value[environmentId]?.message
-        portForwards.dismissStoppedNotice(environmentId)
-        if (message != null && _notice.value == message) _notice.value = null
+    /**
+     * Dismisses the lost-forward notice of [environmentId]; the app-wide banner that announced it goes with it, through
+     * the [stoppedNotices][com.tajchert.trefoil.ui.ports.PortForwardCoordinator.stoppedNotices] collector.
+     */
+    fun dismissStoppedForwards(environmentId: String) = portForwards.dismissStoppedNotice(environmentId)
+
+    /** Posts the losses of the shown machine not announced yet; only in the foreground, where the user sees it. */
+    private fun announceStoppedForwards() {
+        if (!foreground) return
+        val environmentId = state.value.environment?.id ?: return
+        val message = portForwards.announceStopped(environmentId) ?: return
+        forwardBanner = environmentId to message
+        _notice.value = message
+    }
+
+    private fun syncForwardBanner(notices: Map<String, com.tajchert.trefoil.ui.ports.StoppedForwardNotice>) {
+        forwardBanner?.let { (environmentId, message) ->
+            if (environmentId !in notices) {
+                forwardBanner = null
+                if (_notice.value == message) _notice.value = null
+            }
+        }
+        announceStoppedForwards()
     }
     fun resume() {
         foreground = true
-        portForwards.inBackground = false
         updateThreadViewing()
         backgroundDisconnectJob?.cancel(); backgroundDisconnectJob = null
         postKeepAliveCheck()
@@ -728,8 +749,9 @@ class TrefoilViewModel internal constructor(application: Application, private va
                 (client.millisSinceLastPong()?.let { it > RETAINED_CONNECTION_FRESHNESS_MS } != false))) connect(target)
         else if (environment != null && !reconnectInFlight && state.value.environment?.id == environment.id) refreshRetainedShell()
         // Set after any connect above (which clears notices), so the user learns why a page in their browser stopped
-        // loading; once, and only while the machine it is about is the one shown.
-        state.value.environment?.id?.let(portForwards::announceStopped)?.let { _notice.value = it }
+        // loading; once, and only while the machine it is about is the one shown. A loss published after this point is
+        // announced by the stoppedNotices collector.
+        announceStoppedForwards()
         probeMachines(skipId = target?.id)
     }
 

@@ -6,7 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.core.session.T3Client
 import com.tajchert.trefoil.keepalive.ConnectionKeepAlive
-import com.tajchert.trefoil.ui.ports.EXTERNAL_FORWARD_IDLE_MS
+import com.tajchert.trefoil.ui.ports.EXTERNAL_FORWARD_HOLD_MS
 import com.tajchert.trefoil.ui.ports.ExternalForward
 import com.tajchert.trefoil.ui.ports.ExternalOpenRequest
 import kotlinx.coroutines.cancel
@@ -207,26 +207,43 @@ class KeepAliveLifecycleTest {
         assertEquals(ConnectionStatus.Disconnected, model.state.value.connection)
     }
 
-    @Test fun anIdleExternalForwardEndsTheHoldAfterTheLimitAndIsExplainedOnReturn() {
+    @Test fun theHoldEndsAtTheCapWithOpenConnectionsAndTheGraceRunsOnce() {
         openForwardExternally()
         model.pause()
-        advance(EXTERNAL_FORWARD_IDLE_MS - 1)
+        mutable.value = mutable.value.copy(portForwards = listOf(forward.copy(activeConnections = 2))); advance(0)
+        advance(EXTERNAL_FORWARD_HOLD_MS - 1)
         assertTrue(model.keepAliveActive.value)
         assertEquals(ConnectionStatus.Connected, model.state.value.connection)
         advance(1)
         assertFalse(model.keepAliveActive.value)
-        // The forward stays until the normal grace disconnects.
-        assertEquals(listOf(forward), model.state.value.portForwards)
+        assertEquals(1, control.stops)
+        // The forward stays until the normal grace, scheduled once from the cap, disconnects.
         advance(BACKGROUND_CONNECTION_GRACE_MS - 1)
         assertEquals(ConnectionStatus.Connected, model.state.value.connection)
         advance(1)
         assertEquals(ConnectionStatus.Disconnected, model.state.value.connection)
+        assertEquals(1, control.stops)
         // Read before the reconnect that resume starts can report its own outcome.
         model.resume()
-        assertTrue(model.notice.value!!.contains("10 minutes"))
+        val message = model.notice.value!!
+        assertTrue(message, message.contains("30 minutes") && message.contains("Keep connected in background"))
     }
 
-    @Test fun aForwardLostInTheBackgroundIsAnnouncedOnceForItsMachineAndDismissedEverywhere() {
+    /** A worker publishes the failure while the app returns: the collector runs only after resume. */
+    @Test fun aLossQueuedJustBeforeResumeIsStillAnnounced() {
+        openForwardExternally()
+        model.pause(); advance(1_000)
+        val failed = forward.copy(status = PortForwardStatus.Failed, localPort = null, error = PortForwardError.Unauthorized)
+        Thread { mutable.value = mutable.value.copy(portForwards = listOf(failed)) }.apply { start(); join() }
+        model.resume()
+        advance(0)
+        assertTrue(model.portForwards.externalForwards.value.isEmpty())
+        val message = model.notice.value!!
+        assertTrue(message, message.contains("port 5173 failed"))
+        assertEquals(message, model.portForwards.stoppedNotices.value.getValue("fixture").message)
+    }
+
+    @Test fun aForwardLostInTheBackgroundIsAnnouncedOnceForItsMachineAndClearedEverywhere() {
         openForwardExternally()
         model.pause(); advance(30_000)
         dropConnection(); mutable.value = mutable.value.copy(portForwards = emptyList()); advance(0)
@@ -235,15 +252,45 @@ class KeepAliveLifecycleTest {
         val message = model.notice.value!!
         assertTrue(message, message.contains("port 5173"))
         assertEquals(message, model.portForwards.stoppedNotices.value.getValue("fixture").message)
-        // A second return does not show it again.
-        field("_notice").let { @Suppress("UNCHECKED_CAST") (it.get(model) as MutableStateFlow<String?>).value = null }
-        model.pause(); model.resume()
-        assertNull(model.notice.value)
         // Dismissing on the ports screen clears the banner that announced it too.
-        field("_notice").let { @Suppress("UNCHECKED_CAST") (it.get(model) as MutableStateFlow<String?>).value = message }
         model.dismissStoppedForwards("fixture")
         assertNull(model.notice.value)
         assertTrue(model.portForwards.stoppedNotices.value.isEmpty())
+    }
+
+    @Test fun clearingTheNoticeByANewOpenClearsTheBannerToo() {
+        openForwardExternally()
+        model.pause(); advance(1_000)
+        mutable.value = mutable.value.copy(portForwards = listOf(forward.copy(status = PortForwardStatus.Failed, localPort = null))); advance(0)
+        model.resume()
+        assertNotNull(model.notice.value)
+        // What starting a forward does on the ports screen.
+        model.portForwards.dismissStoppedNotice("fixture"); advance(0)
+        assertNull(model.notice.value)
+    }
+
+    @Test fun aLaterLossIsAnnouncedAloneAndAnEarlierOneNeverAgain() {
+        openForwardExternally()
+        model.pause(); advance(1_000)
+        val failedVite = forward.copy(status = PortForwardStatus.Failed, localPort = null)
+        mutable.value = mutable.value.copy(portForwards = listOf(failedVite)); advance(0)
+        model.resume()
+        assertTrue(model.notice.value!!.contains("port 5173"))
+        // Not dismissed; another forward opened in the browser and lost on a later visit.
+        val api = PortForward("fixture", 3000, localPort = 23000, status = PortForwardStatus.Active, instance = 8)
+        mutable.value = mutable.value.copy(portForwards = listOf(failedVite, api))
+        model.portForwards.externalOpened(ExternalOpenRequest(api.localUrl!!, ExternalForward("fixture", 3000, 8))); advance(0)
+        model.pause(); advance(1_000)
+        mutable.value = mutable.value.copy(portForwards = listOf(failedVite, api.copy(status = PortForwardStatus.Failed, localPort = null))); advance(0)
+        model.resume()
+        val second = model.notice.value!!
+        assertTrue(second, second.contains("port 3000") && !second.contains("5173"))
+        assertEquals(setOf(3000, 5173), model.portForwards.stoppedNotices.value.getValue("fixture").lost.keys)
+        model.pause(); model.resume()
+        assertEquals(second, model.notice.value)
+        // One dismissal clears the ports notice and the banner.
+        model.dismissStoppedForwards("fixture")
+        assertNull(model.notice.value)
     }
 
     @Test fun aLossOnAnotherMachineIsNotAnnouncedHere() {
