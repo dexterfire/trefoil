@@ -36,11 +36,13 @@ class PortForwardCoordinatorTest {
     }
 
     private var holdChanges = 0
+    /** Elapsed real time for [run]; moves only when a test says so (deep sleep). */
+    private var now = 1_000_000L
 
     private fun run(block: suspend CoroutineScope.(FakeClient, PortForwardCoordinator, MutableList<String>) -> Unit) = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         val client = FakeClient(); val errors = mutableListOf<String>()
-        val coordinator = PortForwardCoordinator(scope, client, onExternalForwardsChanged = { holdChanges++ }) { errors += it }
+        val coordinator = PortForwardCoordinator(scope, client, onExternalForwardsChanged = { holdChanges++ }, clock = { now }) { errors += it }
         try { block(client, coordinator, errors) } finally { scope.cancel() }
     }
 
@@ -116,7 +118,7 @@ class PortForwardCoordinatorTest {
         client.state.update { state -> state.copy(portForwards = state.portForwards.map {
             if (it.remotePort == 3000) it.copy(status = PortForwardStatus.Failed, localPort = null, error = PortForwardError.Unauthorized) else it }) }
         assertEquals(setOf(vite.forward), coordinator.externalForwards.value)
-        assertEquals("The forward for port 3000 failed. Open it again to keep using it in your browser.", coordinator.announceStopped("fixture"))
+        assertEquals("Forward failed: port 3000 stopped in your browser.", coordinator.announceStopped("fixture"))
         client.state.update { it.copy(connection = ConnectionStatus.Disconnected, portForwards = emptyList()) }
         val notice = coordinator.stoppedNotices.value.getValue("fixture")
         assertEquals(mapOf(3000 to ForwardLoss.Failed, 5173 to ForwardLoss.ConnectionEnded), notice.lost)
@@ -125,8 +127,7 @@ class PortForwardCoordinatorTest {
         assertEquals(api.forward.environmentId, notice.environmentId)
 
         // The app-wide notice reports only the loss it has not reported yet, once; the ports screen keeps both.
-        assertEquals("The forward for port 5173 stopped because the connection to the machine ended. Open it again to keep using it in your browser.",
-            coordinator.announceStopped("fixture"))
+        assertEquals("Connection ended: port 5173 stopped in your browser.", coordinator.announceStopped("fixture"))
         assertNull(coordinator.announceStopped("fixture"))
         assertNull(coordinator.announceStopped("other"))
         assertEquals(notice.lost, coordinator.stoppedNotices.value.getValue("fixture").lost)
@@ -156,7 +157,7 @@ class PortForwardCoordinatorTest {
         kotlinx.coroutines.test.runTest {
             val scope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler))
             val client = FakeClient()
-            val coordinator = PortForwardCoordinator(scope, client, onExternalForwardsChanged = { holdChanges++ }) {}
+            val coordinator = PortForwardCoordinator(scope, client, onExternalForwardsChanged = { holdChanges++ }, clock = { testScheduler.currentTime }) {}
             try { block(client, coordinator, testScheduler) } finally { scope.cancel() }
         }
 
@@ -174,12 +175,61 @@ class PortForwardCoordinatorTest {
         // Only the hold ended: the forward stays, and nothing is reported while it still runs.
         assertEquals(PortForwardStatus.Active, client.state.value.portForwards.single().status)
         assertTrue(coordinator.stoppedNotices.value.isEmpty())
-        // It stopping later (the connection dropped once the app let it go) is explained by the cap.
+        // The background grace then disconnects because nothing holds the connection any more: explained by the cap.
+        coordinator.graceDisconnecting()
         client.state.update { it.copy(connection = ConnectionStatus.Disconnected, portForwards = emptyList()) }
         val notice = coordinator.stoppedNotices.value.getValue("fixture")
         assertEquals(mapOf(5173 to ForwardLoss.HoldExpired), notice.lost)
         assertTrue(notice.message.contains("30 minutes") && notice.message.contains("Keep connected in background"))
         assertEquals(changes + 1, holdChanges)
+        val banner = coordinator.announceStopped("fixture")!!
+        assertTrue(banner, banner.startsWith("30-min browser limit ended port 5173"))
+    }
+
+    /** Keep-alive on, or another forward still holding: the cap ended nothing, so a later drop is not blamed on it. */
+    @Test fun aDropAfterTheCapThatTheCapDidNotCauseIsAConnectionLoss() = runVirtual { client, coordinator, time ->
+        openInBrowser(coordinator, 5173)
+        time.advance(EXTERNAL_FORWARD_HOLD_MS / 2)
+        val api = openInBrowser(coordinator, 3000)
+        time.advance(EXTERNAL_FORWARD_HOLD_MS / 2)
+        assertEquals(setOf(api.forward), coordinator.externalForwards.value)
+        // A grace never runs while a hold remains; a network drop ends both.
+        coordinator.graceDisconnecting()
+        client.state.update { it.copy(connection = ConnectionStatus.Disconnected, portForwards = emptyList()) }
+        assertEquals(mapOf(5173 to ForwardLoss.ConnectionEnded, 3000 to ForwardLoss.ConnectionEnded), coordinator.stoppedNotices.value.getValue("fixture").lost)
+        assertFalse(coordinator.announceStopped("fixture")!!.contains("Keep connected"))
+    }
+
+    /** Deep sleep stops uptime (and so delay()), not elapsed real time: the first event after the deadline ends the hold. */
+    @Test fun aHoldPastItsDeadlineAfterSleepEndsOnTheNextEvent() = run { client, coordinator, _ ->
+        val vite = openInBrowser(coordinator, 5173)
+        now += EXTERNAL_FORWARD_HOLD_MS - 1
+        client.state.update { s -> s.copy(portForwards = s.portForwards.map { it.copy(activeConnections = 1) }) }
+        assertEquals(setOf(vite.forward), coordinator.externalForwards.value)
+        assertFalse(coordinator.checkDeadlines())
+        now += 1
+        // A connection state change on wake...
+        client.state.update { s -> s.copy(portForwards = s.portForwards.map { it.copy(activeConnections = 0) }) }
+        assertTrue(coordinator.externalForwards.value.isEmpty())
+        // ...or a resume or keep-alive check.
+        val api = openInBrowser(coordinator, 3000)
+        now += EXTERNAL_FORWARD_HOLD_MS
+        val changes = holdChanges
+        assertTrue(coordinator.checkDeadlines())
+        assertTrue(coordinator.externalForwards.value.isEmpty())
+        assertEquals(changes + 1, holdChanges)
+        assertFalse(coordinator.checkDeadlines())
+        assertNotEquals(vite.forward, api.forward)
+    }
+
+    @Test fun aThrowingReopenEndsTheEarlierHoldAndItsTimer() = runVirtual { _, coordinator, time ->
+        val request = openInBrowser(coordinator, 5173)
+        coordinator.externalOpenFailed(request)
+        assertTrue(coordinator.externalForwards.value.isEmpty())
+        val changes = holdChanges
+        time.advance(EXTERNAL_FORWARD_HOLD_MS * 2)
+        assertEquals(changes, holdChanges)
+        assertTrue(coordinator.stoppedNotices.value.isEmpty())
     }
 
     @Test fun reopeningRestartsTheCap() = runVirtual { client, coordinator, time ->

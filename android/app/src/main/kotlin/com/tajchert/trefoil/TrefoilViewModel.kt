@@ -68,9 +68,15 @@ class TrefoilViewModel internal constructor(application: Application, private va
     private val _notice = MutableStateFlow<String?>(null)
     val notice = _notice.asStateFlow()
     /** Dev-server forwards and the in-app tunnel browser; failures surface as [notice] like other actions. */
-    val portForwards = com.tajchert.trefoil.ui.ports.PortForwardCoordinator(viewModelScope, client, onExternalForwardsChanged = { checkKeepAlive() }) { _notice.value = it }
-    /** The device has no app that can open a forwarded dev server's URL. */
-    fun externalOpenFailed() { _notice.value = "No browser found to open the dev server." }
+    /** Elapsed real time including deep sleep, for the cap on forwards held for an external browser; replaced in tests. */
+    internal var forwardClock: () -> Long = android.os.SystemClock::elapsedRealtime
+    val portForwards = com.tajchert.trefoil.ui.ports.PortForwardCoordinator(viewModelScope, client,
+        onExternalForwardsChanged = { checkKeepAlive() }, clock = { forwardClock() }) { _notice.value = it }
+    /** The device has no app that could open [request]'s forwarded dev server; its forward is not held. */
+    fun externalOpenFailed(request: com.tajchert.trefoil.ui.ports.ExternalOpenRequest) {
+        portForwards.externalOpenFailed(request)
+        _notice.value = "No browser found to open the dev server."
+    }
     private val _working = MutableStateFlow(false)
     val working = _working.asStateFlow()
     private val _isRefreshing = MutableStateFlow(false)
@@ -123,6 +129,8 @@ class TrefoilViewModel internal constructor(application: Application, private va
     private var foreground = true
     /** The machine and message of the app-wide banner last posted for lost forwards, so clearing the notice clears it. */
     private var forwardBanner: Pair<String, String>? = null
+    /** A connection failure took the banner from [forwardBanner]; the next connection attempt shows it again. */
+    private var forwardBannerDisplaced = false
     /** `SystemClock.elapsedRealtime()` of the last [pause]; null until the first one. */
     private var backgroundedAt: Long? = null
     private var silentShellRefresh: Job? = null
@@ -266,7 +274,9 @@ class TrefoilViewModel internal constructor(application: Application, private va
         _sshHostKey.value = null
         if (kind != ConnectionKind.Ssh) _sshLogin.value = null
         pendingInput = null
-        _notice.value = null; _working.value = true
+        // A connection attempt never consumes the lost-forward announcement: it stays, or comes back in place of an older
+        // connection failure.
+        _notice.value = pendingForwardBanner(); _working.value = true
         _connectionAttempt.value = ConnectionAttempt(epoch, kind, ConnectionPhase.Testing, "Testing connection…")
         connectionJob = viewModelScope.launch {
             try {
@@ -318,6 +328,7 @@ class TrefoilViewModel internal constructor(application: Application, private va
     }
 
     private fun connectionFailed(epoch: Long, kind: ConnectionKind, message: String) {
+        if (forwardBanner?.second == _notice.value) forwardBannerDisplaced = true
         _notice.value = message
         _connectionAttempt.value = ConnectionAttempt(epoch, kind, ConnectionPhase.Failed, message)
     }
@@ -352,6 +363,19 @@ class TrefoilViewModel internal constructor(application: Application, private va
         }
     }
 
+    /**
+     * The live connection is being given up on purpose for [targetId] (null: for no saved machine, or forgetting it): when
+     * that leaves the current machine, its forwards end without a lost-forward notice and its banner goes too. Called
+     * only where the old connection is actually dropped, never before a prompt that could still be cancelled.
+     */
+    private fun leaveMachine(targetId: String? = null) {
+        val current = state.value.environment?.id ?: return
+        if (targetId == current) return
+        portForwards.releaseAll()
+        forwardBanner?.let { (_, message) -> if (_notice.value == message) _notice.value = null }
+        forwardBanner = null; forwardBannerDisplaced = false
+    }
+
     private suspend fun disconnectCurrent() {
         liveEnvironment = null
         tunnelMonitor?.cancel(); tunnelMonitor = null
@@ -362,6 +386,7 @@ class TrefoilViewModel internal constructor(application: Application, private va
 
     fun pair(url: String, name: String, allowInsecureHttp: Boolean) { connectionAction("Pairing failed. Check the link, server address and certificate, then try again.", ConnectionKind.Pairing) {
         clearDraft()
+        leaveMachine()
         disconnectCurrent()
         connectionStage("Testing pairing link and exchanging credentials…")
         initialized.await()
@@ -397,15 +422,13 @@ class TrefoilViewModel internal constructor(application: Application, private va
 
     fun connect(environment: SavedEnvironment) {
         if (draft.value != null && environment.id != drafts.environmentId) clearDraft()
-        // Picking another machine stops this one's forwards on purpose: no lost-forward notice for them.
-        if (state.value.environment?.id.let { it != null && it != environment.id }) portForwards.releaseAll()
         val input = environment.ssh?.let { environment.sshInput() }
         // Only SSH is left and its login is not saved: ask right away, without a connection attempt.
         if (input != null && !input.hasSavedLogin() && environment.candidateRoutes().all { it.kind == RouteKind.Ssh }) {
             cancelSsh(); _sshLogin.value = input; return
         }
-        if (input != null) connectionAction(SSH_FAILURE, ConnectionKind.Ssh) { connectThroughPlan(environment) }
-        else connectionAction("Could not connect. Check the server or pair again if access has expired.") { connectThroughPlan(environment) }
+        if (input != null) connectionAction(SSH_FAILURE, ConnectionKind.Ssh) { leaveMachine(environment.id); connectThroughPlan(environment) }
+        else connectionAction("Could not connect. Check the server or pair again if access has expired.") { leaveMachine(environment.id); connectThroughPlan(environment) }
         attemptEnvironmentId = environment.id
     }
 
@@ -441,6 +464,7 @@ class TrefoilViewModel internal constructor(application: Application, private va
 
     private suspend fun openSsh(input: SshConnectionInput) {
         sshInputValidationError(input)?.let { throw SshConnectionException(it) }
+        leaveMachine(input.savedEnvironmentId)
         disconnectCurrent()
         val normalized = input.copy(host = input.host.trim(), username = input.username.trim())
         initialized.await()
@@ -649,6 +673,7 @@ class TrefoilViewModel internal constructor(application: Application, private va
         connectionMutex.withLock {
             if (selectedEnvironment?.id == environment.id || state.value.environment?.id == environment.id) {
                 autoReconnectJob?.cancel(); autoReconnectJob = null; reconnectWhenOnline = null
+                leaveMachine()
                 disconnectCurrent(); selectedEnvironment = null
                 stopKeepAlive(releaseBackground = false)
             }
@@ -698,7 +723,7 @@ class TrefoilViewModel internal constructor(application: Application, private va
             delay(BACKGROUND_CONNECTION_GRACE_MS)
             connectionMutex.withLock {
                 // A resume, explicit disconnect or newer connection attempt supersedes this timeout.
-                if (!foreground && epoch == connectionEpoch) disconnectCurrent()
+                if (!foreground && epoch == connectionEpoch) { portForwards.graceDisconnecting(); disconnectCurrent() }
             }
         }
     }
@@ -713,21 +738,35 @@ class TrefoilViewModel internal constructor(application: Application, private va
         if (!foreground) return
         val environmentId = state.value.environment?.id ?: return
         val message = portForwards.announceStopped(environmentId) ?: return
-        forwardBanner = environmentId to message
+        forwardBanner = environmentId to message; forwardBannerDisplaced = false
         _notice.value = message
     }
 
     private fun syncForwardBanner(notices: Map<String, com.tajchert.trefoil.ui.ports.StoppedForwardNotice>) {
         forwardBanner?.let { (environmentId, message) ->
             if (environmentId !in notices) {
-                forwardBanner = null
+                forwardBanner = null; forwardBannerDisplaced = false
                 if (_notice.value == message) _notice.value = null
             }
         }
         announceStoppedForwards()
     }
+
+    /**
+     * What a connection attempt leaves in the notice: the lost-forward announcement when it is shown, or when a
+     * connection failure displaced it, so it is never dropped unseen; otherwise nothing.
+     */
+    private fun pendingForwardBanner(): String? {
+        val (environmentId, message) = forwardBanner ?: return null
+        if (environmentId != state.value.environment?.id || environmentId !in portForwards.stoppedNotices.value) return null
+        val shown = _notice.value == message
+        if (!shown && !forwardBannerDisplaced) return null
+        forwardBannerDisplaced = false
+        return message
+    }
     fun resume() {
         foreground = true
+        portForwards.checkDeadlines()
         updateThreadViewing()
         backgroundDisconnectJob?.cancel(); backgroundDisconnectJob = null
         postKeepAliveCheck()
@@ -940,6 +979,8 @@ class TrefoilViewModel internal constructor(application: Application, private va
 
     /** The one place that starts, updates or stops the keep-alive service, from the current state. */
     private fun checkKeepAlive() {
+        // After deep sleep a hold may be past its deadline; ending it runs this check again from the change.
+        if (portForwards.checkDeadlines()) return
         val current = state.value
         val reconnectPending = autoReconnectJob?.isActive == true || reconnectWhenOnline != null ||
             // A drop that [connectionDropped] has not handled yet may still start a reconnect.

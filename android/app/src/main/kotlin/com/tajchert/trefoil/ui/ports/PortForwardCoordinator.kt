@@ -23,9 +23,10 @@ import kotlinx.coroutines.launch
 data class PortBrowserState(val environmentId: String, val remotePort: Int, val url: String, val title: String)
 
 /**
- * How long a forward handed to an external browser holds the connection, counted from the last time it was handed over.
- * Trefoil cannot tell whether a browser still uses a forward (connections half-close, pages idle), so the hold is capped;
- * "Keep connected in background" has no limit.
+ * How long a forward handed to an external browser holds the connection, counted from the last time it was handed over in
+ * elapsed real time (sleep included) and enforced the next time the app runs after it. Trefoil cannot tell whether a
+ * browser still uses a forward (connections half-close, pages idle), so the hold is capped; "Keep connected in
+ * background" has no limit.
  */
 const val EXTERNAL_FORWARD_HOLD_MS = 30 * 60_000L
 
@@ -59,18 +60,25 @@ class PortForwardCoordinator(
     private val client: TrefoilClient,
     /** [externalForwards] changed; called synchronously so a hold starts while the app is still in the foreground. */
     private val onExternalForwardsChanged: () -> Unit = {},
+    /** Elapsed real time in ms, counting deep sleep (`SystemClock.elapsedRealtime`); the cap's deadlines use it. */
+    private val clock: () -> Long = android.os.SystemClock::elapsedRealtime,
     private val onError: (String) -> Unit,
 ) {
+    /** A hold's deadline on [clock] and the timer that enforces it while the process runs. */
+    private class Hold(val deadline: Long, val timer: Job)
+
     private val mutableBrowser = MutableStateFlow<PortBrowserState?>(null)
     val browser: StateFlow<PortBrowserState?> = mutableBrowser.asStateFlow()
     private val mutableExternal = MutableSharedFlow<ExternalOpenRequest>(extraBufferCapacity = 1)
     /** Requests to open a forward externally. A request no collector receives (the UI is stopped) is simply lost. */
     val externalUrls: SharedFlow<ExternalOpenRequest> = mutableExternal.asSharedFlow()
     private val starting = HashSet<Int>()
-    /** Each held forward and its cap timer: one timer per mark, replaced only by a re-open and cancelled with the mark. */
-    private val holds = HashMap<ExternalForward, Job>()
-    /** Forwards whose hold expired and that still run; reported as [ForwardLoss.HoldExpired] if they stop on their own. */
+    /** Each held forward, its deadline and timer: one per mark, replaced only by a re-open and cancelled with the mark. */
+    private val holds = HashMap<ExternalForward, Hold>()
+    /** Forwards whose hold expired and that still run, so a later stop is still reported. */
     private val expired = HashSet<ExternalForward>()
+    /** Expired forwards whose connection the background grace ended after the cap: reported as [ForwardLoss.HoldExpired]. */
+    private val endedByCap = HashSet<ExternalForward>()
     private val mutableExternalForwards = MutableStateFlow<Set<ExternalForward>>(emptySet())
     /**
      * Forwards an external browser took ([externalOpened]) that are still live. While one exists the view model keeps the
@@ -110,17 +118,44 @@ class PortForwardCoordinator(
         portForwards.any { it.remotePort == mark.remotePort && it.instance == mark.instance && it.status == PortForwardStatus.Failed }
 
     private fun pruneExternal(state: ClientState) {
+        // A state change can be the first thing the app runs after deep sleep: a passed deadline ends its hold first.
+        expireDue(publish = false)
         val goneExpired = expired.filter { state.liveForward(it) == null }
         expired.removeAll(goneExpired.toSet())
-        goneExpired.forEach { recordLoss(it, if (state.failed(it)) ForwardLoss.Failed else ForwardLoss.HoldExpired) }
+        goneExpired.forEach { mark ->
+            val cap = endedByCap.remove(mark)
+            recordLoss(mark, when { state.failed(mark) -> ForwardLoss.Failed; cap -> ForwardLoss.HoldExpired; else -> ForwardLoss.ConnectionEnded })
+        }
+        endedByCap.retainAll(expired)
         val gone = holds.keys.filter { state.liveForward(it) == null }
-        if (gone.isEmpty()) return
         gone.forEach { mark ->
-            holds.remove(mark)?.cancel()
+            holds.remove(mark)?.timer?.cancel()
             recordLoss(mark, if (state.failed(mark)) ForwardLoss.Failed else ForwardLoss.ConnectionEnded)
         }
-        publishHolds()
+        if (gone.isNotEmpty() || mutableExternalForwards.value != holds.keys) publishHolds()
     }
+
+    /** Ends the holds whose deadline passed; true when one ended. */
+    private fun expireDue(publish: Boolean): Boolean {
+        val now = clock()
+        val due = holds.filterValues { it.deadline <= now }.keys
+        if (due.isEmpty()) return false
+        due.forEach { mark -> holds.remove(mark)?.timer?.cancel(); expired += mark }
+        if (publish) publishHolds()
+        return true
+    }
+
+    /**
+     * Ends any hold whose deadline passed, for the moments the app runs again after sleep (resume, keep-alive checks); the
+     * timers alone run on uptime, which stops in deep sleep. True when a hold ended ([externalForwards] changed).
+     */
+    fun checkDeadlines(): Boolean = expireDue(publish = true)
+
+    /**
+     * The background grace is about to disconnect: forwards whose hold the cap ended (while no hold remains) lose their
+     * connection because of the cap, so their stop is reported as [ForwardLoss.HoldExpired].
+     */
+    fun graceDisconnecting() { if (holds.isEmpty()) endedByCap += expired }
 
     private fun publishHolds() {
         mutableExternalForwards.value = holds.keys.toSet()
@@ -157,26 +192,35 @@ class PortForwardCoordinator(
     fun externalOpened(request: ExternalOpenRequest) {
         val mark = request.forward
         client.state.value.liveForward(mark) ?: return
-        expired.remove(mark)
-        holds.remove(mark)?.cancel()
+        expired.remove(mark); endedByCap.remove(mark)
+        holds.remove(mark)?.timer?.cancel()
+        val deadline = clock() + EXTERNAL_FORWARD_HOLD_MS
         lateinit var timer: Job
         timer = scope.launch {
-            delay(EXTERNAL_FORWARD_HOLD_MS)
+            // delay() runs on uptime; the deadline decides, so a timer that fires early waits out the rest.
+            while (true) {
+                val remaining = deadline - clock()
+                if (remaining <= 0) break
+                delay(remaining)
+            }
             // Only the timer the mark still owns may end it.
-            if (holds[mark] !== timer) return@launch
+            if (holds[mark]?.timer !== timer) return@launch
             holds.remove(mark)
             expired += mark
             publishHolds()
         }
-        holds[mark] = timer
+        holds[mark] = Hold(deadline, timer)
         publishHolds()
     }
 
-    /** Ends every hold without a notice: the user asked to disconnect. */
+    /** The browser launch for [request] threw: that forward is not held, also not by an earlier open. */
+    fun externalOpenFailed(request: ExternalOpenRequest) = release(setOf(request.forward))
+
+    /** Ends every hold without a notice: the user asked to disconnect or left the machine. */
     fun releaseAll() {
-        expired.clear()
+        expired.clear(); endedByCap.clear()
         if (holds.isEmpty()) return
-        holds.values.forEach { it.cancel() }; holds.clear()
+        holds.values.forEach { it.timer.cancel() }; holds.clear()
         publishHolds()
     }
 
@@ -189,15 +233,15 @@ class PortForwardCoordinator(
         val fresh = notice.lost.filterKeys { it !in notice.announced }
         if (fresh.isEmpty()) return null
         mutableStoppedNotices.update { it + (environmentId to notice.copy(announced = notice.lost.keys)) }
-        return stoppedMessage(fresh)
+        return stoppedBanner(fresh)
     }
 
     fun dismissStoppedNotice(environmentId: String) { mutableStoppedNotices.update { it - environmentId } }
 
     private fun release(entries: Set<ExternalForward>) {
-        expired.removeAll(entries)
+        expired.removeAll(entries); endedByCap.removeAll(entries)
         if (entries.none { it in holds }) return
-        entries.forEach { holds.remove(it)?.cancel() }
+        entries.forEach { holds.remove(it)?.timer?.cancel() }
         publishHolds()
     }
 
@@ -252,6 +296,20 @@ class PortForwardCoordinator(
         PortForwardError.LocalBindFailed -> "No free port on this device to forward to."
         else -> "Could not forward the port. Check the connection and try again."
     }
+}
+
+/** The short app-wide form: reason first, so a two-line banner keeps what matters. */
+internal fun stoppedBanner(lost: Map<Int, ForwardLoss>): String {
+    fun ports(list: List<Int>) = if (list.size == 1) "port ${list[0]}" else "ports ${list.joinToString(", ")}"
+    val holdMinutes = EXTERNAL_FORWARD_HOLD_MS / 60_000
+    return listOf(ForwardLoss.HoldExpired, ForwardLoss.ConnectionEnded, ForwardLoss.Failed).mapNotNull { loss ->
+        val list = lost.filterValues { it == loss }.keys.sorted().takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+        when (loss) {
+            ForwardLoss.HoldExpired -> "$holdMinutes-min browser limit ended ${ports(list)}; Keep connected in background lifts it."
+            ForwardLoss.ConnectionEnded -> "Connection ended: ${ports(list)} stopped in your browser."
+            ForwardLoss.Failed -> "Forward failed: ${ports(list)} stopped in your browser."
+        }
+    }.joinToString(" ")
 }
 
 private fun stoppedMessage(lost: Map<Int, ForwardLoss>): String {

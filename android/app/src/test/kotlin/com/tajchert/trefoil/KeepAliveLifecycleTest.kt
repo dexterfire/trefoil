@@ -73,6 +73,12 @@ class KeepAliveLifecycleTest {
     @After fun tearDown() { model.viewModelScope.cancel(); client.close() }
 
     private fun advance(ms: Long) = shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(ms))
+    /** Idles the main looper until [done], for work that hops through IO (initialization, disconnect). */
+    private fun idleUntil(done: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + 5_000
+        while (!done() && System.currentTimeMillis() < deadline) { shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(5) }
+        assertTrue(done())
+    }
     private fun field(name: String) = TrefoilViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
 
     /** As after a successful connect: the machine is saved and the view model owns the live connection. */
@@ -226,7 +232,80 @@ class KeepAliveLifecycleTest {
         // Read before the reconnect that resume starts can report its own outcome.
         model.resume()
         val message = model.notice.value!!
-        assertTrue(message, message.contains("30 minutes") && message.contains("Keep connected in background"))
+        assertTrue(message, message.startsWith("30-min browser limit ended port 5173") && message.contains("Keep connected in background"))
+        assertTrue(model.portForwards.stoppedNotices.value.getValue("fixture").message.contains("30 minutes"))
+    }
+
+    /** Deep sleep: Handler time stood still, elapsed real time did not; the return ends the hold. */
+    @Test fun aHoldPastItsDeadlineAfterDeepSleepEndsWhenTheAppNextRuns() {
+        var now = 5_000_000L
+        model.forwardClock = { now }
+        openForwardExternally()
+        model.pause(); advance(1_000)
+        now += EXTERNAL_FORWARD_HOLD_MS
+        assertTrue(model.keepAliveActive.value)
+        model.resume()
+        assertTrue(model.portForwards.externalForwards.value.isEmpty())
+        assertFalse(model.keepAliveActive.value)
+    }
+
+    @Test fun keepAliveUsersAreNeverToldToTurnItOnAfterTheCap() {
+        enableKeepAlive()
+        openForwardExternally()
+        model.pause()
+        advance(EXTERNAL_FORWARD_HOLD_MS + 1)
+        assertTrue(model.portForwards.externalForwards.value.isEmpty())
+        assertEquals(ConnectionStatus.Connected, model.state.value.connection)
+        dropConnection(); mutable.value = mutable.value.copy(portForwards = emptyList()); advance(0)
+        model.resume()
+        val message = model.notice.value!!
+        assertTrue(message, message.contains("port 5173") && !message.contains("Keep connected"))
+        assertFalse(model.portForwards.stoppedNotices.value.getValue("fixture").message.contains("Keep connected"))
+    }
+
+    @Test fun pairingAnotherMachineEndsTheHoldWithoutANotice() {
+        armLiveConnection()
+        openForwardExternally()
+        model.pair("https://other.invalid/pair#token=fixture", "Other", false)
+        idleUntil { model.portForwards.externalForwards.value.isEmpty() }
+        idleUntil { mutable.value.portForwards.isEmpty() }
+        assertTrue(model.portForwards.stoppedNotices.value.isEmpty())
+    }
+
+    @Test fun forgettingTheShownMachineEndsTheHoldWithoutANotice() {
+        armLiveConnection()
+        openForwardExternally()
+        model.forget(environment)
+        idleUntil { mutable.value.portForwards.isEmpty() }
+        assertTrue(model.portForwards.externalForwards.value.isEmpty())
+        assertTrue(model.portForwards.stoppedNotices.value.isEmpty())
+    }
+
+    /** The login prompt can still be cancelled: until a connection attempt really replaces this one, the page keeps its hold. */
+    @Test fun selectingAnSshMachineThatAsksForALoginKeepsTheHold() {
+        openForwardExternally()
+        val ssh = SavedEnvironment("ssh", "Home", "", "fixture", ssh = SshProfile("home.invalid", 22, "dev", "SHA256:fixture", "ssh-ed25519"))
+        model.connect(ssh); advance(0)
+        assertNotNull(model.sshLogin.value)
+        assertEquals(setOf(ExternalForward("fixture", 5173, 7)), model.portForwards.externalForwards.value)
+        model.cancelSsh(); advance(0)
+        assertEquals(setOf(ExternalForward("fixture", 5173, 7)), model.portForwards.externalForwards.value)
+    }
+
+    /** A Reconnect tap or a connection failure never swallows the lost-forward announcement. */
+    @Test fun aConnectionAttemptOrFailureDoesNotConsumeTheAnnouncement() {
+        openForwardExternally()
+        model.pause(); advance(1_000)
+        mutable.value = mutable.value.copy(portForwards = listOf(forward.copy(status = PortForwardStatus.Failed, localPort = null))); advance(0)
+        model.resume()
+        val message = model.notice.value!!
+        model.reconnect()
+        assertEquals(message, model.notice.value)
+        TrefoilViewModel::class.java.getDeclaredMethod("connectionFailed", java.lang.Long.TYPE, ConnectionKind::class.java, String::class.java)
+            .apply { isAccessible = true }.invoke(model, 99L, ConnectionKind.Saved, "Could not reconnect.")
+        assertEquals("Could not reconnect.", model.notice.value)
+        model.reconnect()
+        assertEquals(message, model.notice.value)
     }
 
     /** A worker publishes the failure while the app returns: the collector runs only after resume. */
@@ -239,8 +318,8 @@ class KeepAliveLifecycleTest {
         advance(0)
         assertTrue(model.portForwards.externalForwards.value.isEmpty())
         val message = model.notice.value!!
-        assertTrue(message, message.contains("port 5173 failed"))
-        assertEquals(message, model.portForwards.stoppedNotices.value.getValue("fixture").message)
+        assertTrue(message, message.startsWith("Forward failed: port 5173"))
+        assertTrue(model.portForwards.stoppedNotices.value.getValue("fixture").message.contains("port 5173 failed"))
     }
 
     @Test fun aForwardLostInTheBackgroundIsAnnouncedOnceForItsMachineAndClearedEverywhere() {
@@ -250,8 +329,8 @@ class KeepAliveLifecycleTest {
         assertFalse(model.keepAliveActive.value)
         model.resume()
         val message = model.notice.value!!
-        assertTrue(message, message.contains("port 5173"))
-        assertEquals(message, model.portForwards.stoppedNotices.value.getValue("fixture").message)
+        assertTrue(message, message.startsWith("Connection ended: port 5173"))
+        assertTrue(model.portForwards.stoppedNotices.value.getValue("fixture").message.contains("port 5173"))
         // Dismissing on the ports screen clears the banner that announced it too.
         model.dismissStoppedForwards("fixture")
         assertNull(model.notice.value)
