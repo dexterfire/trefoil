@@ -54,22 +54,32 @@ class ComposerActionsTest {
     @Test fun sendIsAcceptedWhenTheMessageIsQueuedWithoutAnyTimelineItem() {
         val queued = QueuedMessage("q2", "qm2", "Then open the PR.")
         val state = running.copy(queuedMessages = listOf(queued))
-        assertTrue(sendAccepted("Then open the PR.", state, messageIdsAtSend = emptyList(), queuedIdsAtSend = emptyList()))
-        assertTrue(sendAccepted(" Then open the PR.\n", state, emptyList(), emptyList()))
+        assertTrue(sendAccepted("Then open the PR.", state, idsAtSend = emptyList()))
+        assertTrue(sendAccepted(" Then open the PR.\n", state, emptyList()))
     }
 
     @Test fun sendIsNotAcceptedByWhatWasThereBeforeTheSend() {
         val before = QueuedMessage("q1", "qm1", "Same text")
         val old = ConversationMessage("old", "user", "Same text")
         val state = running.copy(queuedMessages = listOf(before), messages = listOf(old))
-        assertFalse(sendAccepted("Same text", state, listOf("old"), listOf("qm1")))
+        val ids = listOf("old", "qm1")
+        assertFalse(sendAccepted("Same text", state, ids))
         // A duplicate of the same text that arrives later is a new message id.
-        assertTrue(sendAccepted("Same text", state.copy(queuedMessages = state.queuedMessages + QueuedMessage("q2", "qm2", "Same text")), listOf("old"), listOf("qm1")))
-        assertTrue(sendAccepted("Same text", state.copy(messages = state.messages + ConversationMessage("new", "user", "Same text")), listOf("old"), listOf("qm1")))
+        assertTrue(sendAccepted("Same text", state.copy(queuedMessages = state.queuedMessages + QueuedMessage("q2", "qm2", "Same text")), ids))
+        assertTrue(sendAccepted("Same text", state.copy(messages = state.messages + ConversationMessage("new", "user", "Same text")), ids))
+    }
+
+    @Test fun anOlderQueuedMessageMovingIntoTheTimelineDoesNotConfirmANewSend() {
+        // "qm1" was queued at submission; it later becomes a timeline message with the same id.
+        val moved = running.copy(messages = listOf(ConversationMessage("qm1", "user", "again")))
+        assertFalse(sendAccepted("again", moved, idsAtSend = listOf("qm1")))
+        // And a message that was in the timeline at submission never matches a queued row with that id.
+        val back = running.copy(queuedMessages = listOf(QueuedMessage("q", "tl1", "again")))
+        assertFalse(sendAccepted("again", back, idsAtSend = listOf("tl1")))
     }
 
     @Test fun assistantTextNeverConfirmsASend() {
-        assertFalse(sendAccepted("hi", running.copy(messages = listOf(ConversationMessage("a", "assistant", "hi"))), emptyList(), emptyList()))
+        assertFalse(sendAccepted("hi", running.copy(messages = listOf(ConversationMessage("a", "assistant", "hi"))), emptyList()))
     }
 
     @Test fun sendNowNeedsWritesAndEitherSteeringOrAnIdleThread() {
@@ -83,5 +93,52 @@ class ComposerActionsTest {
         assertFalse(idle.queuePaused)
         assertTrue(idle.copy(queueHeld = true).queuePaused)
         assertTrue(idle.copy(queuedMessages = listOf(QueuedMessage("q", "m", "t", held = true))).queuePaused)
+    }
+
+    @Test fun threadBusyMirrorsTheSessionsQueueableRule() {
+        assertFalse(idle.threadBusy)
+        assertTrue(running.threadBusy)
+        listOf("preparing", "starting", "running", "waiting").forEach { status ->
+            assertTrue(status, idle.copy(runs = listOf(ConversationRun("r", status))).threadBusy)
+        }
+        assertFalse(idle.copy(runs = listOf(ConversationRun("r", "completed"))).threadBusy)
+        val shell = { status: String?, run: String? -> idle.copy(threads = listOf(ThreadSummary("t", "p", "T", status = status ?: "idle", activityRunStatus = run))) }
+        assertTrue(shell(null, "preparing").threadBusy)
+        assertTrue(shell(null, "starting").threadBusy)
+        assertTrue(shell("starting", null).threadBusy)
+        assertTrue(shell("preparing", null).threadBusy)
+        assertFalse(shell("idle", "completed").threadBusy)
+        // Another thread's shell never makes this one busy.
+        assertFalse(idle.copy(threads = listOf(ThreadSummary("other", "p", "O", activityRunStatus = "starting"))).threadBusy)
+    }
+
+    @Test fun aSettingUpRunLooksRunningSoTheComposerQueuesInsteadOfSendingImmediately() {
+        val settingUp = idle.copy(threads = listOf(ThreadSummary("t", "p", "T", activityRunStatus = "starting")))
+        assertEquals(ComposerPrimary.Queue, resolveComposerButton(settingUp, false, "next", false, false).action)
+        assertEquals("Queue a message…", composerPlaceholder(settingUp, false))
+    }
+
+    @Test fun routeSendChecksTheLiveStateAtTapTime() {
+        assertEquals(SendRoute.Plain, routeSend(idle, false, null))
+        assertEquals(SendRoute.FollowUp(FollowUpMode.Queue), routeSend(running, false, null))
+        assertEquals(SendRoute.FollowUp(FollowUpMode.Queue), routeSend(running, false, FollowUpMode.Queue))
+        assertEquals(SendRoute.FollowUp(FollowUpMode.Steer), routeSend(running.copy(canSteer = true), false, FollowUpMode.Steer))
+        // The run ended after the label was chosen: never an immediate send under a Queue/Steer label.
+        assertEquals(SendRoute.Refused, routeSend(idle, false, FollowUpMode.Queue))
+        assertEquals(SendRoute.Refused, routeSend(idle.copy(canSteer = true), false, FollowUpMode.Steer))
+        // Steering stopped being supported.
+        assertEquals(SendRoute.Refused, routeSend(running, false, FollowUpMode.Steer))
+        // A new-thread draft is never a follow-up.
+        assertEquals(SendRoute.Plain, routeSend(running, true, null))
+        assertEquals(SendRoute.Refused, routeSend(running, true, FollowUpMode.Queue))
+    }
+
+    @Test fun submissionIdCarriesEnvironmentAndThread() {
+        val state = running.copy(environment = SavedEnvironment("env", "Env", "https://e.test", "t"))
+        val a = newSubmission(state, "x", nonce = "n1")
+        assertEquals("env:t:n1", a.id)
+        assertEquals("env", a.environmentId); assertEquals("t", a.threadId)
+        assertNotEquals(newSubmission(state, "x").id, newSubmission(state, "x").id)
+        assertEquals("env:t", stopKey("env", "t"))
     }
 }

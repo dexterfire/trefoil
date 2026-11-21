@@ -390,43 +390,118 @@ class ConversationUiTest {
     }
 
     private val runningThread get() = ClientState(selectedThreadId = "fixture", canWrite = true, connection = ConnectionStatus.Connected, activeRunId = "run", canStop = true,
+        environment = SavedEnvironment("env", "Env", "https://e.test", "t"),
         messages = listOf(ConversationMessage("old", "user", "Start", runId = "run")))
+
+    private class Sent { val submissions = mutableListOf<Pair<ComposerSubmission, FollowUpMode?>>() }
 
     @Test fun queuedFollowUpClearsTheConfirmationWaitWithoutATimelineMessage() {
         val state = mutableStateOf(runningThread.copy(canSteer = true))
-        val sent = mutableListOf<Pair<String, FollowUpMode>>()
-        compose.setContent { MaterialTheme { Conversation(state.value, {}, {}, { _, _, _ -> }, sendFollowUp = { text, mode -> sent += text to mode }) } }
+        val sent = Sent()
+        compose.setContent { MaterialTheme { Conversation(state.value, {}, {}, { _, _, _ -> }, submitMessage = { s, m -> sent.submissions += s to m }) } }
         compose.onNodeWithText("Steer or queue a message…").performTextInput("Then open the PR.")
         compose.onNodeWithContentDescription("Steer message").performClick()
         compose.onNodeWithText("Waiting for server confirmation…").assertExists()
         compose.runOnIdle {
-            assertEquals(listOf("Then open the PR." to FollowUpMode.Steer), sent)
+            assertEquals(listOf("Then open the PR." to FollowUpMode.Steer), sent.submissions.map { it.first.text to it.second })
             state.value = state.value.copy(queuedMessages = listOf(QueuedMessage("q", "qm", "Then open the PR.")))
         }
         compose.onNodeWithText("Waiting for server confirmation…").assertDoesNotExist()
         compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
-        compose.onNodeWithText("Then open the PR.").assertExists()
     }
 
-    @Test fun serverAcknowledgementClearsTheConfirmationWait() {
-        val accepted = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 1)
-        compose.setContent { MaterialTheme { Conversation(runningThread, {}, {}, { _, _, _ -> }, sendFollowUp = { _, _ -> }, sendAccepted = accepted) } }
+    @Test fun anOlderIdenticalQueuedMessageMovingIntoTheTimelineDoesNotConfirmANewSend() {
+        val older = QueuedMessage("q0", "qm0", "again")
+        val state = mutableStateOf(runningThread.copy(queuedMessages = listOf(older)))
+        compose.setContent { MaterialTheme { Conversation(state.value, {}, {}, { _, _, _ -> }, submitMessage = { _, _ -> }) } }
+        compose.onNodeWithText("Queue a message…").performTextInput("again")
+        compose.onNodeWithContentDescription("Queue message").performClick()
+        compose.runOnIdle { state.value = state.value.copy(queuedMessages = emptyList(), messages = state.value.messages + ConversationMessage("qm0", "user", "again")) }
+        compose.onNodeWithText("Waiting for server confirmation…").assertExists()
+    }
+
+    private fun submitAndCapture(outcomes: androidx.compose.runtime.MutableState<Map<String, SendOutcome>>, consumed: MutableList<String> = mutableListOf(), sent: Sent = Sent(), state: ClientState = runningThread, text: String = "later"): Sent {
+        compose.setContent { MaterialTheme { Conversation(state, {}, {}, { _, _, _ -> }, submitMessage = { s, m -> sent.submissions += s to m },
+            sendOutcomes = outcomes.value, onConsumeSendOutcome = { consumed += it }) } }
+        compose.onNodeWithText("Queue a message…").performTextInput(text)
+        compose.onNodeWithContentDescription("Queue message").performClick()
+        return sent
+    }
+
+    @Test fun anAcceptedOutcomeForTheSubmissionClearsTheWaitAndIsConsumed() {
+        val outcomes = mutableStateOf<Map<String, SendOutcome>>(emptyMap()); val consumed = mutableListOf<String>()
+        val sent = submitAndCapture(outcomes, consumed)
+        compose.onNodeWithText("Waiting for server confirmation…").assertExists()
+        compose.runOnIdle { outcomes.value = mapOf(sent.submissions.single().first.id to SendOutcome.Accepted) }
+        compose.onNodeWithText("Waiting for server confirmation…").assertDoesNotExist()
+        compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
+        compose.runOnIdle { assertEquals(listOf(sent.submissions.single().first.id), consumed) }
+    }
+
+    @Test fun anotherSubmissionsOutcomeNeverSettlesThisOne() {
+        val outcomes = mutableStateOf<Map<String, SendOutcome>>(emptyMap())
+        submitAndCapture(outcomes)
+        compose.runOnIdle { outcomes.value = mapOf("env:other:x" to SendOutcome.Accepted, "env:other:y" to SendOutcome.Failed) }
+        compose.onNodeWithText("Waiting for server confirmation…").assertExists()
+    }
+
+    @Test fun aFailedOutcomeFreesTheComposerAndKeepsTheText() {
+        val outcomes = mutableStateOf<Map<String, SendOutcome>>(emptyMap())
+        val sent = submitAndCapture(outcomes)
+        compose.runOnIdle { outcomes.value = mapOf(sent.submissions.single().first.id to SendOutcome.Failed) }
+        compose.onNodeWithText("Waiting for server confirmation…").assertDoesNotExist()
+        compose.onNodeWithText("later").assertExists()
+    }
+
+    @Test fun anOutcomeThatArrivedWhileTheComposerWasGoneSettlesItOnReturn() {
+        val outcomes = mutableStateOf<Map<String, SendOutcome>>(emptyMap())
+        val restoration = androidx.compose.ui.test.junit4.StateRestorationTester(compose)
+        val sent = Sent()
+        restoration.setContent { MaterialTheme { Conversation(runningThread, {}, {}, { _, _, _ -> }, submitMessage = { s, m -> sent.submissions += s to m }, sendOutcomes = outcomes.value) } }
         compose.onNodeWithText("Queue a message…").performTextInput("later")
         compose.onNodeWithContentDescription("Queue message").performClick()
         compose.onNodeWithText("Waiting for server confirmation…").assertExists()
-        compose.runOnIdle { accepted.tryEmit(Unit) }
+        compose.runOnIdle { outcomes.value = mapOf(sent.submissions.single().first.id to SendOutcome.Failed) }
+        restoration.emulateSavedInstanceStateRestore()
         compose.onNodeWithText("Waiting for server confirmation…").assertDoesNotExist()
-        compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
+    }
+
+    @Test fun typingAfterSubmitKeepsTheTextWhenTheSendIsAccepted() {
+        val outcomes = mutableStateOf<Map<String, SendOutcome>>(emptyMap())
+        val sent = submitAndCapture(outcomes)
+        compose.onNode(hasSetTextAction()).performTextInput(" and more")
+        compose.runOnIdle { outcomes.value = mapOf(sent.submissions.single().first.id to SendOutcome.Accepted) }
+        compose.onNodeWithText("Waiting for server confirmation…").assertDoesNotExist()
+        compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("later and more")))
+    }
+
+    @Test fun submissionCarriesTheEnvironmentAndThreadItWasMadeFor() {
+        val outcomes = mutableStateOf<Map<String, SendOutcome>>(emptyMap())
+        val sent = submitAndCapture(outcomes)
+        val submission = sent.submissions.single().first
+        assertEquals("env", submission.environmentId); assertEquals("fixture", submission.threadId)
+        assertTrue(submission.id.startsWith("env:fixture:"))
     }
 
     @Test fun longPressOffersQueueAlongsideTheSteerDefault() {
-        val sent = mutableListOf<FollowUpMode>()
-        compose.setContent { MaterialTheme { Conversation(runningThread.copy(canSteer = true), {}, {}, { _, _, _ -> }, sendFollowUp = { _, mode -> sent += mode }) } }
+        val sent = Sent()
+        compose.setContent { MaterialTheme { Conversation(runningThread.copy(canSteer = true), {}, {}, { _, _, _ -> }, submitMessage = { s, m -> sent.submissions += s to m }) } }
         compose.onNodeWithText("Steer or queue a message…").performTextInput("later")
         compose.onNodeWithContentDescription("Steer message").performTouchInput { longClick() }
         compose.onNodeWithText("Redirect the running turn now").assertExists()
         compose.onNodeWithText("Queue message").performClick()
-        compose.runOnIdle { assertEquals(listOf(FollowUpMode.Queue), sent) }
+        compose.runOnIdle { assertEquals(listOf<FollowUpMode?>(FollowUpMode.Queue), sent.submissions.map { it.second }) }
+    }
+
+    @Test fun theMenuClosesWhenTheRunEnds() {
+        val state = mutableStateOf(runningThread.copy(canSteer = true))
+        compose.setContent { MaterialTheme { Conversation(state.value, {}, {}, { _, _, _ -> }, submitMessage = { _, _ -> }) } }
+        compose.onNodeWithText("Steer or queue a message…").performTextInput("later")
+        compose.onNodeWithContentDescription("Steer message").performTouchInput { longClick() }
+        compose.onNodeWithText("Redirect the running turn now").assertExists()
+        compose.runOnIdle { state.value = state.value.copy(activeRunId = null, canStop = false, canSteer = false) }
+        compose.onNodeWithText("Redirect the running turn now").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Send message").assertExists()
     }
 
     @Test fun queuedStripRoutesSendNowAndRemoveAndResume() {
@@ -447,15 +522,30 @@ class ConversationUiTest {
         compose.onNodeWithText("Queue paused").assertDoesNotExist()
     }
 
-    @Test fun stopDisablesUntilTheThreadHasNothingLeftToStop() {
+    @Test fun queueActionsFollowTheRawWriteStateNotTheGracePeriod() {
+        val live = runningThread.copy(canSteer = true, canRead = true, canWriteThreads = true, queueHeld = true, queuedMessages = listOf(QueuedMessage("q1", "m1", "First", held = true)))
+        val state = mutableStateOf(live)
+        compose.mainClock.autoAdvance = false
+        compose.setContent { MaterialTheme { Conversation(state.value, {}, {}, { _, _, _ -> }) } }
+        compose.mainClock.advanceTimeByFrame()
+        compose.onNodeWithText("Resume").assertIsEnabled()
+        state.value = live.copy(canWrite = false, canRead = false); compose.mainClock.advanceTimeBy(300)
+        compose.onNodeWithText("Resume").assertIsNotEnabled()
+        compose.onNodeWithText("Send now").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Remove queued message").assertIsNotEnabled()
+    }
+
+    @Test fun stopIsDisabledWhileThisThreadsStopIsInFlight() {
         val state = mutableStateOf(runningThread)
         var stops = 0
-        compose.setContent { MaterialTheme { Conversation(state.value, {}, { stops++ }, { _, _, _ -> }) } }
-        compose.onNodeWithContentDescription("Stop").performClick()
-        compose.onNodeWithContentDescription("Stop").assertIsNotEnabled()
-        compose.runOnIdle { assertEquals(1, stops); state.value = state.value.copy(activeRunId = null, canStop = false) }
-        compose.onNodeWithContentDescription("Send message").assertExists()
-        compose.runOnIdle { state.value = state.value.copy(activeRunId = "run2", canStop = true) }
+        val pending = mutableStateOf(emptySet<String>())
+        compose.setContent { MaterialTheme { Conversation(state.value, {}, { stops++ }, { _, _, _ -> }, stopPendingKeys = pending.value) } }
         compose.onNodeWithContentDescription("Stop").assertIsEnabled()
+        compose.runOnIdle { pending.value = setOf(stopKey("env", "fixture")) }
+        compose.onNodeWithContentDescription("Stop").assertIsNotEnabled()
+        compose.runOnIdle { pending.value = setOf(stopKey("env", "other")) }
+        compose.onNodeWithContentDescription("Stop").assertIsEnabled()
+        compose.onNodeWithContentDescription("Stop").performClick()
+        compose.runOnIdle { assertEquals(1, stops) }
     }
 }

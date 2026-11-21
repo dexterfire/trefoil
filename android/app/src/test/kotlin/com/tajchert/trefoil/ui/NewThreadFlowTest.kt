@@ -231,18 +231,25 @@ class NewThreadFlowTest {
     }
 
     @Test fun sendFailedClearsPendingAndKeepsTextEvenWithIdenticalError() {
-        val failed = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 4)
+        val outcomes = androidx.compose.runtime.mutableStateOf<Map<String, SendOutcome>>(emptyMap())
+        val ids = mutableListOf<String>()
         val errored = state.copy(selectedThreadId = "t", error = "boom")
-        compose.setContent { MaterialTheme { Conversation(errored, {}, {}, { _, _, _ -> }, sendFailed = failed) } }
+        compose.setContent {
+            MaterialTheme {
+                Conversation(errored, {}, {}, { _, _, _ -> }, submitMessage = { s, _ -> ids += s.id },
+                    sendOutcomes = outcomes.value, onConsumeSendOutcome = { id -> outcomes.value = outcomes.value - id })
+            }
+        }
         repeat(2) {
             if (it == 0) compose.onNodeWithText("Reply…").performTextInput("hello")
             compose.onNodeWithContentDescription("Send message").performClick()
             compose.onNodeWithText("Waiting for server confirmation…").assertIsDisplayed()
-            compose.runOnIdle { failed.tryEmit(Unit) }
+            compose.runOnIdle { outcomes.value = mapOf(ids.last() to SendOutcome.Failed) }
             compose.waitForIdle()
             compose.onNodeWithText("Waiting for server confirmation…").assertDoesNotExist()
             compose.onNodeWithText("hello").assertExists()
         }
+        compose.runOnIdle { assertEquals(2, ids.distinct().size) }
     }
 
     private val effort = ModelOptionDescriptor.Select(

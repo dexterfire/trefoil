@@ -5,6 +5,10 @@ import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.tajchert.trefoil.core.model.*
+import com.tajchert.trefoil.ui.ComposerSubmission
+import com.tajchert.trefoil.ui.SendOutcome
+import com.tajchert.trefoil.ui.StopGuard
+import com.tajchert.trefoil.ui.stopKey
 import com.tajchert.trefoil.core.session.EnvironmentProbe
 import com.tajchert.trefoil.core.session.EnvironmentTokenRenewer
 import com.tajchert.trefoil.core.session.T3Client
@@ -103,15 +107,23 @@ class TrefoilViewModel internal constructor(application: Application, private va
     /** The client every composer send goes through: it counts the mutation and clears the accepted reply's draft. */
     private val composerClient = ComposerDraftSettlingClient(MutationTrackingClient(client, mutationsInFlight), composerDraftStore)
     private val drafts = ThreadDraftController(viewModelScope, composerClient) { _notice.value = it }
-    private val followUpFailed = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
-    private val _followUpAccepted = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
-    /** Emits when the server accepted a follow-up send (steer or queue), so the composer stops waiting for it to appear in the timeline. */
-    val followUpAccepted: SharedFlow<Unit> = _followUpAccepted.asSharedFlow()
+    private val _sendOutcomes = MutableStateFlow<Map<String, SendOutcome>>(emptyMap())
+    /**
+     * Outcome of every composer submission on an existing thread, by submission id. Kept until the composer that made it
+     * consumes it, so a composer that was closed meanwhile (and restored later) still settles its own send, and only that one.
+     */
+    internal val sendOutcomes: StateFlow<Map<String, SendOutcome>> = _sendOutcomes.asStateFlow()
+    internal fun consumeSendOutcome(id: String) = _sendOutcomes.update { it - id }
+    private val stopGuard = StopGuard(android.os.SystemClock::elapsedRealtime)
+    /** Threads (see [stopKey]) whose Stop is in flight; each is held until the thread has nothing left to stop, or 10 s. */
+    internal val stopPending: StateFlow<Set<String>> = stopGuard.pending
     /** Unsent new conversation; while non-null the UI shows the draft instead of the selected thread. */
     val draft: StateFlow<ThreadDraft?> = drafts.draft
     /** Emits once for every send (draft or thread) that did not deliver; the composer must leave its pending state. */
-    val sendFailed: SharedFlow<Unit> = merge(drafts.sendFailed, followUpFailed).shareIn(viewModelScope, SharingStarted.Eagerly)
+    val sendFailed: SharedFlow<Unit> = drafts.sendFailed
     init {
+        // Stop is done holding once the selected thread has nothing left to stop.
+        viewModelScope.launch { client.state.collect { if (!it.canStop) stopGuard.release(stopKey(it.environment?.id, it.selectedThreadId)) } }
         // A launch whose thread a connected snapshot lists is settled, also one restored from an earlier session.
         viewModelScope.launch {
             client.state.map { state -> state.environment?.id?.takeIf { state.connection == ConnectionStatus.Connected }?.let { it to state.threads.mapTo(HashSet()) { t -> t.id } } }
@@ -561,23 +573,41 @@ class TrefoilViewModel internal constructor(application: Application, private va
      */
     fun send(text: String) = drafts.send(text)
     /**
-     * A reply with an explicit delivery [mode] while the thread works (steer or queue). A draft still launches its
-     * thread. The send goes once through the draft-clearing client with [send]'s failure semantics: a failed or
-     * uncertain outcome keeps the draft, shows a notice and emits [sendFailed]; nothing is ever replayed.
+     * A composer message for an existing thread: [mode] null on an idle thread, else the follow-up delivery. Sent once through
+     * the draft-clearing client (a failed or uncertain outcome keeps the draft and shows a notice; nothing is ever replayed)
+     * and answered in [sendOutcomes] under the submission's id. A submission made for another thread than the selected one
+     * (the user moved on before the tap landed) is refused rather than sent to the wrong conversation.
      */
-    fun send(text: String, mode: FollowUpMode) {
-        if (draft.value != null) return drafts.send(text)
+    internal fun submitMessage(submission: ComposerSubmission, mode: FollowUpMode?) {
         viewModelScope.launch {
             _notice.value = null
-            val failure = try { composerClient.sendMessage(text, mode); null }
+            val current = client.state.value
+            val failure = if (current.environment?.id != submission.environmentId || current.selectedThreadId != submission.threadId) {
+                "The conversation changed before the message was sent. Send it again."
+            } else try {
+                if (mode == null) composerClient.sendMessage(submission.text) else composerClient.sendMessage(submission.text, mode)
+                null
+            }
             catch (e: CancellationException) { coroutineContext.ensureActive(); FOLLOW_UP_UNCERTAIN }
             catch (_: UncertainOutcomeException) { FOLLOW_UP_UNCERTAIN }
             catch (e: Exception) { e.message ?: "Could not send the message." }
-            if (failure != null) { _notice.value = failure; followUpFailed.tryEmit(Unit) } else _followUpAccepted.tryEmit(Unit)
+            if (failure != null) _notice.value = failure
+            _sendOutcomes.update { it + (submission.id to if (failure == null) SendOutcome.Accepted else SendOutcome.Failed) }
         }
     }
-    /** Stops the selected thread (run, background work, subagents) and holds its queue. */
-    fun stopThread() = mutation("Stop outcome is uncertain. Check the thread status before trying again.") { client.stopThread() }
+    /**
+     * Stops the selected thread (run, background work, subagents) and holds its queue. One Stop per thread is in flight at a
+     * time, checked here at dispatch: a second tap, or a re-entered conversation, cannot send another.
+     */
+    fun stopThread() {
+        val current = client.state.value
+        val key = stopKey(current.environment?.id, current.selectedThreadId)
+        if (!stopGuard.tryBegin(key)) return
+        viewModelScope.launch { delay(stopGuard.holdMs); stopGuard.expire(key) }
+        mutation("Stop outcome is uncertain. Check the thread status before trying again.") {
+            try { client.stopThread() } catch (e: Throwable) { stopGuard.release(key); throw e }
+        }
+    }
     fun cancelQueued(runId: String) = mutation("Could not remove the queued message. Check the queue before trying again.") { client.cancelQueuedMessage(runId) }
     fun steerQueued(runId: String) = mutation("Could not send the queued message now. Check the queue before trying again.") { client.steerQueuedMessage(runId) }
     fun resumeQueue() = mutation("Could not resume the queue. Check the thread status before trying again.") { client.resumeQueue() }

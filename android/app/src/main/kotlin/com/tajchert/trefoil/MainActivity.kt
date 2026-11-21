@@ -131,6 +131,8 @@ class MainActivity : ComponentActivity() {
             val environments by model.environments.collectAsStateWithLifecycle()
             val draft by model.draft.collectAsStateWithLifecycle()
             val notice by model.notice.collectAsStateWithLifecycle()
+            val sendOutcomes by model.sendOutcomes.collectAsStateWithLifecycle()
+            val stopPending by model.stopPending.collectAsStateWithLifecycle()
             val working by model.working.collectAsStateWithLifecycle()
             val sshHostKey by model.sshHostKey.collectAsStateWithLifecycle()
             val sshLogin by model.sshLogin.collectAsStateWithLifecycle()
@@ -164,7 +166,10 @@ class MainActivity : ComponentActivity() {
                 onConnect = model::selectMachine,
                 onSelectThread = model::selectThread,
                 onSend = model::send,
-                onSendFollowUp = model::send,
+                onSubmitMessage = model::submitMessage,
+                onConsumeSendOutcome = model::consumeSendOutcome,
+                stopPendingKeys = stopPending,
+                sendOutcomes = sendOutcomes,
                 onInterrupt = model::stopThread,
                 onCancelQueued = model::cancelQueued,
                 onSteerQueued = model::steerQueued,
@@ -198,7 +203,6 @@ class MainActivity : ComponentActivity() {
                 onRespond = model::respond,
                 draft = draft,
                 sendFailed = model.sendFailed,
-                sendAccepted = model.followUpAccepted,
                 onStartDraft = model::startDraft,
                 onCancelDraft = model::cancelDraft,
                 onSetRuntimeMode = model::setRuntimeMode,
