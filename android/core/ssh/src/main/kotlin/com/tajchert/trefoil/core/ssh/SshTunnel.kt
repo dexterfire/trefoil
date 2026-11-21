@@ -31,31 +31,39 @@ private fun validVersion(value: String) = value.matches(Regex("[0-9]+\\.[0-9]+\\
 private fun fingerprint(key: PublicKey) = "SHA256:" + Base64.getEncoder().withoutPadding().encodeToString(MessageDigest.getInstance("SHA-256").digest(Buffer.PlainBuffer().putPublicKey(key).compactData))
 
 /**
- * Process-lifetime, in-memory remote server ports by machine id. Never persisted: the port is ephemeral and only a
- * hint to skip the runtime-file read; every use is re-validated by the descriptor check. An entry is bound to the SSH host
- * key it was learned under and is dropped when a different key is presented.
+ * Script for one exec: print ONE snapshot of the runtime file, then (only when exactly one `"pid": <digits>` is found in
+ * that snapshot, newlines folded) run `kill -0` on it and append a trailer naming the pid it checked. The client parses the
+ * snapshot's top-level pid itself and accepts the verdict only when both agree; otherwise it runs its own `kill -0`.
  */
-internal object RemotePortCache {
-    private class Entry(val fingerprint: String, val port: Int)
-    private const val MAX_ENTRIES = 32
-    private val entries = ConcurrentHashMap<String, Entry>()
-    fun get(environmentId: String, fingerprint: String): Int? {
-        val entry = entries[environmentId] ?: return null
-        if (entry.fingerprint != fingerprint) { entries.remove(environmentId, entry); return null }
-        return entry.port
-    }
-    fun put(environmentId: String, fingerprint: String, port: Int) {
-        if (entries.size >= MAX_ENTRIES && !entries.containsKey(environmentId)) entries.clear()
-        entries[environmentId] = Entry(fingerprint, port)
-    }
-    fun forget(environmentId: String) { entries.remove(environmentId) }
-    fun clear() = entries.clear()
+internal fun runtimeReadScript(quotedFile: String, nonce: String): String =
+    "s=\$(cat -- $quotedFile) || exit 1; printf '%s\\n' \"\$s\"; " +
+    "m=\$(printf '%s' \"\$s\" | tr -d '\\r\\n' | grep -o '\"pid\"[[:space:]]*:[[:space:]]*[0-9][0-9]*'); " +
+    "if [ -n \"\$m\" ] && [ \"\$(printf '%s\\n' \"\$m\" | wc -l | tr -d ' ')\" = 1 ]; then " +
+    "p=\$(printf '%s' \"\$m\" | tr -dc '0-9'); kill -0 \"\$p\" || exit 1; printf 'trefoil-live-$nonce:%s\\n' \"\$p\"; fi"
+
+internal class RuntimeRead(val runtime: JsonObject, val checkedPid: Long?)
+internal fun parseRuntimeRead(output: String, nonce: String): RuntimeRead {
+    val body = output.trimEnd('\n')
+    val split = body.lastIndexOf('\n')
+    val last = body.substring(split + 1)
+    val prefix = "trefoil-live-$nonce:"
+    return if (split >= 0 && last.startsWith(prefix)) RuntimeRead(parse(body.substring(0, split)), last.removePrefix(prefix).toLongOrNull())
+    else RuntimeRead(parse(output), null)
 }
 
-class SshTunnelConnector {
-    companion object {
-        /** Drops the remembered remote port of a machine; call when it is forgotten or its SSH host key is replaced. */
-        @JvmStatic fun forgetMachine(environmentId: String) = RemotePortCache.forget(environmentId)
+/** Reads and decrypts the private key. sshj parses lazily, so this forces the KDF-heavy work to happen here. */
+internal fun interface KeyLoader { fun load(client: SSHClient, input: SshConnectionInput): net.schmizz.sshj.userauth.keyprovider.KeyProvider }
+private val DefaultKeyLoader = KeyLoader { client, input ->
+    client.loadKeys(input.privateKey.trim(), null, input.passphrase.takeIf { it.isNotEmpty() }?.let { PasswordUtils.createOneOff(it.toCharArray()) })
+        .also { it.private; it.public }
+}
+
+class SshTunnelConnector internal constructor(private val keyLoader: KeyLoader) {
+    constructor() : this(DefaultKeyLoader)
+    private companion object {
+        /** Bounded: decryption ignores interruption, so abandoned attempts can occupy at most these threads until they finish. */
+        val keyPool = ThreadPoolExecutor(2, 2, 10, TimeUnit.SECONDS, LinkedBlockingQueue()) { task -> Thread(task, "trefoil-ssh-keys").apply { isDaemon = true } }
+            .apply { allowCoreThreadTimeOut(true) }
     }
     suspend fun open(input: SshConnectionInput, expectedFingerprint: String?): SshTunnel = coroutineScope {
         sshInputValidationError(input)?.let { throw SshConnectionException(it) }
@@ -64,17 +72,26 @@ class SshTunnelConnector {
         }
         val client = SSHClient(DefaultConfig().apply { keepAliveProvider = KeepAliveProvider.KEEP_ALIVE })
         val attempt = async(Dispatchers.IO) {
-            try { connect(client, input, expectedFingerprint) } catch (e: Exception) { currentCoroutineContext().ensureActive(); throw e }
+            val context = currentCoroutineContext()
+            try { connect(client, input, expectedFingerprint) { !context.isActive } } catch (e: Exception) { context.ensureActive(); throw e }
         }
         try { attempt.await() } catch (e: kotlinx.coroutines.CancellationException) {
             withContext(NonCancellable + Dispatchers.IO) { runCatching { client.close() } }
             throw e
         }
     }
-    private fun connect(client: SSHClient, input: SshConnectionInput, pin: String?): SshTunnel {
+    /** Waits for the key in slices so a cancelled connect stops waiting at once; a failed read is reported as an unlock failure. */
+    private fun awaitKeys(task: Future<net.schmizz.sshj.userauth.keyprovider.KeyProvider>, cancelled: () -> Boolean): net.schmizz.sshj.userauth.keyprovider.KeyProvider {
+        while (true) {
+            try { return task.get(50, TimeUnit.MILLISECONDS) }
+            catch (_: TimeoutException) { if (cancelled()) throw kotlinx.coroutines.CancellationException("SSH connect cancelled") }
+            catch (_: ExecutionException) { throw SshConnectionException("Could not unlock the private key. Check its format and passphrase; select the private key, not its .pub file.") }
+        }
+    }
+    private fun connect(client: SSHClient, input: SshConnectionInput, pin: String?, cancelled: () -> Boolean): SshTunnel {
         val presented = AtomicReference<SshHostKey>()
         var tunnel: SshTunnel? = null
-        var keyLoad: FutureTask<net.schmizz.sshj.userauth.keyprovider.KeyProvider>? = null
+        var keyLoad: Future<net.schmizz.sshj.userauth.keyprovider.KeyProvider>? = null
         try {
             if (input.host.isBlank() || input.username.isBlank() || input.port !in 1..65535) throw SshConnectionException("Enter a valid SSH address, port and username.")
             client.addHostKeyVerifier(object : HostKeyVerifier {
@@ -85,36 +102,26 @@ class SshTunnelConnector {
                 override fun findExistingAlgorithms(hostname: String, port: Int): List<String> = emptyList()
             })
             client.connectTimeout = 10_000; client.transport.timeoutMs = 15_000
-            // Parsing/decrypting the key needs no connection, so overlap it with TCP and key exchange. Its result is only
-            // used after connect() returned, i.e. after the host key was verified; a failure surfaces after that too.
-            if (input.authMethod == SshAuthMethod.PrivateKey) {
-                // sshj reads the key lazily on first use; force it here so the (slow, KDF-heavy) decryption happens now, not in auth.
-                keyLoad = FutureTask {
-                    client.loadKeys(input.privateKey.trim(), null, input.passphrase.takeIf { it.isNotEmpty() }?.let { PasswordUtils.createOneOff(it.toCharArray()) })
-                        .also { it.private; it.public }
-                }
-                Thread(keyLoad, "trefoil-ssh-keys").apply { isDaemon = true; start() }
-            }
+            // Decrypting the key needs no connection, so overlap it with TCP and key exchange. Its result is only used after
+            // connect() returned, i.e. after the host key was verified; a failure surfaces after that too.
+            if (input.authMethod == SshAuthMethod.PrivateKey) keyLoad = keyPool.submit(Callable { keyLoader.load(client, input) })
             client.connect(input.host, input.port)
             client.connection.keepAlive.keepAliveInterval = 15
+            val keys = keyLoad?.let { awaitKeys(it, cancelled) }
+            // Nothing is sent to the server once the caller gave up.
+            if (cancelled()) throw kotlinx.coroutines.CancellationException("SSH connect cancelled")
             when (input.authMethod) {
                 SshAuthMethod.Password -> client.authPassword(input.username.trim(), input.password.toCharArray())
-                SshAuthMethod.PrivateKey -> {
-                    val keys = try { keyLoad!!.get() }
-                    catch (_: ExecutionException) { throw SshConnectionException("Could not unlock the private key. Check its format and passphrase; select the private key, not its .pub file.") }
-                    client.authPublickey(input.username.trim(), keys)
-                }
+                SshAuthMethod.PrivateKey -> client.authPublickey(input.username.trim(), keys!!)
             }
             tunnel = SshTunnel(client, presented.get(), input.copy(password = "", privateKey = "", passphrase = ""))
             tunnel.initialize()
             return tunnel
         } catch (e: Exception) {
             tunnel?.close(); runCatching { client.close() }
+            if (e is kotlinx.coroutines.CancellationException) throw e
             val key = presented.get()
-            if (key != null && key.fingerprint != pin) {
-                input.savedEnvironmentId?.let { RemotePortCache.forget(it) }
-                throw SshHostKeyException(key, pin != null)
-            }
+            if (key != null && key.fingerprint != pin) throw SshHostKeyException(key, pin != null)
             if (e is SshConnectionException) throw e
             throw SshConnectionException(when (e) {
                 is net.schmizz.sshj.userauth.UserAuthException -> "SSH authentication failed. The server rejected the username or credentials. Edit your login and try again."
@@ -123,7 +130,7 @@ class SshTunnelConnector {
                 is SocketTimeoutException -> "SSH connection timed out. Check the address, port and network."
                 else -> "SSH connection failed during login or server discovery. Check the address, credentials and running T3 installation."
             })
-        } finally { keyLoad?.cancel(true) }
+        } finally { keyLoad?.let { it.cancel(true); keyPool.remove(it as Runnable) } }
     }
 }
 
@@ -143,50 +150,18 @@ class SshTunnel internal constructor(private val client: SSHClient, val hostKey:
     private var executable: String? = null
     private var pairingAttempted = false
 
-    /** One local listener forwarding to one remote port. [abandoned] stops its worker from closing the whole tunnel. */
-    private class Forward(val socket: ServerSocket, val port: Int) {
-        val abandoned = AtomicBoolean(false)
-        /** True until the descriptor check passed: a failing probe (e.g. a dead remote port) must not close the tunnel. */
-        @Volatile var probing = true
-        @Volatile var ended = false
-        @Volatile var job: Job? = null
-    }
-    private fun openForward(port: Int): Forward {
-        val socket = object : ServerSocket() {
-            override fun accept(): Socket = super.accept().also {
-                forwardedSockets.add(it)
-                if (closed.get()) it.close()
-            }
-        }.apply { bind(InetSocketAddress("127.0.0.1", 0)) }
-        val forward = Forward(socket, port)
-        val portForwarder = synchronized(lifecycleLock) {
-            if (closed.get()) { socket.close(); throw SshConnectionException("SSH tunnel closed during discovery") }
-            listener = socket
-            client.newLocalPortForwarder(Parameters("127.0.0.1", socket.localPort, "127.0.0.1", port), socket).also { forwarder = it }
-        }
-        baseUrl = "http://127.0.0.1:${socket.localPort}/"
-        // SSHJ 0.41's listener exits only when its thread is interrupted. Closing its
-        // socket first makes it catch SocketException forever, even after Job.cancel().
-        forward.job = scope.launch { try { runInterruptible { portForwarder.listen() } } catch (_: Exception) {} finally { forward.ended = true; if (!forward.abandoned.get() && !forward.probing) close() } }
-        return forward
-    }
-    /** The descriptor check passed on [forward]: from now on its listener ending means the tunnel is gone. */
-    private fun settle(forward: Forward) { forward.probing = false; if (forward.ended) close() }
-    private fun abandon(forward: Forward) {
-        forward.abandoned.set(true)
-        forward.job?.cancel()
-        runCatching { forward.socket.close() }
-        forwardedSockets.forEach { runCatching { it.close() } }
-        forwardedSockets.clear()
-    }
+    /** Reads the runtime file and checks its pid is alive in one exec; a missing or unverifiable verdict gets a separate `kill -0`. */
     private fun readRuntimePort(): Int {
         val file = remotePath(input.t3Home.trimEnd('/') + "/userdata/server-runtime.json")
-        // One exec for the runtime file and the liveness check (kill -0 of the pid it names). A stale file fails like a dead pid.
-        val runtime = parse(exec("cat -- $file || exit 1; p=\$(sed -n 's/.*\"pid\"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p' $file | head -n 1); if [ -n \"\$p\" ]; then kill -0 \"\$p\" || exit 1; fi"))
+        val nonce = java.util.UUID.randomUUID().toString()
+        val snapshot = parseRuntimeRead(exec("sh -c " + remoteQuote(runtimeReadScript(file, nonce))), nonce)
+        val runtime = snapshot.runtime
         val port = runtime["port"]?.jsonPrimitive?.intOrNull ?: 0
         val pid = runtime["pid"]?.jsonPrimitive?.longOrNull ?: 0
         val origin = runCatching { URI(runtime.string("origin")) }.getOrNull()
         if (runtime["version"]?.jsonPrimitive?.intOrNull != 1 || pid <= 0 || port !in 1..65535 || origin?.scheme != "http" || origin.host == null || origin.port != port || origin.userInfo != null || origin.query != null || origin.fragment != null || origin.path.orEmpty().trim('/').isNotEmpty() || runtime.string("devUrl").isNotBlank()) throw SshConnectionException("Unsupported T3 runtime metadata. Use a running production T3 server.")
+        // The script's verdict counts only for the very pid of this snapshot's top-level field.
+        if (snapshot.checkedPid != pid) exec("kill -0 $pid")
         serverVersion = runtime.string("serverVersion")
         if (serverVersion.isNotBlank() && !validVersion(serverVersion)) throw SshConnectionException("T3 runtime version is unsupported. Specify a current production installation.")
         return port
@@ -205,27 +180,23 @@ class SshTunnel internal constructor(private val client: SSHClient, val hostKey:
         return resolved
     }
     internal fun initialize() {
-        val hostFingerprint = hostKey.fingerprint
-        // A reconnect of a machine seen in this process skips the runtime-file read: forward to the remembered port and let
-        // the descriptor check (live environment id, protocol, version) decide. Any failure falls back to the full read.
-        val cachedPort = input.savedEnvironmentId?.let { RemotePortCache.get(it, hostFingerprint) }
-        var forward: Forward? = null
-        if (cachedPort != null) {
-            serverVersion = ""
-            val attempt = openForward(cachedPort)
-            try { validateDescriptor(); settle(attempt); forward = attempt }
-            catch (e: Exception) {
-                abandon(attempt)
-                input.savedEnvironmentId?.let { RemotePortCache.forget(it) }
-                if (closed.get()) throw e
+        val port = readRuntimePort()
+        val socket = object : ServerSocket() {
+            override fun accept(): Socket = super.accept().also {
+                forwardedSockets.add(it)
+                if (closed.get()) it.close()
             }
+        }.apply { bind(InetSocketAddress("127.0.0.1", 0)) }
+        synchronized(lifecycleLock) {
+            if (closed.get()) { socket.close(); throw SshConnectionException("SSH tunnel closed during discovery") }
+            listener = socket
+            forwarder = client.newLocalPortForwarder(Parameters("127.0.0.1", socket.localPort, "127.0.0.1", port), socket)
         }
-        if (forward == null) {
-            val port = readRuntimePort()
-            val opened = openForward(port)
-            validateDescriptor(); settle(opened)
-            environmentId?.let { RemotePortCache.put(it, hostFingerprint, port) }
-        }
+        baseUrl = "http://127.0.0.1:${socket.localPort}/"
+        // SSHJ 0.41's listener exits only when its thread is interrupted. Closing its
+        // socket first makes it catch SocketException forever, even after Job.cancel().
+        scope.launch { try { runInterruptible { forwarder!!.listen() } } catch (_: Exception) {} finally { close() } }
+        validateDescriptor()
         // Pairing is the only user of the executable; a saved machine resolves it there. First-time pairing checks it now.
         if (input.savedEnvironmentId == null) resolveExecutable()
         synchronized(lifecycleLock) {

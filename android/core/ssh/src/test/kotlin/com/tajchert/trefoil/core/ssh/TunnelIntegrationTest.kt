@@ -28,6 +28,11 @@ class TunnelIntegrationTest {
         @Volatile var hangDescriptor = false
         val descriptorRequested = CompletableDeferred<Unit>()
         @Volatile var environmentId = "fixture"
+        /** Runtime file body override, and how the one-exec liveness trailer behaves: agree (pid 123), wrong pid, or none. */
+        @Volatile var runtimeBody: String? = null
+        @Volatile var trailer = "agree"
+        @Volatile var killExit = 0
+        val authAttempts = java.util.concurrent.atomic.AtomicInteger()
         val commandStarted = CompletableDeferred<Unit>()
         val commands = Collections.synchronizedList(mutableListOf<String>())
         val http = MockWebServer().apply {
@@ -41,13 +46,17 @@ class TunnelIntegrationTest {
         val ssh = SshServer.setUpDefaultServer().apply {
             host = "127.0.0.1"; port = 0
             keyPairProvider = KeyPairProvider.wrap(KeyPairGenerator.getInstance("EC").apply { initialize(256) }.generateKeyPair())
-            passwordAuthenticator = org.apache.sshd.server.auth.password.PasswordAuthenticator { _, password, _ -> password == "pw" }
-            publickeyAuthenticator = org.apache.sshd.server.auth.pubkey.PublickeyAuthenticator { _, _, _ -> true }
+            passwordAuthenticator = org.apache.sshd.server.auth.password.PasswordAuthenticator { _, password, _ -> authAttempts.incrementAndGet(); password == "pw" }
+            publickeyAuthenticator = org.apache.sshd.server.auth.pubkey.PublickeyAuthenticator { _, _, _ -> authAttempts.incrementAndGet(); true }
             forwardingFilter = AcceptAllForwardingFilter.INSTANCE
             commandFactory = CommandFactory { _, command ->
                 commands.add(command)
                 val output = when {
-                    command.startsWith("cat ") -> """{"version":1,"pid":123,"port":${http.port},"origin":"http://192.0.2.1:${http.port}","startedAt":"2026-11-06T00:00:00Z"${if (omitRuntimeVersion) "" else ",\"serverVersion\":\"0.1.0\""}$runtimeExtra}"""
+                    command.contains("server-runtime.json") -> {
+                        val body = runtimeBody ?: """{"version":1,"pid":123,"port":${http.port},"origin":"http://192.0.2.1:${http.port}","startedAt":"2026-11-06T00:00:00Z"${if (omitRuntimeVersion) "" else ",\"serverVersion\":\"0.1.0\""}$runtimeExtra}"""
+                        val nonce = Regex("trefoil-live-([0-9a-f-]{36}):").find(command)?.groupValues?.get(1)
+                        body + "\n" + when { nonce == null || trailer == "none" -> ""; trailer == "wrong" -> "trefoil-live-$nonce:999\n"; else -> "trefoil-live-$nonce:123\n" }
+                    }
                     command.startsWith("kill ") -> ""
                     command.startsWith("if test") -> "runtime"
                     command.endsWith("--version") -> cliVersion
@@ -56,13 +65,14 @@ class TunnelIntegrationTest {
                 }
                 object : Command {
                     lateinit var out: OutputStream; lateinit var exit: ExitCallback
+                    val status = if (command.startsWith("kill ")) killExit else 0
                     override fun setInputStream(input: InputStream) {}
                     override fun setOutputStream(output: OutputStream) { out = output }
                     override fun setErrorStream(error: OutputStream) {}
                     override fun setExitCallback(callback: ExitCallback) { exit = callback }
                     override fun start(channel: ChannelSession, environment: Environment) {
-                        if (hangDiscovery && command.startsWith("cat ")) { commandStarted.complete(Unit); return }
-                        out.write(output.toByteArray()); out.flush(); exit.onExit(0)
+                        if (hangDiscovery && command.contains("server-runtime.json")) { commandStarted.complete(Unit); return }
+                        out.write(output.toByteArray()); out.flush(); exit.onExit(status)
                     }
                     override fun destroy(channel: ChannelSession) {}
                 }
