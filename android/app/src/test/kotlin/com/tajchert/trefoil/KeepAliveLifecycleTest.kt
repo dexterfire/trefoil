@@ -161,8 +161,13 @@ class KeepAliveLifecycleTest {
         dropConnection(); advance(30_000)
         assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
         assertTrue(model.keepAliveActive.value)
-        model.onDefaultNetwork(2); advance(0)
-        assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+        // The held lock keeps the reconnect in Testing, however fast the fixture host fails to resolve.
+        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
+        assertTrue(mutex.tryLock())
+        try {
+            model.onDefaultNetwork(2); advance(0)
+            assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+        } finally { mutex.unlock(); advance(0) }
     }
 
     @Test fun settingOffWhileBackgroundedRestoresTheGraceDisconnect() {
