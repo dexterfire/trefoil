@@ -2,6 +2,7 @@ package com.tajchert.trefoil.ui
 
 import com.tajchert.trefoil.core.model.ClientState
 import com.tajchert.trefoil.core.model.FollowUpMode
+import com.tajchert.trefoil.core.model.threadBusy
 
 /** What the composer's primary (trailing) button does for the current text and thread state. */
 internal enum class ComposerPrimary(val description: String) {
@@ -14,19 +15,6 @@ internal enum class ComposerPrimary(val description: String) {
 internal data class ComposerButton(val action: ComposerPrimary, val enabled: Boolean) {
     /** Long-press offers both delivery modes, only while a message waiting in the composer can be sent as a follow-up. */
     val offersAlternate: Boolean get() = action == ComposerPrimary.Steer || action == ComposerPrimary.Queue
-}
-
-private val ACTIVE_RUN_STATUSES = setOf("preparing", "starting", "running", "waiting")
-private val SETUP_STATUSES = setOf("preparing", "starting")
-
-/**
- * The selected thread has work a message must queue behind. Mirrors the session's `messageDispatchMode`: an active run,
- * any run in an active status, or a shell row whose run is still preparing/starting (a projection can lag behind it).
- */
-internal val ClientState.threadBusy: Boolean get() {
-    val shell = threads.firstOrNull { it.id == selectedThreadId }
-    return activeRunId != null || runs.any { it.status in ACTIVE_RUN_STATUSES } ||
-        shell?.activityRunStatus in SETUP_STATUSES || shell?.status in SETUP_STATUSES
 }
 
 /** The thread is busy, so a message is a follow-up. A new-thread draft never is. */
@@ -98,5 +86,3 @@ internal fun sendAccepted(pending: String, state: ClientState, idsAtSend: Collec
     return state.messages.any { it.role == "user" && it.text.trim() == text && it.id !in idsAtSend } ||
         state.queuedMessages.any { it.text.trim() == text && it.messageId !in idsAtSend }
 }
-
-internal val ClientState.queuePaused: Boolean get() = queueHeld || queuedMessages.any { it.held }

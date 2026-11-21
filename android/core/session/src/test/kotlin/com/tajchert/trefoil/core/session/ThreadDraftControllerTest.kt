@@ -32,7 +32,6 @@ class ThreadDraftControllerTest {
         override suspend fun pair(pairingUrl: String, name: String, allowInsecureHttp: Boolean) = error("unused")
         override suspend fun connect(environment: SavedEnvironment) = error("unused")
         override suspend fun disconnect() = Unit
-        override suspend fun interruptRun() = Unit
         override suspend fun respond(requestId: String, decision: String, answers: Map<String, List<String>>) = Unit
         override suspend fun reconnect() = Unit
         override fun close() = Unit

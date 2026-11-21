@@ -844,6 +844,7 @@ class T3Client(
             while (threadProjections.size > 12) threadProjections.remove(threadProjections.keys.first())
         }
         val items = presentationItems(value)
+        val promotion = steerPromotion(value)
         val requests = value.objects("runtimeRequests").filter { it.string("status") == "pending" }.map { request ->
             val item = items.firstOrNull { it.string("requestId") == request.string("id") } ?: JsonObject(emptyMap())
             val questions = item.objects("questions").map { q -> Question(q.string("id"), q.string("question"), q.objects("options").map { it.string("label") }, q["multiSelect"]?.jsonPrimitive?.booleanOrNull == true, q["required"]?.jsonPrimitive?.booleanOrNull != false) }
@@ -854,7 +855,7 @@ class T3Client(
             RuntimeRequest(request.string("id"), item.string("prompt").ifBlank { kind }, if (supported) item.string("reason") else "Respond using another T3 client: unsupported or non-resumable request", questions, supported)
         }
         // Highest ordinal; the stable sort keeps wire order for runs without one.
-        val active = value.objects("runs").filter { it.string("status") in setOf("preparing", "running", "starting", "waiting") }
+        val active = value.objects("runs").filter { it.string("status") in ACTIVE_RUN_STATUSES }
             .sortedBy { (it["ordinal"] as? JsonPrimitive)?.intOrNull ?: Int.MIN_VALUE }.lastOrNull()?.string("id")
         val thread = value.obj("thread")
         val agents = subagents(value)
@@ -865,8 +866,8 @@ class T3Client(
             activities = toolActivities(value), requests = requests, activeRunId = active,
             runs = conversationRuns(value), attempts = runAttempts(value), subagents = agents,
             backgroundWork = background,
-            queuedMessages = queuedMessages(value), queueHeld = queueHeld(value),
-            canSteer = live && canSteer(value), canStop = live && canStopThread(active, background, agents),
+            queuedMessages = queuedMessages(value, promotion), queueHeld = queueHeld(value),
+            canSteer = live && canSteer(value, promotion, items), canStop = live && canStopThread(active, background, agents),
             selectedRuntimeMode = RuntimeMode.fromWire(thread.string("runtimeMode")),
             selectedModel = selectedModel(thread["modelSelection"] as? JsonObject, it.models),
             selectedModelOptions = modelOptionValues(thread.obj("modelSelection")["options"]),
@@ -1608,7 +1609,6 @@ class T3Client(
         }
         failure?.let { throw it }
     }
-    override suspend fun interruptRun() { dispatch("run.interrupt", "interrupt") { buildJsonObject { put("runId", state.value.activeRunId ?: error("No active run")) } } }
     override suspend fun respond(requestId: String, decision: String, answers: Map<String, List<String>>): Unit = mutating {
         awaitFreshThread()
         requireWrite()

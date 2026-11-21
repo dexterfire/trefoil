@@ -53,7 +53,7 @@ class TrefoilViewModelLifecycleTest {
 
     @Test fun aSecondQueueTapDuringAnInFlightOperationSendsNothing() {
         T3Client::class.java.getDeclaredField("authorized").apply { isAccessible = true }.setBoolean(client, true)
-        mutable.value = mutable.value.copy(queueHeld = true, queuedMessages = listOf(QueuedMessage("run-q", "msg-q", "later", held = true, canSendNow = true)))
+        mutable.value = mutable.value.copy(queueHeld = true, queuedMessages = listOf(QueuedMessage("run-q", "msg-q", "later", canSendNow = true)))
         model.resumeQueue()
         model.resumeQueue()
         model.steerQueued("run-q")

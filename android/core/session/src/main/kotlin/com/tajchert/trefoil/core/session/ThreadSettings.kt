@@ -3,6 +3,7 @@ package com.tajchert.trefoil.core.session
 import com.tajchert.trefoil.core.model.ClientState
 import com.tajchert.trefoil.core.model.ModelOption
 import com.tajchert.trefoil.core.model.RuntimeMode
+import com.tajchert.trefoil.core.model.threadBusy
 import com.tajchert.trefoil.core.protocol.obj
 import com.tajchert.trefoil.core.protocol.objects
 import com.tajchert.trefoil.core.protocol.string
@@ -16,15 +17,14 @@ import kotlinx.serialization.json.contentOrNull
 // apps/mobile/src/state/thread-provider-switching.ts, apps/mobile/src/state/use-thread-composer-state.ts
 // and apps/mobile/src/features/threads/thread-settings-options.ts.
 
-private val ACTIVE_RUN_STATUSES = setOf("preparing", "starting", "running", "waiting")
-private val SETUP_STATUSES = setOf("preparing", "starting")
+internal val ACTIVE_RUN_STATUSES = setOf("preparing", "starting", "running", "waiting")
 
 private fun JsonObject.text(key: String): String? = (get(key) as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotEmpty() }
 
 /** T3 `resolveThreadProviderSession`: the provider session the thread is attached to, if any. */
 internal fun providerSession(projection: JsonObject): JsonObject? {
     val thread = projection.obj("thread")
-    val activeRun = projection.objects("runs").lastOrNull { it.string("status") in ACTIVE_RUN_STATUSES }
+    val activeRun = activeThreadRun(projection)
     val providerThreadId = activeRun?.text("providerThreadId") ?: thread.text("activeProviderThreadId")
     val providerThreads = projection.objects("providerThreads")
     val attached = providerThreadId?.let { id -> providerThreads.firstOrNull { it.string("id") == id } }
@@ -64,10 +64,7 @@ internal fun providerLocked(projection: JsonObject): Boolean {
  * preparing or starting always queues; the shell row covers a projection that lags behind it.
  */
 internal fun messageDispatchMode(state: ClientState): String {
-    val shell = state.threads.firstOrNull { it.id == state.selectedThreadId }
-    val busy = state.activeRunId != null || state.runs.any { it.status in ACTIVE_RUN_STATUSES } ||
-        shell?.activityRunStatus in SETUP_STATUSES || shell?.status in SETUP_STATUSES
-    return if (busy) "queue_after_active" else "start_immediately"
+    return if (state.threadBusy) "queue_after_active" else "start_immediately"
 }
 
 /** Provider `supportedRuntimeModes`; unknown literals are skipped (T3 `ForwardCompatibleArray`). */

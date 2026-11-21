@@ -24,8 +24,8 @@ private val SETTLED_FOR_BACKGROUND_WAIT_RUN_STATUSES = setOf("cancelled", "compl
 internal const val PULL_REQUEST_WATCH_TASK_ID = "pull-request-watch:"
 
 private fun JsonObject.trimmed(key: String): String? = (get(key) as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim()?.takeIf { it.isNotEmpty() }
-private fun JsonObject.flag(key: String): Boolean? = (get(key) as? JsonPrimitive)?.booleanOrNull
-private fun JsonObject.runOrdinal(): Int = (get("ordinal") as? JsonPrimitive)?.intOrNull ?: 0
+internal fun JsonObject.flag(key: String): Boolean? = (get(key) as? JsonPrimitive)?.booleanOrNull
+internal fun JsonObject.runOrdinal(): Int = (get("ordinal") as? JsonPrimitive)?.intOrNull ?: 0
 private fun instant(value: String): Long? = runCatching { Instant.parse(value).toEpochMilli() }.getOrNull()
 private fun isWorkActive(status: String) = status == "pending" || status == "running" || status == "waiting"
 

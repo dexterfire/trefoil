@@ -519,7 +519,7 @@ class ConversationUiTest {
     }
 
     @Test fun queueControlsAreDisabledWhileAQueueOperationIsInFlight() {
-        val state = runningThread.copy(canSteer = true, queueHeld = true, queuedMessages = listOf(QueuedMessage("q1", "m1", "First", held = true, canSendNow = true)))
+        val state = runningThread.copy(canSteer = true, queueHeld = true, queuedMessages = listOf(QueuedMessage("q1", "m1", "First", canSendNow = true)))
         val busy = mutableStateOf(emptySet<String>())
         compose.setContent { MaterialTheme { Conversation(state, {}, {}, { _, _, _ -> }, queueOperationKeys = busy.value) } }
         compose.onNodeWithText("Resume").assertIsEnabled()
@@ -573,7 +573,7 @@ class ConversationUiTest {
 
     @Test fun queuedStripRoutesSendNowAndRemoveAndResume() {
         val steered = mutableListOf<String>(); val cancelled = mutableListOf<String>(); var resumed = 0
-        val state = runningThread.copy(canSteer = true, queueHeld = true, queuedMessages = listOf(QueuedMessage("q1", "m1", "First", held = true, canSendNow = true), QueuedMessage("q2", "m2", "Second", held = true, canSendNow = true)))
+        val state = runningThread.copy(canSteer = true, queueHeld = true, queuedMessages = listOf(QueuedMessage("q1", "m1", "First", canSendNow = true), QueuedMessage("q2", "m2", "Second", canSendNow = true)))
         compose.setContent { MaterialTheme { Conversation(state, {}, {}, { _, _, _ -> }, onSteerQueued = { steered += it }, onCancelQueued = { cancelled += it }, onResumeQueue = { resumed++ }) } }
         compose.onNodeWithText("Queue paused").assertExists()
         compose.onNodeWithText("Resume").performClick()
@@ -626,7 +626,7 @@ class ConversationUiTest {
     }
 
     @Test fun queueActionsFollowTheRawWriteStateNotTheGracePeriod() {
-        val live = runningThread.copy(canSteer = true, canRead = true, canWriteThreads = true, queueHeld = true, queuedMessages = listOf(QueuedMessage("q1", "m1", "First", held = true, canSendNow = true)))
+        val live = runningThread.copy(canSteer = true, canRead = true, canWriteThreads = true, queueHeld = true, queuedMessages = listOf(QueuedMessage("q1", "m1", "First", canSendNow = true)))
         val state = mutableStateOf(live)
         compose.mainClock.autoAdvance = false
         compose.setContent { MaterialTheme { Conversation(state.value, {}, {}, { _, _, _ -> }) } }

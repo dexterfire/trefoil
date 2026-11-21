@@ -19,14 +19,13 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.intOrNull
 
-private val ACTIVE_RUN_STATUSES = setOf("preparing", "starting", "running", "waiting")
 private val TERMINAL_ITEM_STATUSES = setOf("completed", "failed", "interrupted", "cancelled")
 private const val COMPACT_COMMAND = "/compact"
+private val COMPACT_PREFIX = Regex("^/compact(?:\\s|$)", RegexOption.IGNORE_CASE)
+private val SETUP_RUN_STATUSES = setOf("preparing", "starting")
 internal const val QUEUED_MESSAGE_FALLBACK = "Queued message"
 
-private fun JsonObject.flag(key: String): Boolean? = (get(key) as? JsonPrimitive)?.booleanOrNull
 private fun JsonObject.present(key: String): Boolean = get(key).let { it != null && it != JsonNull }
-private fun JsonObject.runOrdinal(): Int = (get("ordinal") as? JsonPrimitive)?.intOrNull ?: 0
 private fun JsonObject.noAttachments(): Boolean = (get("attachments") as? JsonArray).isNullOrEmpty()
 
 /** T3 `resolveActiveThreadRun`: the last run (wire order) still preparing, starting, running or waiting. */
@@ -38,7 +37,7 @@ internal fun activeThreadRun(projection: JsonObject): JsonObject? =
  * and notification wakes, sorted by `queuePosition ?? ordinal` then `ordinal`. The text is the queued message's (a guest
  * message shows the guest's words), else [QUEUED_MESSAGE_FALLBACK]. [QueuedMessage.canSendNow] is [canSendQueuedNow].
  */
-internal fun queuedMessages(projection: JsonObject): List<QueuedMessage> {
+internal fun queuedMessages(projection: JsonObject, promotion: SteerPromotion? = steerPromotion(projection)): List<QueuedMessage> {
     val runs = projection.objects("runs").filter { it.string("status") == "queued" }
     if (runs.isEmpty()) return emptyList()
     val messages = projection.objects("messages")
@@ -50,8 +49,7 @@ internal fun queuedMessages(projection: JsonObject): List<QueuedMessage> {
             val message = messages.firstOrNull { it.string("id") == messageId }
             val guest = message?.obj("context")?.obj("guest")?.get("text") as? JsonPrimitive
             val text = guest?.takeIf { it.isString }?.content ?: (message?.get("text") as? JsonPrimitive)?.takeIf { it.isString }?.content
-            QueuedMessage(run.string("id"), messageId, text ?: QUEUED_MESSAGE_FALLBACK, held = run.flag("queueHeld") == true,
-                canSendNow = canSendQueuedNow(projection, run))
+            QueuedMessage(run.string("id"), messageId, text ?: QUEUED_MESSAGE_FALLBACK, canSendNow = canSendQueuedNow(projection, run, promotion))
         }
 }
 
@@ -60,12 +58,11 @@ internal fun queuedMessages(projection: JsonObject): List<QueuedMessage> {
  * for `queued-run.start`; with one, `canPromoteToSteer`, and the server's `queued-message.promote-to-steer` rule that a
  * `freshContext` message cannot steer unless the target is a `/compact` turn (which the server skips instead).
  */
-internal fun canSendQueuedNow(projection: JsonObject, run: JsonObject): Boolean {
-    if (activeThreadRun(projection) == null) {
+internal fun canSendQueuedNow(projection: JsonObject, run: JsonObject, promotion: SteerPromotion? = steerPromotion(projection)): Boolean {
+    if (promotion == null) {
         val thread = projection.obj("thread")
         return !thread.present("archivedAt") && !thread.present("deletedAt")
     }
-    val promotion = steerPromotion(projection) ?: return false
     return promotion.allowed && (promotion.skipsCompaction || run.flag("freshContext") != true)
 }
 
@@ -74,16 +71,18 @@ internal fun queueHeld(projection: JsonObject): Boolean =
     projection.objects("runs").any { it.string("status") == "queued" && it.flag("queueHeld") == true }
 
 private fun isCompactionCommand(message: JsonObject): Boolean = message.string("role") == "user" &&
-    message.string("text").trim().lowercase() == COMPACT_COMMAND && message.noAttachments()
+    isCompactText(message.string("text")) && message.noAttachments()
 
-private class SteerPromotion(val activeRun: JsonObject, val turns: JsonObject?, val allowed: Boolean, val skipsCompaction: Boolean)
+private fun isCompactText(text: String): Boolean = text.trim().lowercase() == COMPACT_COMMAND
+
+internal class SteerPromotion(val activeRun: JsonObject, val turns: JsonObject?, val allowed: Boolean, val skipsCompaction: Boolean)
 
 /**
  * T3 `canPromoteToSteer` for the active run (null when none): the provider session's `capabilities.turns`
  * `supportsActiveSteering` / `supportsSteeringByInterruptRestart`, a setup-phase run with no known session, or a
  * `/compact` turn (`promoteSkipsCompaction`).
  */
-private fun steerPromotion(projection: JsonObject): SteerPromotion? {
+internal fun steerPromotion(projection: JsonObject): SteerPromotion? {
     val activeRun = activeThreadRun(projection) ?: return null
     val turns = providerSession(projection)?.obj("capabilities")?.get("turns") as? JsonObject
     val activeMessage = projection.objects("messages").firstOrNull { it.string("id") == activeRun.string("userMessageId") }
@@ -93,7 +92,7 @@ private fun steerPromotion(projection: JsonObject): SteerPromotion? {
         projection.objects("providerTurns").any { it.string("runAttemptId") == attemptId && it.string("status") == "running" }
     val steers = turns?.flag("supportsActiveSteering") == true || turns?.flag("supportsSteeringByInterruptRestart") == true
     val allowed = skipsCompaction ||
-        (activeRun.string("status") in setOf("preparing", "starting") && (turns == null || steers)) ||
+        (activeRun.string("status") in SETUP_RUN_STATUSES && (turns == null || steers)) ||
         (steerableTurn && steers)
     return SteerPromotion(activeRun, turns, allowed, skipsCompaction)
 }
@@ -102,23 +101,23 @@ private fun steerPromotion(projection: JsonObject): SteerPromotion? {
  * T3 mobile `canSteerActiveTurn` (the composer's Steer): [steerPromotion] allowed and not blocked by a running
  * `/compact` or compaction ([compactionBlocksSteering]).
  */
-internal fun canSteer(projection: JsonObject): Boolean {
-    val promotion = steerPromotion(projection)?.takeIf { it.allowed } ?: return false
-    return !compactionBlocksSteering(projection, promotion.activeRun, promotion.turns?.flag("activeSteeringDuringCompaction") == true)
+internal fun canSteer(projection: JsonObject, steerPromotion: SteerPromotion? = steerPromotion(projection), items: List<JsonObject>? = null): Boolean {
+    val promotion = steerPromotion?.takeIf { it.allowed } ?: return false
+    return !compactionBlocksSteering(projection, items ?: presentationItems(projection), promotion.activeRun, promotion.turns?.flag("activeSteeringDuringCompaction") == true)
 }
 
 /** T3 `compactionBlocksSteering` with mobile's `compactCommandIsActive` / `compactionRunning` for [activeRun]. */
-private fun compactionBlocksSteering(projection: JsonObject, activeRun: JsonObject, steersDuringCompaction: Boolean): Boolean {
+private fun compactionBlocksSteering(projection: JsonObject, allItems: List<JsonObject>, activeRun: JsonObject, steersDuringCompaction: Boolean): Boolean {
     val runId = activeRun.string("id")
-    val items = presentationItems(projection).filter { it.string("runId") == runId }
+    val items = allItems.filter { it.string("runId") == runId }
     val compactCommandIsActive = items.lastOrNull {
-        it.string("type") == "user_message" && it.string("text").trim().lowercase() == COMPACT_COMMAND && it.noAttachments()
+        it.string("type") == "user_message" && isCompactText(it.string("text")) && it.noAttachments()
     } != null && items.none { it.string("type") == "compaction" && it.string("status") in TERMINAL_ITEM_STATUSES }
     if (compactCommandIsActive) return true
     if (items.none { it.string("type") == "compaction" && it.string("status") == "running" }) return false
     if (!steersDuringCompaction) return true
     val message = projection.objects("messages").firstOrNull { it.string("id") == activeRun.string("userMessageId") }
-    return message != null && message.noAttachments() && Regex("^/compact(?:\\s|$)", RegexOption.IGNORE_CASE).containsMatchIn(message.string("text").trim())
+    return message != null && message.noAttachments() && COMPACT_PREFIX.containsMatchIn(message.string("text").trim())
 }
 
 /**

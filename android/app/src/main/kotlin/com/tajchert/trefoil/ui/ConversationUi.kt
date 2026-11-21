@@ -386,7 +386,7 @@ internal fun ConversationComposer(
     Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 16.dp, top = 4.dp)) {
         if (!state.canWrite) Text("Read only · reconnect to continue", Modifier.padding(start = 6.dp, bottom = 6.dp), style = noticeStyle)
         if (waiting) Text("Waiting for server confirmation…", Modifier.padding(start = 6.dp, bottom = 6.dp), style = noticeStyle)
-        if (draft == null && (state.queuedMessages.isNotEmpty() || state.queuePaused)) QueuedMessagesStrip(state, canWriteNow && !queueBusy, onCancelQueued, onSteerQueued, onResumeQueue)
+        if (draft == null && (state.queuedMessages.isNotEmpty() || state.queueHeld)) QueuedMessagesStrip(state, canWriteNow && !queueBusy, onCancelQueued, onSteerQueued, onResumeQueue)
         Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = c.s1, contentColor = c.text, border = BorderStroke(1.dp, c.line)) {
             Column {
                 BasicTextField(
@@ -459,7 +459,7 @@ internal fun QueuedMessagesStrip(state: ClientState, canWrite: Boolean, onCancel
     val c = Tf.colors
     Surface(Modifier.fillMaxWidth().padding(bottom = 8.dp).testTag("queued-strip"), shape = RoundedCornerShape(16.dp), color = c.s2, contentColor = c.text, border = BorderStroke(1.dp, c.line)) {
         Column(Modifier.padding(vertical = 4.dp)) {
-            if (state.queuePaused) Row(Modifier.fillMaxWidth().padding(start = 14.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (state.queueHeld) Row(Modifier.fillMaxWidth().padding(start = 14.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Queue paused", Modifier.weight(1f), style = TrefoilType.meta, color = c.amber)
                 TextButton(onClick = onResume, enabled = canWrite) { Text("Resume") }
             }

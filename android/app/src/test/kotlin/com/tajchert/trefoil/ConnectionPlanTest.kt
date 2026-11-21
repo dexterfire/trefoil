@@ -225,7 +225,6 @@ class ConnectionPlanTest {
         override suspend fun disconnect() = error("unused")
         override suspend fun selectThread(threadId: String) = error("unused")
         override suspend fun sendMessage(text: String) = onSend()
-        override suspend fun interruptRun() = error("unused")
         override suspend fun respond(requestId: String, decision: String, answers: Map<String, List<String>>) = error("unused")
         override suspend fun reconnect() = error("unused")
         override fun close() = Unit

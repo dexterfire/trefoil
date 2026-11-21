@@ -35,7 +35,7 @@ class ThreadQueueProjectionTest {
         {"id":"q-note","status":"queued","ordinal":5,"userMessageId":"m-note"},
         {"id":"q-lost","status":"queued","ordinal":6,"userMessageId":"m-gone"}]}""")
     assertEquals(listOf(
-      QueuedMessage("q-b", "m-b", "guest words", held = true, canSendNow = true),
+      QueuedMessage("q-b", "m-b", "guest words", canSendNow = true),
       QueuedMessage("q-a", "m-a", "first", canSendNow = true),
       QueuedMessage("q-lost", "m-gone", QUEUED_MESSAGE_FALLBACK, canSendNow = true),
     ), queuedMessages(value))

@@ -20,6 +20,7 @@ import com.tajchert.trefoil.core.session.ComposerDraftDiscard
 import com.tajchert.trefoil.core.session.ComposerDraftKey
 import com.tajchert.trefoil.core.session.ComposerDraftStore
 import com.tajchert.trefoil.core.session.ThreadDraftController
+import com.tajchert.trefoil.core.session.UNCERTAIN_MESSAGE
 import com.tajchert.trefoil.core.ssh.SshHostKeyException
 import com.tajchert.trefoil.core.ssh.SshConnectionException
 import com.tajchert.trefoil.core.ssh.SshTunnel
@@ -134,8 +135,13 @@ class TrefoilViewModel internal constructor(application: Application, private va
     val sendFailed: SharedFlow<Unit> = drafts.sendFailed
     init {
         // Stop is done holding once the selected thread has nothing left to stop.
-        viewModelScope.launch { client.state.collect { if (!it.canStop) stopGuard.release(stopKey(it.environment?.id, it.selectedThreadId)) } }
-        viewModelScope.launch { client.state.collect { queueGuard.onState(stopKey(it.environment?.id, it.selectedThreadId), it.queueSignature()) } }
+        viewModelScope.launch {
+            client.state.collect {
+                val key = stopKey(it.environment?.id, it.selectedThreadId)
+                if (!it.canStop) stopGuard.release(key)
+                queueGuard.onState(key) { it.queueSignature() }
+            }
+        }
         // A launch whose thread a connected snapshot lists is settled, also one restored from an earlier session.
         viewModelScope.launch {
             client.state.map { state -> state.environment?.id?.takeIf { state.connection == ConnectionStatus.Connected }?.let { it to state.threads.mapTo(HashSet()) { t -> t.id } } }
@@ -601,8 +607,8 @@ class TrefoilViewModel internal constructor(application: Application, private va
                 if (mode == null) composerClient.sendMessage(submission.text) else composerClient.sendMessage(submission.text, mode)
                 null
             }
-            catch (e: CancellationException) { coroutineContext.ensureActive(); FOLLOW_UP_UNCERTAIN }
-            catch (_: UncertainOutcomeException) { FOLLOW_UP_UNCERTAIN }
+            catch (e: CancellationException) { coroutineContext.ensureActive(); UNCERTAIN_MESSAGE }
+            catch (_: UncertainOutcomeException) { UNCERTAIN_MESSAGE }
             catch (e: Exception) { e.message ?: "Could not send the message." }
             if (failure != null) _notice.value = failure
             // Outcome first, so there is never a moment when the id is in neither set.
@@ -1132,7 +1138,6 @@ class TrefoilViewModel internal constructor(application: Application, private va
     private companion object {
         const val LAST_ENVIRONMENT = "lastEnvironmentId"
         const val KEEP_CONNECTED = "keepConnectedInBackground"
-        const val FOLLOW_UP_UNCERTAIN = "Message outcome is uncertain. Check the conversation before sending again."
         const val SSH_FAILURE = "SSH connection failed. Check the address, login and running T3 server."
     }
 }

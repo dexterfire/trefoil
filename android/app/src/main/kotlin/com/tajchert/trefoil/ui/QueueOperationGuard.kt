@@ -4,7 +4,7 @@ import com.tajchert.trefoil.core.model.ClientState
 import kotlinx.coroutines.flow.StateFlow
 
 /** What a queue command changes: the rows waiting, and whether the queue is held. */
-internal fun ClientState.queueSignature(): List<Any> = listOf(queueHeld, queuedMessages.map { Triple(it.runId, it.held, it.canSendNow) })
+internal fun ClientState.queueSignature(): List<Any> = listOf(queueHeld, queuedMessages.map { Pair(it.runId, it.canSendNow) })
 
 /**
  * One queue operation (Resume, Send now, Remove) in flight per thread. The guard is taken synchronously at the tap, so a
@@ -34,12 +34,12 @@ internal class QueueOperationGuard(private val guard: StopGuard) {
     fun completed(key: String, token: Long, signature: List<Any>?) {
         if (tokens[key] != token) return
         completed += key
-        if (signature != null) onState(key, signature)
+        if (signature != null) onState(key) { signature }
     }
     /** The command failed or its outcome is uncertain: nothing to wait for. */
     fun failed(key: String, token: Long) { if (tokens[key] == token) release(key) }
     /** Feed every state: releases a completed operation once the queue differs from what the tap saw. */
-    fun onState(key: String, signature: List<Any>) { if (key in completed && baseline[key] != signature) release(key) }
+    fun onState(key: String, signature: () -> List<Any>) { if (key in completed && baseline[key] != signature()) release(key) }
     fun expire(key: String, token: Long) {
         if (tokens[key] != token) return
         guard.expire(key); if (key !in guard.pending.value) forget(key)

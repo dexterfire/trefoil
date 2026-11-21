@@ -145,7 +145,7 @@ object ConversationFixtures {
 
     /** A Stop held the queue: it waits for Resume. */
     fun heldQueueState(): ClientState = chatState().copy(queueHeld = true, queuedMessages = listOf(
-        QueuedMessage("queued-1", "qm-1", "Also bump the version and update the changelog before you finish.", held = true, canSendNow = true)))
+        QueuedMessage("queued-1", "qm-1", "Also bump the version and update the changelog before you finish.", canSendNow = true)))
 
     /** Six follow-ups: the strip caps at about three rows and scrolls, so the editor and Stop stay visible. */
     fun longQueueState(): ClientState = steerableState().copy(queuedMessages = listOf(

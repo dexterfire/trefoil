@@ -211,7 +211,7 @@ class FollowUpQueueTest {
   }
 
   @Test fun idleSendNowStartsTheQueuedRunAndHeldQueueResumes() = connected(idle(held = true)) {
-    assertTrue(client.state.value.queueHeld); assertEquals(listOf(true), client.state.value.queuedMessages.map { it.held })
+    assertTrue(client.state.value.queueHeld)
     client.steerQueuedMessage("q-1")
     client.resumeQueue()
     val (start, resume) = sent()

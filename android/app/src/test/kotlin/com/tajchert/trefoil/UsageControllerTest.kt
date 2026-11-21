@@ -19,7 +19,6 @@ class UsageControllerTest {
         override suspend fun disconnect() {}
         override suspend fun selectThread(threadId: String) {}
         override suspend fun sendMessage(text: String) {}
-        override suspend fun interruptRun() {}
         override suspend fun respond(requestId: String, decision: String, answers: Map<String, List<String>>) {}
         override suspend fun reconnect() {}
         override fun close() {}

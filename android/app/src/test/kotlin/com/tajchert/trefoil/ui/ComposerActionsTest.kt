@@ -82,12 +82,6 @@ class ComposerActionsTest {
         assertFalse(sendAccepted("hi", running.copy(messages = listOf(ConversationMessage("a", "assistant", "hi"))), emptyList()))
     }
 
-    @Test fun queuePausedFollowsTheHeldFlagOrAHeldRow() {
-        assertFalse(idle.queuePaused)
-        assertTrue(idle.copy(queueHeld = true).queuePaused)
-        assertTrue(idle.copy(queuedMessages = listOf(QueuedMessage("q", "m", "t", held = true))).queuePaused)
-    }
-
     @Test fun threadBusyMirrorsTheSessionsQueueableRule() {
         assertFalse(idle.threadBusy)
         assertTrue(running.threadBusy)

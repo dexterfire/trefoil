@@ -18,18 +18,18 @@ class QueueOperationGuardTest {
 
     @Test fun theGuardWaitsForBothTheOutcomeAndARefreshedQueue() {
         val token = guard.tryBegin("e:t", before)!!
-        guard.onState("e:t", after) // the projection changed before the outcome arrived
+        guard.onState("e:t") { after } // the projection changed before the outcome arrived
         assertEquals(setOf("e:t"), guard.pending.value)
         guard.completed("e:t", token, before) // outcome in, queue not refreshed yet
         assertEquals(setOf("e:t"), guard.pending.value)
-        guard.onState("e:t", after)
+        guard.onState("e:t") { after }
         assertEquals(emptySet<String>(), guard.pending.value)
         assertNotNull(guard.tryBegin("e:t", after))
     }
 
     @Test fun anOutcomeAfterTheQueueAlreadyRefreshedReleasesAtOnce() {
         val token = guard.tryBegin("e:t", before)!!
-        guard.onState("e:t", after)
+        guard.onState("e:t") { after }
         guard.completed("e:t", token, after)
         assertEquals(emptySet<String>(), guard.pending.value)
     }
@@ -38,7 +38,7 @@ class QueueOperationGuardTest {
         val token = guard.tryBegin("e:t", before)!!
         guard.completed("e:t", token, null) // another thread's queue is on screen: never compare against it
         assertEquals(setOf("e:t"), guard.pending.value)
-        guard.onState("e:t", after)
+        guard.onState("e:t") { after }
         assertEquals(emptySet<String>(), guard.pending.value)
     }
 

@@ -174,7 +174,7 @@ class MainActivity : ComponentActivity() {
                 queueOperationKeys = queueOperations,
                 sendOutcomes = sendOutcomes,
                 sendsInFlight = sendsInFlight,
-                onInterrupt = model::stopThread,
+                onStop = model::stopThread,
                 onCancelQueued = model::cancelQueued,
                 onSteerQueued = model::steerQueued,
                 onResumeQueue = model::resumeQueue,

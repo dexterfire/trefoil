@@ -39,7 +39,7 @@ private val BottomBarsAndIme @Composable get() = WindowInsets.navigationBars.uni
 fun TrefoilApp(
     state: ClientState, savedEnvironments: List<SavedEnvironment>,
     onPair: (String, String, Boolean) -> Unit, onConnect: (SavedEnvironment) -> Unit,
-    onSelectThread: (String) -> Unit, onSend: (String) -> Unit, onInterrupt: () -> Unit,
+    onSelectThread: (String) -> Unit, onSend: (String) -> Unit, onStop: () -> Unit,
     onRespond: (String, String, Map<String, List<String>>) -> Unit,
     draft: ThreadDraft?, onStartDraft: (ThreadDraft) -> Unit, onCancelDraft: () -> Unit,
     onSetRuntimeMode: (RuntimeMode) -> Unit, onSetModel: (ModelOption) -> Unit,
@@ -299,7 +299,7 @@ fun TrefoilApp(
                                         if (!twoPane) ConnectionBanner(state, onReconnect)
                                         Box(Modifier.weight(1f)) {
                                             conversationState.SaveableStateProvider("${state.environment?.id}:${if (draft != null) "draft:${draft.projectId}" else state.selectedThreadId}") {
-                                                Conversation(state, onSend, onInterrupt, onRespond, submitMessage = onSubmitMessage, sendOutcomes = sendOutcomes, sendsInFlight = sendsInFlight, onConsumeSendOutcome = onConsumeSendOutcome, stopPendingKeys = stopPendingKeys, queueOperationKeys = queueOperationKeys, onCancelQueued = onCancelQueued, onSteerQueued = onSteerQueued, onResumeQueue = onResumeQueue, onLoadActivity = onLoadActivity, composerDrafts = composerDrafts, fileDownloadUi = fileDownloadUi,
+                                                Conversation(state, onSend, onStop, onRespond, submitMessage = onSubmitMessage, sendOutcomes = sendOutcomes, sendsInFlight = sendsInFlight, onConsumeSendOutcome = onConsumeSendOutcome, stopPendingKeys = stopPendingKeys, queueOperationKeys = queueOperationKeys, onCancelQueued = onCancelQueued, onSteerQueued = onSteerQueued, onResumeQueue = onResumeQueue, onLoadActivity = onLoadActivity, composerDrafts = composerDrafts, fileDownloadUi = fileDownloadUi,
                                                     draft = draft, onSetRuntimeMode = onSetRuntimeMode, onSetModel = onSetModel, onSetModelOption = onSetModelOption, sendFailed = sendFailed,
                                                     onBack = if (backParent != null) ({ select(backParent.id) }) else if (twoPane) null else ({ cancelDraft(); showThread = false }),
                                                     onOpenParent = parentThread?.let { p -> { select(p.id) } },

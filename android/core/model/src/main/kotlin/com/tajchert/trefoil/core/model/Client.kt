@@ -89,7 +89,7 @@ enum class FollowUpMode { Queue, Steer }
  * archived or deleted; with one, the turn accepts a promoted steer (`canPromoteToSteer`) and the message does not start
  * a fresh session (unless the target is a `/compact` turn, which is skipped instead). Write gating is the caller's job.
  */
-data class QueuedMessage(val runId: String, val messageId: String, val text: String, val held: Boolean = false, val canSendNow: Boolean = false)
+data class QueuedMessage(val runId: String, val messageId: String, val text: String, val canSendNow: Boolean = false)
 data class ConversationRun(
     val id: String, val status: String,
     val requestedAt: String? = null, val startedAt: String? = null, val completedAt: String? = null,
@@ -242,6 +242,19 @@ data class ClientState(
     val portForwards: List<PortForward> = emptyList(),
 )
 
+private val ACTIVE_RUN_STATUSES = setOf("preparing", "starting", "running", "waiting")
+private val SETUP_RUN_STATUSES = setOf("preparing", "starting")
+
+/**
+ * The selected thread has work a message must queue behind: an active run, any run in an active status, or a shell row
+ * whose run is still preparing/starting (a projection can lag behind it).
+ */
+val ClientState.threadBusy: Boolean get() {
+    val shell = threads.firstOrNull { it.id == selectedThreadId }
+    return activeRunId != null || runs.any { it.status in ACTIVE_RUN_STATUSES } ||
+        shell?.activityRunStatus in SETUP_RUN_STATUSES || shell?.status in SETUP_RUN_STATUSES
+}
+
 /** A mutation may or may not have been applied; reconcile from server state, never resend it. */
 class UncertainOutcomeException(message: String) : IllegalStateException(message)
 
@@ -297,7 +310,6 @@ interface TrefoilClient {
      * [ClientState.canSteer]); an idle thread starts immediately either way. Never replayed.
      */
     suspend fun sendMessage(text: String, mode: FollowUpMode) { error("Follow-up delivery is unavailable") }
-    suspend fun interruptRun()
     /**
      * Stops everything on the selected thread, like T3's thread Stop: `thread.stop` when [ClientState.threadStopSupported],
      * otherwise `run.interrupt {runId, holdQueue: true}` on the live run, or on the latest run while background work is

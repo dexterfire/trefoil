@@ -4,6 +4,9 @@ import com.tajchert.trefoil.core.model.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
+/** Shown when a send's outcome is unknown; shared by the draft controller and the app's follow-up sends. */
+const val UNCERTAIN_MESSAGE = "Message outcome is uncertain. Check the conversation before sending again."
+
 /**
  * Owns the local new-conversation draft and message sends for the view model. Confine calls to
  * one thread (the main dispatcher in the app): state is not synchronized.
@@ -128,7 +131,6 @@ class ThreadDraftController(
     }
 
     private companion object {
-        const val UNCERTAIN_MESSAGE = "Message outcome is uncertain. Check the conversation before sending again."
         const val LAUNCH_UNCERTAIN = "New conversation outcome is uncertain. Reconnect and check the thread list; sending again will not create a duplicate."
         const val STARTED_MESSAGE = "Conversation started. Reconnect to open it."
     }

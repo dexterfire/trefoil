@@ -45,7 +45,7 @@ class ConnectionDialogTest {
         val hostKey = mutableStateOf<SshHostKey?>(null)
         compose.setContent { TrefoilApp(
             state = ClientState(), savedEnvironments = emptyList(), onPair = { _, _, _ -> }, onConnect = {},
-            onSelectThread = {}, onSend = {}, onInterrupt = {}, onRespond = { _, _, _ -> },
+            onSelectThread = {}, onSend = {}, onStop = {}, onRespond = { _, _, _ -> },
             draft = null, onStartDraft = {}, onCancelDraft = {}, onSetRuntimeMode = {}, onSetModel = {}, onReconnect = {}, onDisconnect = {}, onForget = {},
             onSshConnect = { attempt.value = ConnectionAttempt(1, ConnectionKind.Ssh, ConnectionPhase.Testing) },
             sshHostKey = hostKey.value, onTrustSsh = { hostKey.value = null }, connectionAttempt = attempt.value,
@@ -148,7 +148,7 @@ class ConnectionDialogTest {
         val submitted = mutableListOf<String>()
         compose.setContent { TrefoilApp(
             state = ClientState(), savedEnvironments = emptyList(), onPair = { url, _, _ -> submitted += url }, onConnect = {},
-            onSelectThread = {}, onSend = {}, onInterrupt = {}, onRespond = { _, _, _ -> },
+            onSelectThread = {}, onSend = {}, onStop = {}, onRespond = { _, _, _ -> },
             draft = null, onStartDraft = {}, onCancelDraft = {}, onSetRuntimeMode = {}, onSetModel = {}, onReconnect = {}, onDisconnect = {}, onForget = {},
             onSshConnect = {}, pairLinkRequest = request.value,
         ) }
@@ -168,7 +168,7 @@ class ConnectionDialogTest {
         val hostKey = mutableStateOf<SshHostKey?>(null)
         compose.setContent { TrefoilApp(
             state = ClientState(), savedEnvironments = emptyList(), onPair = { _, _, _ -> }, onConnect = {},
-            onSelectThread = {}, onSend = {}, onInterrupt = {}, onRespond = { _, _, _ -> },
+            onSelectThread = {}, onSend = {}, onStop = {}, onRespond = { _, _, _ -> },
             draft = null, onStartDraft = {}, onCancelDraft = {}, onSetRuntimeMode = {}, onSetModel = {}, onReconnect = {}, onDisconnect = {}, onForget = {},
             onSshConnect = {}, sshHostKey = hostKey.value, connectionAttempt = attempt.value, pairLinkRequest = request.value,
         ) }
@@ -191,7 +191,7 @@ class ConnectionDialogTest {
         var cancelled = 0
         compose.setContent { TrefoilApp(
             state = ClientState(), savedEnvironments = emptyList(), onPair = { _, _, _ -> }, onConnect = {},
-            onSelectThread = {}, onSend = {}, onInterrupt = {}, onRespond = { _, _, _ -> },
+            onSelectThread = {}, onSend = {}, onStop = {}, onRespond = { _, _, _ -> },
             draft = null, onStartDraft = {}, onCancelDraft = {}, onSetRuntimeMode = {}, onSetModel = {}, onReconnect = {}, onDisconnect = {}, onForget = {},
             onSshConnect = {}, onCancelSsh = { cancelled++ }, sshHostKey = hostKey.value, pairLinkRequest = request.value,
         ) }
