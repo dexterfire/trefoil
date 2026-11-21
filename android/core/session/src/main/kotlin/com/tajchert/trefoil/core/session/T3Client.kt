@@ -18,6 +18,8 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 private const val FRESH_THREAD_WAIT_MS = 3_000L
+/** After a route verifies, how long better-ranked routes still in flight may take to answer before it is chosen. */
+internal const val ROUTE_HEAD_START_MS = 500L
 private const val LINK_STATE_TIMEOUT_MS = 5_000L
 
 /** Local and Tailnet addresses answer fast or not at all; public HTTPS, the tunnel and SSH forwards get longer. */
@@ -315,34 +317,77 @@ class T3Client(
     private data class SelectedRoute(val route: EnvironmentRoute, val base: HttpUrl, val session: JsonObject)
 
     /**
-     * Walks [routes] in order. Each route passes the URL policy and answers the credential-free descriptor as
-     * `environment.id` within its kind's timeout before the bearer goes to it. A route that is blocked, silent,
-     * failing or another machine is skipped; a session that rejects the token (401/403 or not authenticated)
-     * stops the walk, since the token belongs to the host and is dead on every route.
+     * Preflights [routes] concurrently: each passes the URL policy and must answer the credential-free descriptor as
+     * `environment.id` within its kind's timeout before the bearer may go to it. The best-ranked verified route wins;
+     * once any route verifies, better-ranked routes still in flight get [ROUTE_HEAD_START_MS] (within their own
+     * timeout) to answer before a worse one is chosen. The token goes to the chosen route only. A route that is
+     * blocked, silent, failing or another machine is skipped, and so is one whose session read fails; a session that
+     * rejects the token (401/403 or not authenticated) stops, since the token belongs to the host and is dead on every
+     * route. When every route fails, the error is the last route's, as in a walk in order. Losers are cancelled.
      */
-    private suspend fun selectRoute(environment: SavedEnvironment, routes: List<EnvironmentRoute>, epoch: Long): SelectedRoute {
-        var failure: Exception? = null
-        for (route in routes) {
-            currentCoroutineContext().ensureActive()
-            check(epoch == generation) { "Connection was cancelled" }
-            val base = try {
-                val base = url(route.baseUrl, environment.allowInsecureHttp)
-                if (descriptor(base, routeTimeoutMillis(route.kind)).string("environmentId") != environment.id) throw PairingException("Environment identity changed; pair again")
-                base
-            } catch (error: CancellationException) { throw error } catch (error: Exception) { failure = error; continue }
-            currentCoroutineContext().ensureActive()
-            check(epoch == generation) { "Connection was cancelled" }
-            // Identity verified: the bearer goes to this route only.
-            val session = try { authorizedFetch(environment, "GET", base.resolve("/api/auth/session")!!) }
-            catch (error: CancellationException) { throw error }
-            catch (error: HttpFailure) { if (error.status == 401 || error.status == 403) throw error; failure = error; continue }
-            catch (error: DpopKeyUnavailable) { throw error }
-            catch (error: TokenRenewalRejected) { throw error }
-            catch (error: Exception) { failure = error; continue }
-            require(session["authenticated"]?.jsonPrimitive?.booleanOrNull == true) { "Authorization expired; pair again" }
-            return SelectedRoute(route, base, session)
+    private suspend fun selectRoute(environment: SavedEnvironment, routes: List<EnvironmentRoute>, epoch: Long): SelectedRoute = coroutineScope {
+        // Per route: null while its preflight runs, then the verified base (HttpUrl) or the failure (Exception).
+        val preflights = java.util.concurrent.atomic.AtomicReferenceArray<Any?>(routes.size)
+        val settled = MutableStateFlow(0)
+        routes.forEachIndexed { index, route ->
+            launch {
+                val outcome: Any = try {
+                    val base = url(route.baseUrl, environment.allowInsecureHttp)
+                    if (descriptor(base, routeTimeoutMillis(route.kind)).string("environmentId") != environment.id) throw PairingException("Environment identity changed; pair again")
+                    base
+                } catch (error: CancellationException) { throw error } catch (error: Exception) { error }
+                preflights.set(index, outcome)
+                settled.update { it + 1 }
+            }
         }
-        throw failure ?: PairingException("No address to reach this machine. Pair it again.")
+        val failures = arrayOfNulls<Exception>(routes.size)
+        val tried = BooleanArray(routes.size)
+        try {
+            while (true) {
+                val index = preferredRoute(preflights, tried, settled) ?: break
+                tried[index] = true
+                val base = preflights.get(index) as HttpUrl
+                currentCoroutineContext().ensureActive()
+                check(epoch == generation) { "Connection was cancelled" }
+                // Identity verified: the bearer goes to this route only.
+                val session = try { authorizedFetch(environment, "GET", base.resolve("/api/auth/session")!!) }
+                catch (error: CancellationException) { throw error }
+                catch (error: HttpFailure) { if (error.status == 401 || error.status == 403) throw error; failures[index] = error; continue }
+                catch (error: DpopKeyUnavailable) { throw error }
+                catch (error: TokenRenewalRejected) { throw error }
+                catch (error: Exception) { failures[index] = error; continue }
+                require(session["authenticated"]?.jsonPrimitive?.booleanOrNull == true) { "Authorization expired; pair again" }
+                return@coroutineScope SelectedRoute(routes[index], base, session)
+            }
+            routes.indices.forEach { if (failures[it] == null) failures[it] = preflights.get(it) as? Exception }
+            throw failures.lastOrNull { it != null } ?: PairingException("No address to reach this machine. Pair it again.")
+        } finally { coroutineContext.cancelChildren() }
+    }
+
+    /**
+     * The best-ranked untried route whose preflight verified, once no better-ranked untried route is still running or
+     * the head start since a verified answer is over; null when every untried route failed its preflight.
+     */
+    private suspend fun preferredRoute(preflights: java.util.concurrent.atomic.AtomicReferenceArray<Any?>, tried: BooleanArray, settled: StateFlow<Int>): Int? {
+        var deadline: Long? = null
+        while (true) {
+            val seen = settled.value
+            var betterRunning = false
+            var verified = -1
+            for (index in 0 until preflights.length()) {
+                if (tried[index]) continue
+                when (preflights.get(index)) {
+                    null -> betterRunning = true
+                    is HttpUrl -> { verified = index; break }
+                }
+            }
+            if (!betterRunning) return verified.takeIf { it >= 0 }
+            if (verified < 0) { settled.first { it != seen }; continue }
+            val now = System.nanoTime()
+            val until = deadline ?: (now + ROUTE_HEAD_START_MS * 1_000_000).also { deadline = it }
+            val remaining = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(until - now)
+            if (remaining <= 0 || withTimeoutOrNull(remaining) { settled.first { it != seen } } == null) return verified
+        }
     }
 
     private suspend fun connectThrough(environment: SavedEnvironment, routes: List<EnvironmentRoute>) {

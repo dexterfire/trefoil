@@ -86,7 +86,7 @@ class RouteConnectTest {
     private fun environment(baseUrl: String) = SavedEnvironment("env-1", "Test", baseUrl, "fixture-token")
     private fun refusedUrl(): String { val dead = MockWebServer(); dead.start(); val url = dead.url("/").toString(); dead.shutdown(); return url }
 
-    @Test fun routesAreTriedInOrderAndTheFirstVerifiedOneWins() = runBlocking {
+    @Test fun bestRankedVerifiedRouteWinsAndOnlyItGetsTheToken() = runBlocking {
         val lan = Host(); val tunnel = Host()
         val client = client()
         val routes = listOf(EnvironmentRoute(RouteKind.Lan, refusedUrl(), RouteSource.Paired), lan.route(RouteKind.Tailnet), tunnel.route(RouteKind.Tunnel))
@@ -95,7 +95,53 @@ class RouteConnectTest {
         assertEquals(routes[1], client.state.value.activeRoute)
         assertEquals("The saved environment keeps its paired address", routes.first().baseUrl, client.state.value.environment?.baseUrl)
         assertTrue(lan.requests.any { it.path == "/api/auth/session" && it.getHeader("Authorization") == "Bearer fixture-token" })
-        assertTrue("A later route is never contacted once one answers", tunnel.requests.isEmpty())
+        assertFalse("A later route only ever sees the credential-free descriptor", tunnel.tokenSent())
+        assertTrue(tunnel.requests.all { it.path == "/.well-known/t3/environment" })
+    }
+
+    private fun delayed(environmentId: String, millis: Long): () -> MockResponse = {
+        json("""{"environmentId":"$environmentId","orchestrationProtocolVersion":2}""").setHeadersDelay(millis, TimeUnit.MILLISECONDS)
+    }
+
+    @Test fun silentBetterRouteDoesNotHoldAVerifiedOneForItsTimeout() = runBlocking {
+        val silent = Host(descriptor = { MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE) }); val tunnel = Host()
+        val client = client(timeout = 5_000)
+        val started = System.nanoTime()
+        client.connect(environment(silent.url), listOf(silent.route(RouteKind.Lan, RouteSource.Paired), tunnel.route(RouteKind.Tunnel)))
+        val elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
+        assertEquals(RouteKind.Tunnel, client.state.value.activeRoute?.kind)
+        assertTrue("Settles after the head start, not the 5 s timeout ($elapsed ms)", elapsed in ROUTE_HEAD_START_MS until 3_000)
+        assertFalse(silent.tokenSent())
+    }
+
+    @Test fun betterRouteAnsweringWithinTheHeadStartWins() = runBlocking {
+        val lan = Host(descriptor = delayed("env-1", 150)); val tunnel = Host()
+        val client = client(timeout = 5_000)
+        client.connect(environment(lan.url), listOf(lan.route(RouteKind.Lan, RouteSource.Paired), tunnel.route(RouteKind.Tunnel)))
+        assertEquals(RouteKind.Lan, client.state.value.activeRoute?.kind)
+        assertTrue(lan.tokenSent())
+        assertFalse("The faster but worse route never gets the token", tunnel.tokenSent())
+    }
+
+    @Test fun betterRouteAnsweringAfterTheHeadStartLoses() = runBlocking {
+        val lan = Host(descriptor = delayed("env-1", ROUTE_HEAD_START_MS + 1_500)); val tunnel = Host()
+        val client = client(timeout = 5_000)
+        client.connect(environment(lan.url), listOf(lan.route(RouteKind.Lan, RouteSource.Paired), tunnel.route(RouteKind.Tunnel)))
+        assertEquals(RouteKind.Tunnel, client.state.value.activeRoute?.kind)
+        delay(2_000)
+        assertFalse("The cancelled loser never gets the token", lan.tokenSent())
+    }
+
+    @Test fun failedSessionReadFallsBackToTheNextVerifiedRoute() = runBlocking {
+        val lan = Host(session = json("{}", 503)); val tunnel = Host()
+        val client = client()
+        client.connect(environment(lan.url), listOf(lan.route(RouteKind.Lan, RouteSource.Paired), tunnel.route(RouteKind.Tunnel)))
+        assertEquals(RouteKind.Tunnel, client.state.value.activeRoute?.kind)
+        assertEquals(ConnectionStatus.Connected, client.state.value.connection)
+        val down = Host(session = json("{}", 503)); val stranger = Host(environmentId = "someone-else")
+        try { client.connect(environment(down.url), listOf(stranger.route(RouteKind.Lan), down.route(RouteKind.Tunnel))); fail("No usable route") }
+        catch (error: PairingException) { assertEquals("The last route's failure is reported", "Server HTTP error 503", error.message) }
+        assertFalse(stranger.tokenSent())
     }
 
     @Test fun identityMismatchSkipsTheRouteWithoutSendingTheToken() = runBlocking {
@@ -112,12 +158,12 @@ class RouteConnectTest {
         val client = client()
         try { client.connect(environment(lan.url), listOf(lan.route(RouteKind.Lan, RouteSource.Paired), tunnel.route(RouteKind.Tunnel))); fail("A rejected token must stop") }
         catch (error: PairingException) { assertEquals("Authorization expired or denied; pair again", error.message) }
-        assertTrue("The token is dead on every route of the host", tunnel.requests.isEmpty())
+        assertFalse("The token is dead on every route of the host", tunnel.tokenSent())
         assertEquals(ConnectionStatus.Error, client.state.value.connection)
         assertNull(client.state.value.activeRoute)
         val forbidden = Host(session = json("{}", 403)); val other = Host()
         try { client.connect(environment(forbidden.url), listOf(forbidden.route(RouteKind.Lan), other.route(RouteKind.Tunnel))); fail("403 must stop") } catch (_: PairingException) { }
-        assertTrue(other.requests.isEmpty())
+        assertFalse(other.tokenSent())
     }
 
     @Test fun allRoutesFailingNamesTheLastFailure() = runBlocking {
