@@ -148,7 +148,7 @@ class T3Client(
         val current = state.value
         current.environment?.id?.let { id ->
             environmentStates.remove(id)
-            environmentStates[id] = current.copy(canWrite = false, canRead = false, canReadUsage = false, busy = false, error = null, screens = ScreenCatalog(), localServers = LocalServerCatalog(), portForwards = emptyList())
+            environmentStates[id] = current.copy(canWrite = false, canRead = false, canReadUsage = false, canSteer = false, canStop = false, busy = false, error = null, screens = ScreenCatalog(), localServers = LocalServerCatalog(), portForwards = emptyList())
             while (environmentStates.size > 4) {
                 val evicted = environmentStates.keys.first()
                 environmentStates.remove(evicted)
@@ -337,7 +337,7 @@ class T3Client(
             if (state.value.environment?.id != environment.id) usageCache.clear()
             val retained = environmentStates[environment.id] ?: ClientState()
             projection = JsonObject(emptyMap())
-            update { retained.copy(environment = environment, connection = ConnectionStatus.Connecting, canWrite = false, canRead = false, canReadUsage = false, busy = false, error = null, settlementUndo = null, threadActionsConfigured = false, activeRoute = null,
+            update { retained.copy(environment = environment, connection = ConnectionStatus.Connecting, canWrite = false, canRead = false, canReadUsage = false, canSteer = false, canStop = false, busy = false, error = null, settlementUndo = null, threadActionsConfigured = false, activeRoute = null,
                 localServers = LocalServerCatalog(), previewTunnelSetting = null, previewTunnelDisabled = false, portForwards = emptyList()) }
         }
         try {
@@ -488,7 +488,7 @@ class T3Client(
     }
 
     /**
-     * Counts every mutation from its first local check until its outcome: message send, interrupt, request response,
+     * Counts every mutation from its first local check until its outcome: message send, interrupt, thread stop, queue changes, request response,
      * runtime mode and model changes, thread launch, subagent stop, thread actions and settlement undo. Reads
      * (configuration, projections, usage, screens, downloads) do not count; a switch only re-reads them.
      */
@@ -569,7 +569,7 @@ class T3Client(
         resetScreens()
         stopPortForwards()
         undoPlan = null; pendingModelSelections = null
-        update { it.copy(connection =ConnectionStatus.Error, canWrite = false, canRead = false, canReadUsage = false, busy = false, error = message, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
+        update { it.copy(connection =ConnectionStatus.Error, canWrite = false, canRead = false, canReadUsage = false, canSteer = false, canStop = false, busy = false, error = message, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
         pending.values.forEach { it.completeExceptionally(IllegalStateException(message)) }; pending.clear()
         streams.clear(); heartbeat?.cancel(); socket?.cancel(); socket = null
     }
@@ -589,7 +589,7 @@ class T3Client(
         resetScreens()
         stopPortForwards()
         undoPlan = null; pendingModelSelections = null
-        update { it.copy(connection =ConnectionStatus.Disconnected, canWrite = false, canRead = false, canReadUsage = false, busy = false, error = reason ?: it.error, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
+        update { it.copy(connection =ConnectionStatus.Disconnected, canWrite = false, canRead = false, canReadUsage = false, canSteer = false, canStop = false, busy = false, error = reason ?: it.error, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
     }
 
     private fun usageEnvironment(): SavedEnvironment {
@@ -679,7 +679,7 @@ class T3Client(
         val cached = state.value.environment?.id?.let { threadProjections[it to threadId] }
         if (cached != null) applyProjection(cached, threadId)
         else if (state.value.selectedThreadId == threadId) update { it.copy(canWrite = false, canRead = false) }
-        else update { it.copy(selectedThreadId = threadId, messages = emptyList(), requests = emptyList(), activities = emptyList(), runs = emptyList(), attempts = emptyList(), subagents = emptyList(), backgroundWork = emptyList(), activeRunId = null, canWrite = false, selectedRuntimeMode = null, selectedModel = null, selectedModelOptions = emptyMap(), selectedProviderLocked = false) }
+        else update { it.copy(selectedThreadId = threadId, messages = emptyList(), requests = emptyList(), activities = emptyList(), runs = emptyList(), attempts = emptyList(), subagents = emptyList(), backgroundWork = emptyList(), queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, activeRunId = null, canWrite = false, selectedRuntimeMode = null, selectedModel = null, selectedModelOptions = emptyMap(), selectedProviderLocked = false) }
         val epoch = generation
         refreshSignals?.close(); refreshJob?.cancel()
         val signals = Channel<Unit>(Channel.CONFLATED)
@@ -851,10 +851,16 @@ class T3Client(
         val active = value.objects("runs").filter { it.string("status") in setOf("preparing", "running", "starting", "waiting") }
             .sortedBy { (it["ordinal"] as? JsonPrimitive)?.intOrNull ?: Int.MIN_VALUE }.lastOrNull()?.string("id")
         val thread = value.obj("thread")
+        val agents = subagents(value)
+        val background = pendingBackgroundWork(value)
+        // Steer and Stop are live facts: a cached projection shown while offline offers neither.
+        val live = current.connection == ConnectionStatus.Connected
         update { it.copy(selectedThreadId = threadId, canWrite = it.canWrite && threadReady, canRead = it.canRead && threadReady, messages = conversationMessages(value),
             activities = toolActivities(value), requests = requests, activeRunId = active,
-            runs = conversationRuns(value), attempts = runAttempts(value), subagents = subagents(value),
-            backgroundWork = pendingBackgroundWork(value),
+            runs = conversationRuns(value), attempts = runAttempts(value), subagents = agents,
+            backgroundWork = background,
+            queuedMessages = queuedMessages(value), queueHeld = queueHeld(value),
+            canSteer = live && canSteer(value), canStop = live && canStopThread(active, background, agents),
             selectedRuntimeMode = RuntimeMode.fromWire(thread.string("runtimeMode")),
             selectedModel = selectedModel(thread["modelSelection"] as? JsonObject, it.models),
             selectedModelOptions = modelOptionValues(thread.obj("modelSelection")["options"]),
@@ -1185,9 +1191,11 @@ class T3Client(
      * Sends one mutation once. [extra] runs under the lifecycle lock after the write check, so
      * local validation fails before anything is sent. See [mutation] for failure handling.
      */
-    private suspend fun dispatch(type: String, subject: String, extra: () -> JsonObject): Unit = mutating {
+    private suspend fun dispatch(type: String, subject: String, extra: () -> JsonObject): Unit = dispatchCommand(subject) { command(type, extra()) }
+    /** Like [dispatch] for a command whose type is chosen under the lock: [build] returns the whole command. */
+    private suspend fun dispatchCommand(subject: String, build: () -> JsonObject): Unit = mutating {
         awaitFreshThread()
-        val (epoch, payload) = synchronized(lifecycleLock) { requireWrite(); generation to command(type, extra()) }
+        val (epoch, payload) = synchronized(lifecycleLock) { requireWrite(); generation to build() }
         mutation(epoch, subject) { rpc("orchestration.dispatchCommand", payload, epoch) }
     }
     /**
@@ -1214,6 +1222,49 @@ class T3Client(
             put("messageId", UUID.randomUUID().toString()); put("text", text); put("attachments", JsonArray(emptyList()))
             put("dispatchMode", buildJsonObject { put("type", messageDispatchMode(state.value)) })
         } }
+    }
+    /**
+     * T3 `dispatchThreadMessage`: while the thread works, [FollowUpMode.Queue] is `queue_after_active` and
+     * [FollowUpMode.Steer] is `start_immediately` with `deliveryIntent: "steer"`, refused locally unless
+     * [ClientState.canSteer]. An idle thread starts immediately either way.
+     */
+    override suspend fun sendMessage(text: String, mode: FollowUpMode) {
+        require(text.isNotBlank()) { "Message is empty" }
+        dispatch("message.dispatch", "message") {
+            val current = state.value
+            val busy = messageDispatchMode(current) == "queue_after_active"
+            val steer = busy && mode == FollowUpMode.Steer
+            if (steer) check(current.canSteer) { "This turn cannot be steered right now; queue the message instead" }
+            buildJsonObject {
+                provenance()
+                put("messageId", UUID.randomUUID().toString()); put("text", text); put("attachments", JsonArray(emptyList()))
+                if (steer) put("deliveryIntent", "steer")
+                put("dispatchMode", buildJsonObject { put("type", if (busy && !steer) "queue_after_active" else "start_immediately") })
+            }
+        }
+    }
+    private fun queuedRun(runId: String): QueuedMessage =
+        state.value.queuedMessages.firstOrNull { it.runId == runId } ?: error("This message is no longer queued")
+    override suspend fun cancelQueuedMessage(runId: String) {
+        dispatch("queued-run.cancel", "queue change") { buildJsonObject { put("runId", queuedRun(runId).runId) } }
+    }
+    /** T3 "send now": `queued-run.start` when no run is active, else `queued-message.promote-to-steer` into it (needs [ClientState.canSteer]). */
+    override suspend fun steerQueuedMessage(runId: String) {
+        dispatchCommand("queue change") {
+            val queued = queuedRun(runId)
+            val active = activeThreadRun(projection)?.string("id")?.takeIf { it.isNotEmpty() }
+            if (active == null) {
+                val thread = projection.obj("thread")
+                check(thread.string("archivedAt").isEmpty() && thread.string("deletedAt").isEmpty()) { "This conversation is archived" }
+                command("queued-run.start", buildJsonObject { put("runId", queued.runId) })
+            } else {
+                check(state.value.canSteer) { "This turn cannot be steered right now; the message stays queued" }
+                command("queued-message.promote-to-steer", buildJsonObject { put("queuedRunId", queued.runId); put("targetRunId", active) })
+            }
+        }
+    }
+    override suspend fun resumeQueue() {
+        dispatch("queue.resume", "queue change") { check(state.value.queueHeld) { "The queue is not paused" }; JsonObject(emptyMap()) }
     }
     /**
      * Sends the draft's own `threadId` and `commandId`, so an explicit resend after an uncertain
@@ -1445,32 +1496,77 @@ class T3Client(
      */
     override suspend fun stopSubagent(subagentId: String): Unit = mutating {
         awaitFreshThread()
-        val (session, parentId, subagent) = synchronized(lifecycleLock) {
+        val (session, subagent) = synchronized(lifecycleLock) {
             requireWrite()
-            val parentId = state.value.selectedThreadId ?: error("Select a thread")
             val subagent = state.value.subagents.firstOrNull { it.id == subagentId } ?: error("Agent is no longer listed")
             check(subagent.canStop) { "This agent cannot be stopped from here" }
-            Triple(generation to threadGeneration, parentId, subagent)
+            threadSession() to subagent
         }
-        val (epoch, selection) = session
-        fun sameSession() = synchronized(lifecycleLock) {
-            epoch == generation && selection == threadGeneration && state.value.selectedThreadId == parentId &&
-                authorized && state.value.connection == ConnectionStatus.Connected
-        }
-        fun requireSameSession() = check(sameSession()) { "The thread changed; stop was not completed" }
-        // The guard re-checks under the send lock, so a selection change after requireSameSession still sends nothing.
-        suspend fun send(payload: JsonObject) { requireSameSession(); mutation(epoch, "agent stop") { rpc("orchestration.dispatchCommand", payload, epoch, ::sameSession) } }
+        stopSubagentIn(session, subagent)
+    }
+    /** The connection, thread selection and selected thread a multi-command stop was planned for. */
+    private data class ThreadSession(val epoch: Long, val selection: Long, val threadId: String)
+    /** Caller holds [lifecycleLock]. */
+    private fun threadSession() = ThreadSession(generation, threadGeneration, state.value.selectedThreadId ?: error("Select a thread"))
+    private fun sameSession(session: ThreadSession) = synchronized(lifecycleLock) {
+        session.epoch == generation && session.selection == threadGeneration && state.value.selectedThreadId == session.threadId &&
+            authorized && state.value.connection == ConnectionStatus.Connected
+    }
+    private fun requireSameSession(session: ThreadSession) = check(sameSession(session)) { "The thread changed; stop was not completed" }
+    /** Sends one command of [session] once. The guard re-checks under the send lock, so a selection change still sends nothing. */
+    private suspend fun sendInSession(session: ThreadSession, subject: String, payload: JsonObject) {
+        requireSameSession(session)
+        mutation(session.epoch, subject) { rpc("orchestration.dispatchCommand", payload, session.epoch, guard = { sameSession(session) }) }
+    }
+    private suspend fun stopSubagentIn(session: ThreadSession, subagent: Subagent) {
+        val parentId = session.threadId
+        suspend fun send(payload: JsonObject) = sendInSession(session, "agent stop", payload)
         val parentStop = subagent.runId?.let { runId -> threadCommand("subagent.stop", parentId, buildJsonObject { put("runId", runId); put("subagentId", subagent.id) }) }
-        if (!subagent.isAppOwned) { send(parentStop ?: error("This agent cannot be stopped from here")); return@mutating }
+        if (!subagent.isAppOwned) { send(parentStop ?: error("This agent cannot be stopped from here")); return }
         val childId = subagent.childThreadId ?: error("This agent cannot be stopped from here")
         // The parent ends the task even when its child lost track of it; the child stop below still runs.
         if (parentStop != null) try { send(parentStop) } catch (error: IllegalStateException) { if (error.cause !is ServerRejected) throw error }
-        requireSameSession()
-        if (state.value.threadStopSupported) { send(threadCommand("thread.stop", childId)); return@mutating }
-        val child = rpc("orchestration.getThreadProjection", buildJsonObject { put("threadId", childId) }, epoch).jsonObject
+        requireSameSession(session)
+        if (state.value.threadStopSupported) { send(threadCommand("thread.stop", childId)); return }
+        val child = rpc("orchestration.getThreadProjection", buildJsonObject { put("threadId", childId) }, session.epoch).jsonObject
         currentCoroutineContext().ensureActive()
-        val runId = child.objects("runs").lastOrNull { it.string("status") in setOf("preparing", "starting", "running", "waiting") }?.string("id")?.takeIf { it.isNotBlank() } ?: return@mutating
+        val runId = child.objects("runs").lastOrNull { it.string("status") in setOf("preparing", "starting", "running", "waiting") }?.string("id")?.takeIf { it.isNotBlank() } ?: return
         send(threadCommand("run.interrupt", childId, buildJsonObject { put("runId", runId); put("holdQueue", true) }))
+    }
+    /**
+     * T3 thread Stop (`interruptThreadTurn` without a run). With `threadStop`: one `thread.stop` (the server stops the live
+     * run or the run with pending background work, holding the queue, and the delegated tasks). Without it:
+     * `run.interrupt {runId, holdQueue: true}` on [stopRunTarget]; with no run to interrupt, each active stoppable
+     * subagent through [stopSubagentIn] and each pull request watch unwatched, one after another. Nothing to stop fails
+     * locally. Every command is sent once; a definite rejection of one agent does not skip the others.
+     */
+    override suspend fun stopThread(): Unit = mutating {
+        awaitFreshThread()
+        data class Plan(val session: ThreadSession, val commands: List<JsonObject>, val agents: List<Subagent>)
+        val plan = synchronized(lifecycleLock) {
+            requireWrite()
+            val session = threadSession()
+            if (state.value.threadStopSupported) return@synchronized Plan(session, listOf(command("thread.stop", JsonObject(emptyMap()))), emptyList())
+            stopRunTarget(projection)?.let { runId ->
+                return@synchronized Plan(session, listOf(command("run.interrupt", buildJsonObject { put("runId", runId); put("holdQueue", true) })), emptyList())
+            }
+            val agents = state.value.subagents.filter { it.canStop }
+            val unwatches = pullRequestUnwatches(projection).map { command("thread.pull-request.watch", it) }
+            if (agents.isEmpty() && unwatches.isEmpty()) error(
+                if (state.value.subagents.any { it.isActive }) "These agents cannot be stopped from here; use another T3 client" else "Nothing is running on this thread"
+            )
+            Plan(session, unwatches, agents)
+        }
+        var failure: Exception? = null
+        for (agent in plan.agents) {
+            try { stopSubagentIn(plan.session, agent) }
+            catch (error: IllegalStateException) { if (error.cause !is ServerRejected) throw error; if (failure == null) failure = error }
+        }
+        for (payload in plan.commands) {
+            try { sendInSession(plan.session, "stop", payload) }
+            catch (error: IllegalStateException) { if (error.cause !is ServerRejected) throw error; if (failure == null) failure = error }
+        }
+        failure?.let { throw it }
     }
     override suspend fun interruptRun() { dispatch("run.interrupt", "interrupt") { buildJsonObject { put("runId", state.value.activeRunId ?: error("No active run")) } } }
     override suspend fun respond(requestId: String, decision: String, answers: Map<String, List<String>>): Unit = mutating {

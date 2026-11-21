@@ -22,7 +22,7 @@ private val SETUP_STATUSES = setOf("preparing", "starting")
 private fun JsonObject.text(key: String): String? = (get(key) as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotEmpty() }
 
 /** T3 `resolveThreadProviderSession`: the provider session the thread is attached to, if any. */
-private fun providerSession(projection: JsonObject): JsonObject? {
+internal fun providerSession(projection: JsonObject): JsonObject? {
     val thread = projection.obj("thread")
     val activeRun = projection.objects("runs").lastOrNull { it.string("status") in ACTIVE_RUN_STATUSES }
     val providerThreadId = activeRun?.text("providerThreadId") ?: thread.text("activeProviderThreadId")

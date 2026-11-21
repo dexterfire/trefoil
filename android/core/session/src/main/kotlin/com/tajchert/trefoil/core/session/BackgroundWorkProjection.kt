@@ -21,7 +21,7 @@ private val BACKGROUND_TURN_ITEM_TYPES = setOf("command_execution", "dynamic_too
 private val LIVE_RUN_STATUSES = setOf("preparing", "starting", "running")
 // waiting is completed work awaiting checkpoints; rolled_back is excluded because provider threads are not run-tied.
 private val SETTLED_FOR_BACKGROUND_WAIT_RUN_STATUSES = setOf("cancelled", "completed", "failed", "interrupted", "waiting")
-private const val PULL_REQUEST_WATCH_TASK_ID = "pull-request-watch:"
+internal const val PULL_REQUEST_WATCH_TASK_ID = "pull-request-watch:"
 
 private fun JsonObject.trimmed(key: String): String? = (get(key) as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim()?.takeIf { it.isNotEmpty() }
 private fun JsonObject.flag(key: String): Boolean? = (get(key) as? JsonPrimitive)?.booleanOrNull
