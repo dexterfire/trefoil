@@ -21,6 +21,8 @@ import com.tajchert.trefoil.core.ssh.SshTunnelConnector
 import com.tajchert.trefoil.keepalive.ConnectionKeepAlive
 import com.tajchert.trefoil.security.DeviceDpopKey
 import com.tajchert.trefoil.security.ComposerDraftFileStore
+import com.tajchert.trefoil.security.EnvironmentStore
+import com.tajchert.trefoil.security.EnvironmentWrites
 import com.tajchert.trefoil.security.EnvironmentVault
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -39,7 +41,8 @@ internal val AUTO_RECONNECT_BACKOFF_MS = listOf(2_000L, 5_000L, 15_000L)
 /** After a default-network change, the live connection must answer a ping within this or it is dropped and reconnected. */
 internal const val LINK_CHECK_TIMEOUT_MS = 4_000L
 
-class TrefoilViewModel(application: Application) : AndroidViewModel(application) {
+class TrefoilViewModel internal constructor(application: Application, private val vault: EnvironmentStore) : AndroidViewModel(application) {
+    constructor(application: Application) : this(application, EnvironmentVault(application))
     /** One renewer for the client and the probe, so DPoP renewals of a machine are serialized and land in the vault. */
     private val tokens = EnvironmentTokenRenewer(DeviceDpopKey::loadOrCreate, onRenewed = { renewed, replaces -> saveRenewedToken(renewed, replaces) })
     private val client = T3Client(viewModelScope, tokens = tokens)
@@ -56,7 +59,6 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
     val fileDownloads = com.tajchert.trefoil.downloads.FileDownloadCoordinator(viewModelScope, client,
         com.tajchert.trefoil.downloads.MediaStoreDownloadStore(application))
     private val connector = SshTunnelConnector()
-    private val vault = EnvironmentVault(application)
     private val vaultMutex = Mutex()
     private val connectionMutex = Mutex()
     val state = client.state
@@ -193,10 +195,12 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         onBetterRoute = ::switchRoute,
     )
 
+    /** Every machine write goes through this; see [EnvironmentWrites] for what a failed read may do. */
+    private val environmentWrites = EnvironmentWrites(vault)
     private val initialized = viewModelScope.async {
         try {
             vaultMutex.withLock {
-                _environments.value = withContext(Dispatchers.IO) { vault.read() }
+                _environments.value = withContext(Dispatchers.IO) { environmentWrites.load() }
                 hostKeys = withContext(Dispatchers.IO) { vault.readHostKeys() }
             }
         } catch (e: CancellationException) { throw e }
@@ -319,19 +323,29 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         _connectionAttempt.update { it.copy(phase = ConnectionPhase.Testing, message = message) }
     }
 
-    private suspend fun save(environments: List<SavedEnvironment>) {
-        val durable = environments.map { environment -> unsavedHints.remove(environment.id)?.fold(environment) { e, h -> e.withRouteHints(h) } ?: environment }.map { it.forStorage() }
-        withContext(Dispatchers.IO) { vault.write(durable) }
-        _environments.value = durable
+    /**
+     * Applies [change] to what the vault holds now (see [EnvironmentWrites]), so a write never brings back an older copy
+     * such as a token the widget renewed since this model read the vault. [_environments] then shows what was stored.
+     * Call under [vaultMutex] after [initialized]; [change] must not block. [newPairing] marks a write that may replace a
+     * vault never readable in this process.
+     */
+    private suspend fun save(newPairing: Boolean = false, change: (List<SavedEnvironment>) -> List<SavedEnvironment>) {
+        val hints = unsavedHints.toMap()
+        val stored = withContext(Dispatchers.IO) {
+            environmentWrites.write(newPairing) { current ->
+                change(current).map { environment -> hints[environment.id]?.fold(environment) { e, h -> e.withRouteHints(h) } ?: environment }
+                    .map { it.forStorage() }
+            }
+        }
+        stored.forEach { unsavedHints.remove(it.id) }
+        _environments.value = stored
     }
 
     /** Stores a renewed DPoP token over the same session's older token only; a newer pairing's token is never replaced. */
     private suspend fun saveRenewedToken(renewed: SavedEnvironment, replaces: Set<String>) {
         initialized.await()
         vaultMutex.withLock {
-            val saved = _environments.value
-            if (saved.none { it.id == renewed.id && it.accessToken in replaces }) return@withLock
-            save(saved.map { if (it.id == renewed.id && it.accessToken in replaces) it.withTokenOf(renewed) else it })
+            save { saved -> saved.map { if (it.id == renewed.id && it.accessToken in replaces) it.withTokenOf(renewed) else it } }
         }
     }
 
@@ -347,10 +361,12 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         clearDraft()
         disconnectCurrent()
         connectionStage("Testing pairing link and exchanging credentials…")
+        initialized.await()
         val paired = client.pair(url, name, allowInsecureHttp)
         // Re-pairing keeps the learned routes; the hints of this connection then refresh them.
         val environment = vaultMutex.withLock {
-            save(_environments.value.filterNot { it.id == paired.id } + paired.withLearnedRoutesOf(_environments.value))
+            // A new pairing: its token replaces the stored one on purpose.
+            save(newPairing = true) { saved -> saved.filterNot { it.id == paired.id } + paired.withLearnedRoutesOf(saved) }
             _environments.value.first { it.id == paired.id }
         }
         selectedEnvironment = environment
@@ -415,6 +431,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         sshInputValidationError(input)?.let { throw SshConnectionException(it) }
         disconnectCurrent()
         val normalized = input.copy(host = input.host.trim(), username = input.username.trim())
+        initialized.await()
         val saved = normalized.savedEnvironmentId?.let { id -> _environments.value.firstOrNull { it.id == id && it.ssh != null } }
         val expected = hostKeys.firstOrNull { it.host.equals(normalized.host, ignoreCase = true) && it.port == normalized.port }?.fingerprint
             ?: saved?.ssh?.takeIf { it.host.equals(normalized.host, ignoreCase = true) && it.port == normalized.port }?.fingerprint
@@ -437,8 +454,16 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
             client.connect(configured)
             coroutineContext.ensureActive()
             check(opened.active.value) { "SSH tunnel closed" }
-            // The vault's learned routes are newer than the copy this attempt started from (and survive re-pairing).
-            vaultMutex.withLock { save(_environments.value.filterNot { it.id == configured.id } + configured.withLearnedRoutesOf(_environments.value)) }
+            // The vault's learned routes are newer than the copy this attempt started from (and survive re-pairing). A
+            // saved machine keeps the vault's token: it may have been renewed (here or by the widget) since it was read.
+            vaultMutex.withLock {
+                save(newPairing = saved == null) { stored ->
+                    if (saved == null) stored.filterNot { it.id == configured.id } + configured.withLearnedRoutesOf(stored)
+                    else stored.withReconnected(configured)
+                }
+            }
+            // Forgotten while this reconnect was in flight: do not adopt a session for a machine that is no longer saved.
+            check(_environments.value.any { it.id == configured.id }) { "This machine was removed while connecting" }
             selectedEnvironment = _environments.value.firstOrNull { it.id == configured.id } ?: configured.forStorage()
             tunnel = opened; adopted = true
             tunnelMonitor = viewModelScope.launch {
@@ -593,7 +618,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
         vaultMutex.withLock {
             val current = _environments.value.firstOrNull { it.id == environmentId } ?: return@withLock
             if (current.allowInsecureHttp == allowed) return@withLock
-            save(_environments.value.map { if (it.id == environmentId) it.copy(allowInsecureHttp = allowed) else it })
+            save { saved -> saved.map { if (it.id == environmentId) it.copy(allowInsecureHttp = allowed) else it } }
             selectedEnvironment?.takeIf { it.id == environmentId }?.let { selectedEnvironment = it.copy(allowInsecureHttp = allowed) }
         }
     }
@@ -615,7 +640,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
             fileDownloads.htmlRenders.evictEnvironment(environment.id)
         }
         initialized.await()
-        vaultMutex.withLock { save(_environments.value.filterNot { it.id == environment.id }) }
+        vaultMutex.withLock { save { saved -> saved.filterNot { it.id == environment.id } } }
         widgetSync.forget(environment.id)
     }
     private var threadShown = false
@@ -744,7 +769,7 @@ class TrefoilViewModel(application: Application) : AndroidViewModel(application)
                     }
                     return@withLock
                 }
-                save(updated)
+                save { saved -> applyRouteHints(saved, hints) ?: saved }
                 val routes = _environments.value.first { it.id == id }.routes
                 selectedEnvironment?.takeIf { it.id == id }?.let { selectedEnvironment = it.copy(routes = routes) }
                 resumeEnvironment?.takeIf { it.id == id }?.let { resumeEnvironment = it.copy(routes = routes) }
@@ -1032,6 +1057,16 @@ internal fun applyRouteHints(environments: List<SavedEnvironment>, hints: RouteH
 /** The vault's learned routes for the same machine win over this copy's (re-pairing, or a copy older than the vault). */
 internal fun SavedEnvironment.withLearnedRoutesOf(environments: List<SavedEnvironment>): SavedEnvironment =
     environments.firstOrNull { it.id == id }?.let { copy(routes = it.routes) } ?: this
+
+/**
+ * A saved machine reconnected as [configured], a copy taken before the network attempt: its name and SSH profile apply,
+ * while routes, LAN HTTP consent and token stay the vault's current ones (a revoked consent is never granted again),
+ * and a machine forgotten meanwhile is not re-created.
+ */
+internal fun List<SavedEnvironment>.withReconnected(configured: SavedEnvironment): List<SavedEnvironment> = map { stored ->
+    if (stored.id != configured.id) stored
+    else configured.copy(routes = stored.routes, allowInsecureHttp = stored.allowInsecureHttp).withTokenOf(stored)
+}
 
 /**
  * Settles composer drafts around [ThreadDraftController]'s sends. An accepted reply clears the thread's Reply draft

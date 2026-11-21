@@ -15,8 +15,25 @@ import javax.crypto.spec.GCMParameterSpec
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
+/** Saved machines and SSH host keys; one process-wide lock covers every instance. */
+interface EnvironmentStore {
+    fun read(): List<SavedEnvironment>
+    fun readHostKeys(): List<SshHostKey>
+    fun writeHostKeys(keys: List<SshHostKey>)
+    /** Replaces the saved machines; read-modify-write callers do it inside [locked]. */
+    fun write(environments: List<SavedEnvironment>)
+    /** Runs [block] under the process-wide lock that every instance's machine writes take (view model, widget worker). */
+    fun <T> locked(block: () -> T): T
+    /** Atomic read-modify-write of the saved machines; a failed read fails the update and nothing is written. */
+    fun update(transform: (List<SavedEnvironment>) -> List<SavedEnvironment>) = locked {
+        val current = read()
+        val next = transform(current)
+        if (next != current) write(next)
+    }
+}
+
 /** Keystore AES-GCM pattern adapted from Flocket's KeystoreSecretCipher (Apache-2.0). */
-class EnvironmentVault(context: Context) {
+class EnvironmentVault(context: Context) : EnvironmentStore {
     private val file = AtomicFile(File(context.noBackupFilesDir, "environments.v1"))
     private val hostKeysFile = AtomicFile(File(context.noBackupFilesDir, "ssh-host-keys.v1"))
     private val hostKeysSerializer = ListSerializer(SshHostKey.serializer())
@@ -32,9 +49,9 @@ class EnvironmentVault(context: Context) {
                 .setKeySize(256).build())
         }.generateKey()
     }
-    fun read(): List<SavedEnvironment> = synchronized(LOCK) { readEncrypted(file)?.let { json.decodeFromString(serializer, it) } ?: emptyList() }
-    @Synchronized fun readHostKeys(): List<SshHostKey> = readEncrypted(hostKeysFile)?.let { json.decodeFromString(hostKeysSerializer, it) } ?: emptyList()
-    @Synchronized fun writeHostKeys(keys: List<SshHostKey>) = writeEncrypted(hostKeysFile, json.encodeToString(hostKeysSerializer, keys))
+    override fun read(): List<SavedEnvironment> = synchronized(LOCK) { readEncrypted(file)?.let { json.decodeFromString(serializer, it) } ?: emptyList() }
+    @Synchronized override fun readHostKeys(): List<SshHostKey> = readEncrypted(hostKeysFile)?.let { json.decodeFromString(hostKeysSerializer, it) } ?: emptyList()
+    @Synchronized override fun writeHostKeys(keys: List<SshHostKey>) = writeEncrypted(hostKeysFile, json.encodeToString(hostKeysSerializer, keys))
     private fun readEncrypted(source: AtomicFile): String? {
         if (!source.baseFile.exists()) return null
         val (nonce, encrypted) = SecretEnvelope.decode(source.readFully())
@@ -42,13 +59,8 @@ class EnvironmentVault(context: Context) {
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, nonce))
         return cipher.doFinal(encrypted).decodeToString()
     }
-    fun write(environments: List<SavedEnvironment>) = synchronized(LOCK) { writeEncrypted(file, json.encodeToString(serializer, environments)) }
-    /** Atomic read-modify-write against every vault instance in this process (view model, widget worker). */
-    fun update(transform: (List<SavedEnvironment>) -> List<SavedEnvironment>) = synchronized(LOCK) {
-        val current = read()
-        val next = transform(current)
-        if (next != current) write(next)
-    }
+    override fun write(environments: List<SavedEnvironment>) = synchronized(LOCK) { writeEncrypted(file, json.encodeToString(serializer, environments)) }
+    override fun <T> locked(block: () -> T): T = synchronized(LOCK) { block() }
     private fun writeEncrypted(destination: AtomicFile, plaintext: String) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
