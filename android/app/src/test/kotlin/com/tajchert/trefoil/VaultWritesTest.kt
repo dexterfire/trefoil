@@ -6,6 +6,13 @@ import com.tajchert.trefoil.core.model.AccessTokenType
 import com.tajchert.trefoil.core.model.SavedEnvironment
 import com.tajchert.trefoil.core.model.SshHostKey
 import com.tajchert.trefoil.security.EnvironmentStore
+import com.tajchert.trefoil.core.model.ConnectionPhase
+import com.tajchert.trefoil.core.model.SshConnectionInput
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.concurrent.thread
 import kotlinx.coroutines.cancel
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -30,13 +37,19 @@ class VaultWritesTest {
         @Volatile var failingReads = 0
         @Volatile var hostKeysUnreadable = false
         override var lastKnown: List<SavedEnvironment>? = null
+        /** When set, the next write waits for it (after [writeEntered] opens), as a slow keystore write would. */
+        @Volatile var writeGate: CountDownLatch? = null
+        val writeEntered = CountDownLatch(1)
         override fun read() = synchronized(this) {
             if (failingReads > 0) { failingReads--; throw IllegalStateException("unreadable") }
             saved.also { lastKnown = it }
         }
         override fun readHostKeys(): List<SshHostKey> = if (hostKeysUnreadable) throw IllegalStateException("unreadable") else emptyList()
         override fun writeHostKeys(keys: List<SshHostKey>) = Unit
-        override fun write(environments: List<SavedEnvironment>) = synchronized(this) { saved = environments; lastKnown = environments }
+        override fun write(environments: List<SavedEnvironment>) = synchronized(this) {
+            writeGate?.let { gate -> writeGate = null; writeEntered.countDown(); gate.await() }
+            saved = environments; lastKnown = environments
+        }
         override fun <T> locked(block: () -> T): T = synchronized(this) { block() }
     }
 
@@ -51,7 +64,31 @@ class VaultWritesTest {
         awaitTrue { model.environments.value == listOf(alpha, beta) }
     }
 
-    @After fun tearDown() { if (::model.isInitialized) model.viewModelScope.cancel() }
+    private val servers = mutableListOf<HangingServer>()
+    @After fun tearDown() {
+        if (::model.isInitialized) model.viewModelScope.cancel()
+        servers.forEach { it.close() }
+    }
+
+    /** Accepts connections and never answers, so a connection to it stays in progress until the client closes it. */
+    private inner class HangingServer : AutoCloseable {
+        private val socket = ServerSocket(0, 50, InetAddress.getLoopbackAddress())
+        val port get() = socket.localPort
+        val accepted = AtomicInteger()
+        val open = AtomicInteger()
+        init {
+            servers += this
+            thread(isDaemon = true) {
+                while (!socket.isClosed) {
+                    val client = try { socket.accept() } catch (_: Exception) { break }
+                    accepted.incrementAndGet(); open.incrementAndGet()
+                    // Reads until the client closes its end.
+                    thread(isDaemon = true) { client.use { try { while (it.getInputStream().read() >= 0) Unit } catch (_: Exception) {} }; open.decrementAndGet() }
+                }
+            }
+        }
+        override fun close() = socket.close()
+    }
 
     private fun awaitTrue(condition: () -> Boolean) {
         val deadline = System.currentTimeMillis() + 5_000
@@ -60,6 +97,12 @@ class VaultWritesTest {
             shadowOf(Looper.getMainLooper()).idle()
             Thread.sleep(10)
         }
+    }
+
+    /** Gives the code under test up to [ms] to make [condition] true; returns either way (not an assertion). */
+    private fun idleUpTo(ms: Long, condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + ms
+        while (!condition() && System.currentTimeMillis() < deadline) { shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(10) }
     }
 
     /** The usage widget renews alpha's session in the vault after the view model read it. */
@@ -110,6 +153,53 @@ class VaultWritesTest {
         second.forget(beta)
         awaitTrue { store.saved != listOf(alpha, beta) || second.notice.value == "Could not remove saved credentials." }
         assertEquals("The change applies to the list this process knows", listOf(alpha), store.saved)
+    }
+
+    @Test fun forgetDuringAConnectClosesItAndAQueuedRequestNeverConnects() {
+        val server = HangingServer()
+        val live = alpha.copy(baseUrl = "https://127.0.0.1:${server.port}", tokenType = AccessTokenType.Bearer, accessTokenExpiresAtMillis = null)
+        store.saved = listOf(live, beta)
+        model = TrefoilViewModel(RuntimeEnvironment.getApplication(), store)
+        awaitTrue { model.environments.value == listOf(live, beta) }
+        model.connect(live)
+        awaitTrue { server.accepted.get() == 1 }
+        model.forget(live)
+        awaitTrue { store.saved == listOf(beta) && !model.working.value }
+        awaitTrue { server.open.get() == 0 }
+        // A request made with the old copy (a stale list row, a queued reconnect) stops without connecting.
+        model.connect(live)
+        awaitTrue { model.connectionAttempt.value.phase == ConnectionPhase.Failed }
+        assertEquals(1, server.accepted.get())
+        assertEquals(listOf(beta), store.saved)
+    }
+
+    @Test fun aTapWhileForgetIsDeletingTheMachineNeverConnectsIt() {
+        val server = HangingServer()
+        val live = alpha.copy(baseUrl = "https://127.0.0.1:${server.port}", tokenType = AccessTokenType.Bearer, accessTokenExpiresAtMillis = null)
+        store.saved = listOf(live, beta)
+        model = TrefoilViewModel(RuntimeEnvironment.getApplication(), store)
+        awaitTrue { model.environments.value == listOf(live, beta) }
+        val gate = CountDownLatch(1)
+        store.writeGate = gate
+        model.forget(live)
+        awaitTrue { store.writeEntered.count == 0L }
+        // The machine is still listed while its deletion is being written; the user taps it.
+        model.connect(live)
+        idleUpTo(2_000) { server.accepted.get() > 0 }
+        gate.countDown()
+        awaitTrue { store.saved == listOf(beta) && model.connectionAttempt.value.phase == ConnectionPhase.Failed }
+        assertEquals("No connection was opened to the forgotten machine", 0, server.accepted.get())
+    }
+
+    @Test fun anSshReconnectOfAForgottenMachineNeverOpensSshOrPairsAnew() {
+        val sshServer = HangingServer()
+        start()
+        model.forget(alpha)
+        awaitTrue { store.saved == listOf(beta) && !model.working.value }
+        model.connectSsh(SshConnectionInput("Alpha", "127.0.0.1", "user", port = sshServer.port, password = "fixture", savedEnvironmentId = "alpha"))
+        awaitTrue { model.connectionAttempt.value.phase == ConnectionPhase.Failed }
+        assertEquals(0, sshServer.accepted.get())
+        assertEquals(listOf(beta), store.saved)
     }
 
     @Test fun savedSshReconnectTakesConsentAndExistenceFromTheVault() {

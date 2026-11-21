@@ -259,6 +259,7 @@ class TrefoilViewModelLifecycleTest {
     }
 
     @Test fun pullToRefreshWithoutALiveConnectionReconnects() {
+        armLiveConnection() // A reconnect only runs for a saved machine.
         mutable.value = mutable.value.copy(connection = ConnectionStatus.Error)
         model.refresh(); advance(0)
         assertTrue(model.isRefreshing.value)

@@ -413,13 +413,13 @@ class TrefoilViewModel internal constructor(application: Application, private va
      */
     private suspend fun connectThroughPlan(requested: SavedEnvironment, startAt: EnvironmentRoute? = null, interactive: Boolean = true) {
         disconnectCurrent()
-        val environment = _environments.value.firstOrNull { it.id == requested.id } ?: requested
+        // A request made before its machine was forgotten never connects it (nor pairs it anew).
+        val environment = _environments.value.firstOrNull { it.id == requested.id } ?: throw MachineRemovedException()
         selectedEnvironment = environment.forStorage()
         val plan = environment.candidateRoutes().let { plan -> startAt?.let { start -> plan.dropWhile { !sameRoute(it, start) } }?.ifEmpty { null } ?: plan }
         val input = environment.ssh?.let { environment.sshInput() }
         // No leg connects for a machine forgotten while the plan runs; one that connected anyway is closed again.
-        val wasSaved = _environments.value.any { it.id == environment.id }
-        fun ensureSaved() { if (wasSaved && _environments.value.none { it.id == environment.id }) throw MachineRemovedException() }
+        fun ensureSaved() { if (_environments.value.none { it.id == environment.id }) throw MachineRemovedException() }
         val outcome = walkConnectionPlan(plan, input?.hasSavedLogin() == true, ::connectionStage,
             direct = { routes ->
                 ensureSaved()
@@ -648,9 +648,10 @@ class TrefoilViewModel internal constructor(application: Application, private va
             if (reconnectWhenOnline?.id == environment.id) reconnectWhenOnline = null
             client.forgetEnvironment(environment.id)
             fileDownloads.htmlRenders.evictEnvironment(environment.id)
+            // Deleted before connection attempts run again: one queued behind this lock then finds no row and stops.
+            initialized.await()
+            vaultMutex.withLock { save { saved -> saved.filterNot { it.id == environment.id } } }
         }
-        initialized.await()
-        vaultMutex.withLock { save { saved -> saved.filterNot { it.id == environment.id } } }
         widgetSync.forget(environment.id)
     }
     private var threadShown = false
