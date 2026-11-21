@@ -112,6 +112,20 @@ class ShellRefreshTest {
         } finally { f.close() }
     }
 
+    @Test fun resyncFollowsTheRefreshTimeoutRules() = runBlocking<Unit> {
+        val f = fixture { n, _ -> if (n == 0) "${snapshot(row("completed"))}, {\"kind\":\"synchronized\"}" else null }
+        try {
+            f.connect()
+            try { f.client.resyncThreads(); fail("An unsynchronized resync must not look done") } catch (_: T3Client.RequestTimedOut) { }
+            assertEquals("Healthy link: only the resync is reported", ConnectionStatus.Connected, f.client.state.value.connection)
+            f.client.ageLink(SHELL_REFRESH_STALE_LINK_MS + 5_000)
+            try { f.client.resyncThreads(); fail("Joins the pending resync, which is still silent") } catch (_: T3Client.RequestTimedOut) { }
+            assertEquals(2, f.requests.count { it.first == "orchestration.subscribeShell" })
+            assertEquals("Stale link: dropped so reconnect runs", ConnectionStatus.Error, f.client.state.value.connection)
+            try { f.client.resyncThreads(); fail("Resync needs a live connection") } catch (_: IllegalStateException) { }
+        } finally { f.close() }
+    }
+
     @Test fun refreshDuringTheFirstSnapshotWaitsForItInsteadOfResubscribing() = runBlocking<Unit> {
         val shellIds = java.util.Collections.synchronizedList(mutableListOf<String>())
         val f = fixture { _, id -> shellIds += id; null }

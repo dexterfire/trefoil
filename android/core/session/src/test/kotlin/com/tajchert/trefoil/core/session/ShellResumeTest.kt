@@ -234,6 +234,77 @@ class ShellResumeTest {
         }
     }
 
+    @Test fun resyncCatchesUpFromTheCursorOnTheLiveConnection() = runBlocking {
+        Fixture().use { f ->
+            val first = f.connect()
+            f.chunk(first, """${Fixture.shell(10, Fixture.project, "${Fixture.thread("a")},${Fixture.thread("b")}")}, {"kind":"synchronized"}""")
+            f.chunk(first, """{"kind":"thread.updated","sequence":12,"location":"active","thread":${Fixture.thread("a", "A1")}}""")
+            val resync = async { f.client.resyncThreads() }
+            val resumed = f.nextShell()
+            assertEquals("Only the missed changes are asked for", 12L, resumed.afterSequence)
+            assertEquals("The old stream is stopped first", first.second, withTimeout(5000) { f.interrupts.receive() })
+            // Late frames of the replaced stream are dropped.
+            f.chunk(first, """{"kind":"thread.updated","sequence":13,"location":"active","thread":${Fixture.thread("a", "Stale")}}""")
+            f.chunk(resumed, """{"kind":"thread.removed","sequence":13,"location":"active","threadId":"b"},{"kind":"thread.updated","sequence":14,"location":"active","thread":${Fixture.thread("a", "A2")}}""")
+            assertFalse("Not done before the completion marker", resync.isCompleted)
+            assertTrue("A catch-up on the same connection keeps writes", f.client.state.value.canWrite)
+            f.chunk(resumed, """{"kind":"synchronized"}""")
+            withTimeout(5000) { resync.await() }
+            assertEquals(listOf("a" to "A2"), f.client.state.value.threads.map { it.id to it.title })
+            assertTrue(f.client.state.value.canWrite)
+            f.client.disconnect()
+            assertEquals("The catch-up moved the cursor", 14L, f.connect().afterSequence)
+        }
+    }
+
+    @Test fun resyncWithoutAUsableCursorLoadsAFullSnapshot() = runBlocking {
+        Fixture().use { f ->
+            f.serverVersion = null
+            val first = f.connect()
+            f.chunk(first, """${Fixture.shell(10, Fixture.project, Fixture.thread("a"))}, {"kind":"synchronized"}""")
+            val resync = async { f.client.resyncThreads() }
+            val full = f.nextShell()
+            assertNull("No origin, no cursor: a snapshot", full.afterSequence)
+            f.chunk(full, """${Fixture.shell(11, Fixture.project, Fixture.thread("b"))}, {"kind":"synchronized"}""")
+            withTimeout(5000) { resync.await() }
+            assertEquals(listOf("b"), f.client.state.value.threads.map { it.id })
+        }
+    }
+
+    @Test fun resyncAndPullShareOnePendingRefreshAndAPullStaysFull() = runBlocking {
+        Fixture().use { f ->
+            val first = f.connect()
+            f.chunk(first, """${Fixture.shell(10, Fixture.project, Fixture.thread("a"))}, {"kind":"synchronized"}""")
+            // A resync during a pending pull joins it.
+            val pull = async { f.client.refreshThreads() }
+            val full = f.nextShell()
+            assertNull(full.afterSequence)
+            assertEquals(first.second, withTimeout(5000) { f.interrupts.receive() })
+            val joined = async { f.client.resyncThreads() }
+            delay(200)
+            assertTrue("No second stream", f.shells.tryReceive().isFailure)
+            f.chunk(full, """${Fixture.shell(20, Fixture.project, Fixture.thread("a", "A1"))}, {"kind":"synchronized"}""")
+            withTimeout(5000) { pull.await(); joined.await() }
+
+            // A pull during a pending resync upgrades it to a full snapshot on the same completion.
+            val resync = async { f.client.resyncThreads() }
+            val resumed = f.nextShell()
+            assertEquals(20L, resumed.afterSequence)
+            val upgrade = async { f.client.refreshThreads() }
+            val upgraded = f.nextShell()
+            assertNull("A pull never resumes", upgraded.afterSequence)
+            assertEquals(full.second, withTimeout(5000) { f.interrupts.receive() })
+            assertEquals(resumed.second, withTimeout(5000) { f.interrupts.receive() })
+            f.chunk(resumed, """{"kind":"thread.updated","sequence":21,"location":"active","thread":${Fixture.thread("a", "Stale")}}, {"kind":"synchronized"}""")
+            assertFalse("The replaced resync stream completes nothing", resync.isCompleted)
+            f.chunk(upgraded, """${Fixture.shell(30, Fixture.project, Fixture.thread("a", "A3"))}, {"kind":"synchronized"}""")
+            withTimeout(5000) { resync.await(); upgrade.await() }
+            assertEquals("A3", f.client.state.value.threads.single().title)
+            delay(100)
+            assertTrue(f.shells.tryReceive().isFailure)
+        }
+    }
+
     @Test fun lostConnectionMidReplayResumesFromTheLastAppliedDelta() = runBlocking {
         Fixture().use { f ->
             val first = f.connect()

@@ -81,6 +81,10 @@ class T3Client(
     private var shellSubscription: String? = null
     /** Completes when the current shell stream's snapshot is synchronized; shared by concurrent [refreshThreads] calls. */
     private var shellRefresh: CompletableDeferred<Unit>? = null
+    /** The pending [shellRefresh] resubscribed from the cursor ([resyncThreads]); a full refresh then upgrades it. */
+    private var shellRefreshResumed = false
+    /** Shell origin of the live connection from its `server.getConfig`; what [resyncThreads] resumes against. */
+    private var liveShellOrigin: ShellOrigin? = null
     private var threadReady = false
     private var authorized = false
     private var previewAuthorized = false
@@ -405,10 +409,11 @@ class T3Client(
                 provider.objects("models").map { ModelOption(provider.string("instanceId"), it.string("slug"), it.string("name"), modes, modelOptionDescriptors(it)) }
             }
             val defaultMode = RuntimeMode.fromWire(config.obj("settings").string("defaultRuntimeMode"))
-            synchronized(lifecycleLock) { check(epoch == generation) { "Connection was cancelled" }; directEndpoints = directEndpointHints(config); tunnelConfig = tunnel }
+            val origin = shellOrigin(environment.id, config)
+            synchronized(lifecycleLock) { check(epoch == generation) { "Connection was cancelled" }; directEndpoints = directEndpointHints(config); tunnelConfig = tunnel; liveShellOrigin = origin }
             update { it.copy(connection = ConnectionStatus.Connected, activeRoute = route, canReadUsage = mayReadUsage, models = models, providers = providerInstances(config), defaultRuntimeMode = defaultMode, threadStopSupported = threadStop, previewTunnelSetting = tunnel.capability, previewTunnelDisabled = tunnel.disabled,
                 selectedModel = it.selectedModel?.let { selected -> models.firstOrNull { m -> m.instanceId == selected.instanceId && m.model == selected.model } ?: selected }) }
-            subscribeShell(epoch, environment.id, shellOrigin(environment.id, config))
+            subscribeShell(epoch, environment.id, origin)
             startRouteHints(epoch, environment, base)
             startRenewal(epoch, base)
             state.value.selectedThreadId?.let { selectThread(it) }
@@ -582,7 +587,7 @@ class T3Client(
         pending.values.forEach { it.completeExceptionally(IllegalStateException(message)) }; pending.clear()
         streams.clear(); heartbeat?.cancel(); socket?.cancel(); socket = null
     }
-    private fun resetRoute() { endDiscovery(); tunnelConfig = PreviewTunnelConfig(); activeBase = null; directEndpoints = null; initialHintSent = false; configSubscription = null; linkStateJob?.cancel(); linkStateJob = null; renewJob?.cancel(); renewJob = null }
+    private fun resetRoute() { endDiscovery(); tunnelConfig = PreviewTunnelConfig(); activeBase = null; liveShellOrigin = null; directEndpoints = null; initialHintSent = false; configSubscription = null; linkStateJob?.cancel(); linkStateJob = null; renewJob?.cancel(); renewJob = null }
     override suspend fun disconnect() = disconnectNow()
     /** [reason] replaces any stale error when the disconnect was not requested by the user. */
     private fun disconnectNow(reason: String? = null) = synchronized(lifecycleLock) {
@@ -746,22 +751,39 @@ class T3Client(
         shellResume.invalidate()
         shellSubscription = subscribe("orchestration.subscribeShell", shellSubscribeInput(null), ::shellItem)
     }
+    /**
+     * A silent catch-up resumes from the cursor when it still describes the rows (same origin, same lists, recent);
+     * otherwise [ShellResume.begin] drops it and this is a full snapshot. Caller holds [lifecycleLock].
+     */
+    private fun subscribeResumedShell() {
+        val environmentId = state.value.environment?.id ?: error("Connect before refreshing threads")
+        val afterSequence = shellResume.begin(environmentId, liveShellOrigin, ShellRows(state.value.projects, state.value.threads), environmentStates.keys.toSet())
+        shellSubscription = subscribe("orchestration.subscribeShell", shellSubscribeInput(afterSequence), ::shellItem)
+    }
     private fun endShellStream(message: String) {
         shellSubscription = null
-        shellRefresh?.completeExceptionally(IllegalStateException(message)); shellRefresh = null
+        shellRefresh?.completeExceptionally(IllegalStateException(message)); shellRefresh = null; shellRefreshResumed = false
     }
-    override suspend fun refreshThreads() {
+    override suspend fun refreshThreads() = refreshShell(resume = false)
+    override suspend fun resyncThreads() = refreshShell(resume = true)
+    /**
+     * [refreshThreads] (full snapshot, cursor dropped) and [resyncThreads] (resume from the cursor) share one pending
+     * refresh: a second call joins it rather than stacking a stream, except that a full refresh asked for while a
+     * resync is pending upgrades it to a full snapshot on the same completion.
+     */
+    private suspend fun refreshShell(resume: Boolean) {
         val (epoch, done) = synchronized(lifecycleLock) {
             check(state.value.connection == ConnectionStatus.Connected && socket != null) { "Connect before refreshing threads" }
-            shellRefresh?.let { return@synchronized generation to it }
-            val done = CompletableDeferred<Unit>()
+            val pending = shellRefresh
+            if (pending != null && (resume || !shellRefreshResumed)) return@synchronized generation to pending
+            val done = pending ?: CompletableDeferred()
             shellRefresh = done
             // The first shell snapshot of this connection is still on its way: wait for it instead of restarting it.
-            if (!shellReady || shellSubscription == null) return@synchronized generation to done
-            // Stop the old stream first: its late frames are dropped, and the new snapshot is authoritative.
+            if (pending == null && (!shellReady || shellSubscription == null)) return@synchronized generation to done
+            // Stop the old stream first: its late frames are dropped, and the new answer is what the rows follow.
             shellSubscription?.let { old -> streams.remove(old); runCatching { send(EffectRpc.signal("Interrupt", old)) } }
-            try { subscribeFullShell() } catch (error: Exception) {
-                shellRefresh = null
+            try { if (resume) subscribeResumedShell() else subscribeFullShell(); shellRefreshResumed = resume } catch (error: Exception) {
+                shellRefresh = null; shellRefreshResumed = false
                 fail(generation, "Thread list refresh failed; reconnect to refresh")
                 throw error
             }
@@ -800,7 +822,7 @@ class T3Client(
             // Only sent for `httpSnapshotFallback`, which Trefoil never asks for: drop the cursor and load a socket snapshot.
             shellResume.invalidate()
             shellSubscription?.let { streams.remove(it); runCatching { send(EffectRpc.signal("Interrupt", it)) } }
-            shellReady = false; writable()
+            shellReady = false; shellRefreshResumed = false; writable()
             shellSubscription = subscribe("orchestration.subscribeShell", shellSubscribeInput(null), ::shellItem)
             return
         }
@@ -827,7 +849,7 @@ class T3Client(
             }
             "synchronized" -> {
                 shellReady = true; writable()
-                shellRefresh?.complete(Unit); shellRefresh = null
+                shellRefresh?.complete(Unit); shellRefresh = null; shellRefreshResumed = false
                 startDiscovery()
             }
         }
