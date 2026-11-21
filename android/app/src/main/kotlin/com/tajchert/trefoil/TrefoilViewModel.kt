@@ -35,6 +35,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import okhttp3.OkHttpClient
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.coroutineContext
@@ -48,11 +49,16 @@ internal val AUTO_RECONNECT_BACKOFF_MS = listOf(2_000L, 5_000L, 15_000L)
 /** After a default-network change, the live connection must answer a ping within this or it is dropped and reconnected. */
 internal const val LINK_CHECK_TIMEOUT_MS = 4_000L
 
-class TrefoilViewModel internal constructor(application: Application, private val vault: EnvironmentStore) : AndroidViewModel(application) {
+class TrefoilViewModel internal constructor(
+    application: Application,
+    private val vault: EnvironmentStore,
+    /** Process-wide ([AppHttp]): the client, the renewer and the probe share its connection pool. */
+    http: OkHttpClient = AppHttp.client,
+) : AndroidViewModel(application) {
     constructor(application: Application) : this(application, EnvironmentVault(application))
     /** One renewer for the client and the probe, so DPoP renewals of a machine are serialized and land in the vault. */
-    private val tokens = EnvironmentTokenRenewer(DeviceDpopKey::loadOrCreate, onRenewed = { renewed, replaces -> saveRenewedToken(renewed, replaces) })
-    private val client = T3Client(viewModelScope, tokens = tokens)
+    private val tokens = EnvironmentTokenRenewer(DeviceDpopKey::loadOrCreate, http = http, onRenewed = { renewed, replaces -> saveRenewedToken(renewed, replaces) })
+    private val client = T3Client(viewModelScope, tokens = tokens, http = http)
     val usageController = UsageController(viewModelScope, { client }, onReport = {
         try { widgetSync.report(it) } catch (e: CancellationException) { throw e } catch (_: Exception) { /* Widget storage must not fail app reads. */ }
     })
@@ -194,7 +200,7 @@ class TrefoilViewModel internal constructor(application: Application, private va
     private var keepAliveCheckPosted = false
     /** Set by an explicit disconnect or forgetting the live machine; until the next connection action nothing starts the service. */
     private var keepAliveLatched = false
-    private val environmentProbe = EnvironmentProbe(tokens = tokens)
+    private val environmentProbe = EnvironmentProbe(http = http, tokens = tokens)
     private val prober = MachineProber(
         // Adapter over the single-route probe; EnvironmentProbe's multi-route probe has the same contract.
         direct = { environment, routes -> probeRoutes(routes) { environmentProbe.probe(environment, it.baseUrl) } },

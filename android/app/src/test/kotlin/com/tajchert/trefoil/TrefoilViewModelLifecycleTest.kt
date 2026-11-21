@@ -273,7 +273,9 @@ class TrefoilViewModelLifecycleTest {
     @Test fun pullToRefreshWithoutALiveConnectionReconnects() {
         armLiveConnection() // A reconnect only runs for a saved machine.
         mutable.value = mutable.value.copy(connection = ConnectionStatus.Error)
-        model.refresh(); advance(0)
+        // Checked before the paused main looper runs: the fixture address fails fast once the shared HTTP client has
+        // resolved it in an earlier test, which would settle the attempt (and the refresh) within advance(0).
+        model.refresh()
         assertTrue(model.isRefreshing.value)
         assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
     }
@@ -294,5 +296,14 @@ class TrefoilViewModelLifecycleTest {
         model.resume(); advance(0)
         assertEquals(1, shellSubscribes().size)
         assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
+    }
+
+    @Test fun theClientTheRenewerAndTheProbeShareTheProcessConnectionPool() {
+        fun field(owner: Any, name: String): Any = owner.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(owner)
+        fun pool(owner: Any) = (field(owner, "http") as okhttp3.OkHttpClient).connectionPool
+        val shared = AppHttp.client.connectionPool
+        assertSame(shared, pool(client))
+        assertSame(shared, pool(field(model, "tokens")))
+        assertSame(shared, pool(field(model, "environmentProbe")))
     }
 }

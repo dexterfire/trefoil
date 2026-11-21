@@ -3,6 +3,7 @@ package com.tajchert.trefoil.widget
 import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.tajchert.trefoil.AppHttp
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.core.session.EnvironmentTokenRenewer
 import com.tajchert.trefoil.core.session.T3Client
@@ -74,11 +75,11 @@ class UsageWidgetWorker(context: Context, parameters: WorkerParameters) : Corout
         val connectionScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         // A renewal made here goes straight to the vault, over the same session's token only.
         val vault = EnvironmentVault(applicationContext)
-        val tokens = EnvironmentTokenRenewer(DeviceDpopKey::loadOrCreate, onRenewed = { renewed, replaces -> withContext(Dispatchers.IO) {
+        val tokens = EnvironmentTokenRenewer(DeviceDpopKey::loadOrCreate, http = AppHttp.client, onRenewed = { renewed, replaces -> withContext(Dispatchers.IO) {
             // Atomic against the view model's writes: a forgotten or re-paired machine is left alone.
             vault.update { saved -> saved.map { if (it.id == renewed.id && it.accessToken in replaces) it.withTokenOf(renewed) else it } }
         } })
-        val client = T3Client(connectionScope, tokens = tokens)
+        val client = T3Client(connectionScope, tokens = tokens, http = AppHttp.client)
         var tunnel: SshTunnel? = null
         try {
             withTimeout(30_000) {
