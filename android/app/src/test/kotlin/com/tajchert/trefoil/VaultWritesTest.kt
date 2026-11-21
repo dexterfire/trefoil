@@ -24,18 +24,19 @@ import org.robolectric.annotation.LooperMode
 @Config(sdk = [35])
 @LooperMode(LooperMode.Mode.PAUSED)
 class VaultWritesTest {
-    /** In-memory stand-in for the encrypted vault, with the same single lock for every write. */
+    /** In-memory stand-in for one process's encrypted vault, with the same single lock and known list for every caller. */
     private class MemoryStore(var saved: List<SavedEnvironment>) : EnvironmentStore {
         /** The next this many reads of the machine list fail, as a keystore hiccup would. */
         @Volatile var failingReads = 0
         @Volatile var hostKeysUnreadable = false
+        override var lastKnown: List<SavedEnvironment>? = null
         override fun read() = synchronized(this) {
             if (failingReads > 0) { failingReads--; throw IllegalStateException("unreadable") }
-            saved
+            saved.also { lastKnown = it }
         }
         override fun readHostKeys(): List<SshHostKey> = if (hostKeysUnreadable) throw IllegalStateException("unreadable") else emptyList()
         override fun writeHostKeys(keys: List<SshHostKey>) = Unit
-        override fun write(environments: List<SavedEnvironment>) = synchronized(this) { saved = environments }
+        override fun write(environments: List<SavedEnvironment>) = synchronized(this) { saved = environments; lastKnown = environments }
         override fun <T> locked(block: () -> T): T = synchronized(this) { block() }
     }
 
@@ -95,6 +96,20 @@ class VaultWritesTest {
         // The vault stayed unreadable through the retry: the change applies to the list loaded at start.
         assertEquals(listOf(alpha, beta.copy(allowInsecureHttp = true)), store.read())
         assertEquals("The machines stay listed", store.read(), model.environments.value)
+    }
+
+    @Test fun aSecondViewModelInTheSameProcessKeepsTheMachinesAfterAFailedStartUpRead() {
+        start()
+        model.viewModelScope.cancel()
+        // The activity is reopened in the same process; this model's own start-up read fails.
+        store.failingReads = 1
+        val second = TrefoilViewModel(RuntimeEnvironment.getApplication(), store)
+        awaitTrue { second.notice.value == "Saved credentials could not be unlocked. Pair this device again." }
+        model = second
+        store.failingReads = 2
+        second.forget(beta)
+        awaitTrue { store.saved != listOf(alpha, beta) || second.notice.value == "Could not remove saved credentials." }
+        assertEquals("The change applies to the list this process knows", listOf(alpha), store.saved)
     }
 
     @Test fun savedSshReconnectTakesConsentAndExistenceFromTheVault() {

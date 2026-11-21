@@ -9,17 +9,25 @@ import org.junit.Test
 
 /** Read-modify-write rules for the view model's vault writes (fixtures only, no real machines). */
 class EnvironmentWritesTest {
-    /** A plain store: reads fail while [failingReads] is positive, like the vault on a keystore hiccup. No retry of its own. */
+    /**
+     * A plain store with the vault's contract: reads fail while [failingReads] is positive (a keystore hiccup), writes
+     * fail while [failingWrites] is, and a successful read or write becomes [lastKnown]. No retry of its own.
+     */
     private class FakeStore(var saved: List<SavedEnvironment>) : EnvironmentStore {
         var failingReads = 0
+        var failingWrites = 0
         var writes = 0
+        override var lastKnown: List<SavedEnvironment>? = null
         override fun read(): List<SavedEnvironment> {
             if (failingReads > 0) { failingReads--; throw IllegalStateException("unreadable") }
-            return saved
+            return saved.also { lastKnown = it }
         }
         override fun readHostKeys(): List<SshHostKey> = emptyList()
         override fun writeHostKeys(keys: List<SshHostKey>) = Unit
-        override fun write(environments: List<SavedEnvironment>) { writes++; saved = environments }
+        override fun write(environments: List<SavedEnvironment>) {
+            if (failingWrites > 0) { failingWrites--; throw IllegalStateException("not written") }
+            writes++; saved = environments; lastKnown = environments
+        }
         override fun <T> locked(block: () -> T): T = synchronized(this) { block() }
     }
 
@@ -56,20 +64,20 @@ class EnvironmentWritesTest {
         widgetRenewsAlpha()
         store.failingReads = 2
         val stored = writes.write(change = renameBeta)
-        // The one case that may lose the widget's newer token; the machines are never emptied.
-        assertEquals(listOf(alpha, beta.copy(name = "Beta 2")), stored)
+        // The widget's write in this process refreshed the known list, so even its token survives; never emptied.
+        assertEquals(listOf(alpha.copy(accessToken = "alpha-new"), beta.copy(name = "Beta 2")), stored)
         assertEquals(stored, store.saved)
     }
 
     @Test fun aNewPairingMayReplaceAVaultNeverReadableInThisProcess() {
         store.failingReads = 1
         assertTrue(runCatching { writes.load() }.isFailure)
-        assertNull(writes.loaded)
+        assertNull(store.lastKnown)
         store.failingReads = 2
         val stored = writes.write(newPairing = true) { saved -> saved.filterNot { it.id == paired.id } + paired }
         assertEquals(listOf(paired), stored)
         assertEquals(listOf(paired), store.saved)
-        assertEquals("The write loaded the list", listOf(paired), writes.loaded)
+        assertEquals("The write loaded the list", listOf(paired), store.lastKnown)
     }
 
     @Test fun anyOtherWriteFailsWhileTheListWasNeverLoaded() {
@@ -80,7 +88,7 @@ class EnvironmentWritesTest {
         assertTrue(error is IllegalStateException)
         assertEquals(0, store.writes)
         assertEquals(listOf(alpha, beta), store.saved)
-        assertNull(writes.loaded)
+        assertNull(store.lastKnown)
     }
 
     @Test fun aSuccessfulWriteLoadsTheListForLaterFailedReads() {
@@ -90,5 +98,23 @@ class EnvironmentWritesTest {
         store.failingReads = 2
         val stored = writes.write { saved -> saved.filterNot { it.id == "alpha" } }
         assertEquals(listOf(beta.copy(name = "Beta 2")), stored)
+    }
+
+    @Test fun aListLoadedByAnyCallerInThisProcessIsKnownToEveryOther() {
+        // An earlier view model (or the widget) read the vault; a later one whose own start-up read failed shares it.
+        EnvironmentWrites(store).load()
+        store.failingReads = 3
+        assertTrue(runCatching { writes.load() }.isFailure)
+        val stored = writes.write(newPairing = true) { saved -> saved.filterNot { it.id == paired.id } + paired }
+        assertEquals("A pairing never replaces machines known in this process", listOf(alpha, beta, paired), stored)
+    }
+
+    @Test fun aFailedWriteLeavesWhatWasReadAsTheKnownList() {
+        store.failingWrites = 1
+        assertTrue(runCatching { writes.write(change = renameBeta) }.isFailure)
+        assertEquals("What is still on disk", listOf(alpha, beta), store.lastKnown)
+        store.failingReads = 2
+        val stored = writes.write(newPairing = true) { saved -> saved.filterNot { it.id == paired.id } + paired }
+        assertEquals(listOf(alpha, beta, paired), stored)
     }
 }
