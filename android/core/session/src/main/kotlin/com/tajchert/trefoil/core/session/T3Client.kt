@@ -60,12 +60,14 @@ class T3Client(
     dpopKey: (() -> DpopKey)? = null,
     /** Renews DPoP sessions; share one per process so renewals of an environment are serialized and persisted. */
     private val tokens: EnvironmentTokenRenewer = EnvironmentTokenRenewer(dpopKey),
+    /** Share one per process with the renewer and the probe: this client derives its own from it and keeps its connection pool. */
+    http: OkHttpClient = OkHttpClient(),
 ) : TrefoilClient {
     private val authorizer = tokens.authorizer
     private var renewJob: Job? = null
     private val mutable = MutableStateFlow(ClientState())
     override val state: StateFlow<ClientState> = mutable.asStateFlow()
-    private val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).build()
+    private val http = http.newBuilder().followRedirects(false).followSslRedirects(false).build()
     private val fileDownloads = mutableSetOf<Call>()
     @Volatile private var socket: WebSocket? = null
     @Volatile private var generation = 0L

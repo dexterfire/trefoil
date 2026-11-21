@@ -223,6 +223,12 @@ data class ClientState(
     val canReadUsage: Boolean = false,
     /** Route of the live connection. For SSH: `EnvironmentRoute(Ssh, <ephemeral loopback>, Paired)`, display only, never persisted. */
     val activeRoute: EnvironmentRoute? = null,
+    /**
+     * [projects] and [threads] hold a shell snapshot of [environment]: applied live, retained from earlier in this
+     * process, or restored from the local cache. False until a first snapshot exists, so an empty list is "loading",
+     * not "no threads". It says nothing about freshness; see [canRead] and [canWrite].
+     */
+    val shellLoaded: Boolean = false,
     /** Dev servers T3 discovered on the environment host; see PortModels.kt. */
     val localServers: LocalServerCatalog = LocalServerCatalog(),
     /**
@@ -289,6 +295,11 @@ interface TrefoilClient {
      * connection or the snapshot is late; a late refresh drops the connection only when its heartbeat is stale too.
      */
     suspend fun refreshThreads() { error("Thread refresh is unavailable") }
+    /**
+     * Silent catch-up of the live environment's shell: resubscribes with the resume cursor so only the missed changes
+     * arrive, or a full snapshot when there is no valid cursor. Same completion and failure rules as [refreshThreads].
+     */
+    suspend fun resyncThreads() { refreshThreads() }
     suspend fun refreshScreens() { error("Remote screens are unavailable") }
     suspend fun screenAccess(target: ScreenTarget): ScreenAccess { error("Remote screens are unavailable") }
     fun isScreenAccessCurrent(access: ScreenAccess): Boolean = false
