@@ -59,6 +59,8 @@ class TrefoilViewModel internal constructor(
     /** One renewer for the client and the probe, so DPoP renewals of a machine are serialized and land in the vault. */
     private val tokens = EnvironmentTokenRenewer(DeviceDpopKey::loadOrCreate, http = http, onRenewed = { renewed, replaces -> saveRenewedToken(renewed, replaces) })
     private val client = T3Client(viewModelScope, tokens = tokens, http = http)
+    /** Shell re-reads (pull-to-refresh, resume catch-up) go through this; replaced only by tests. */
+    internal var shellReads: TrefoilClient = client
     val usageController = UsageController(viewModelScope, { client }, onReport = {
         try { widgetSync.report(it) } catch (e: CancellationException) { throw e } catch (_: Exception) { /* Widget storage must not fail app reads. */ }
     })
@@ -714,7 +716,7 @@ class TrefoilViewModel internal constructor(
         viewModelScope.launch {
             try {
                 // A reconnect that stops at a host-key or login prompt is the user's turn, not a refresh in progress.
-                if (live) client.refreshThreads()
+                if (live) shellReads.refreshThreads()
                 else combine(_working, _sshHostKey, _sshLogin) { working, hostKey, login -> !working || hostKey != null || login != null }.first { it }
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) { _notice.value = "Could not refresh threads. Check the connection and try again." }
@@ -722,13 +724,17 @@ class TrefoilViewModel internal constructor(
         }
     }
 
-    /** Resuming on a retained live session re-reads the shell, so rows never show statuses from before the background. */
+    /**
+     * Resuming on a retained live session catches the shell up ([TrefoilClient.resyncThreads]: only the changes missed
+     * while in the background, or a full snapshot without a valid cursor), so rows never show statuses from before the
+     * background. Pull-to-refresh stays a full snapshot ([refresh]).
+     */
     private fun refreshRetainedShell() {
         val away = backgroundedAt?.let { android.os.SystemClock.elapsedRealtime() - it } ?: return
         if (away < RESUME_SHELL_REFRESH_MIN_BACKGROUND_MS || silentShellRefresh?.isActive == true || _isRefreshing.value) return
         if (state.value.connection != ConnectionStatus.Connected || _working.value) return
         silentShellRefresh = viewModelScope.launch {
-            try { client.refreshThreads() } catch (e: CancellationException) { throw e } catch (_: Exception) { /* A failed refresh fails the connection; drop handling reconnects. */ }
+            try { shellReads.resyncThreads() } catch (e: CancellationException) { throw e } catch (_: Exception) { /* A failed refresh fails the connection; drop handling reconnects. */ }
         }
     }
 

@@ -298,6 +298,44 @@ class TrefoilViewModelLifecycleTest {
         assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
     }
 
+    /** Records which shell read each path asks for; each read waits for its gate, as a slow snapshot would. */
+    private inner class ShellReadsSpy : TrefoilClient by client {
+        val calls = mutableListOf<String>()
+        var gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        override suspend fun refreshThreads() { calls += "refresh"; gate.await() }
+        override suspend fun resyncThreads() { calls += "resync"; gate.await() }
+    }
+
+    @Test fun resumeCatchesTheShellUpWithAResyncWhilePullToRefreshStaysAFullSnapshot() {
+        val spy = ShellReadsSpy()
+        model.shellReads = spy
+        model.pause(); advance(RESUME_SHELL_REFRESH_MIN_BACKGROUND_MS + 1_000)
+        model.resume(); advance(0)
+        assertEquals(listOf("resync"), spy.calls)
+        assertFalse("A silent catch-up never shows the pull indicator", model.isRefreshing.value)
+        // A second resume while the catch-up is pending does not stack another one.
+        model.pause(); advance(RESUME_SHELL_REFRESH_MIN_BACKGROUND_MS + 1_000)
+        model.resume(); advance(0)
+        assertEquals(listOf("resync"), spy.calls)
+        spy.gate.complete(Unit); advance(0)
+        spy.gate = kotlinx.coroutines.CompletableDeferred()
+        model.refresh(); advance(0)
+        assertEquals(listOf("resync", "refresh"), spy.calls)
+        assertTrue(model.isRefreshing.value)
+        assertTrue("Shell reads are read-only", sent.none { it.contains("dispatchCommand") })
+        assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
+    }
+
+    @Test fun aFailedResumeCatchUpIsSilent() {
+        val spy = ShellReadsSpy()
+        model.shellReads = spy
+        model.pause(); advance(RESUME_SHELL_REFRESH_MIN_BACKGROUND_MS + 1_000)
+        model.resume(); advance(0)
+        spy.gate.completeExceptionally(IllegalStateException("late snapshot")); advance(0)
+        assertNull(model.notice.value)
+        assertFalse(model.isRefreshing.value)
+    }
+
     @Test fun theClientTheRenewerAndTheProbeShareTheProcessConnectionPool() {
         fun field(owner: Any, name: String): Any = owner.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(owner)
         fun pool(owner: Any) = (field(owner, "http") as okhttp3.OkHttpClient).connectionPool
