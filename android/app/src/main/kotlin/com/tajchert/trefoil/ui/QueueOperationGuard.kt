@@ -14,23 +14,36 @@ internal fun ClientState.queueSignature(): List<Any> = listOf(queueHeld, queuedM
 internal class QueueOperationGuard(private val guard: StopGuard) {
     private val baseline = HashMap<String, List<Any>>()
     private val completed = HashSet<String>()
+    /** The operation currently holding each key; a late callback from an expired operation carries an older token. */
+    private val tokens = HashMap<String, Long>()
+    private var nextToken = 0L
     /** Keys (see [stopKey]) whose queue operation is in flight. */
     val pending: StateFlow<Set<String>> get() = guard.pending
     val holdMs: Long get() = guard.holdMs
 
-    /** True when the caller may dispatch: no operation was in flight for [key]. [signature] is the queue as the tap saw it. */
-    fun tryBegin(key: String, signature: List<Any>): Boolean {
-        if (!guard.tryBegin(key)) return false
+    /** A token when the caller may dispatch (no operation was in flight for [key]), else null. [signature] is the queue as the tap saw it. */
+    fun tryBegin(key: String, signature: List<Any>): Long? {
+        if (!guard.tryBegin(key)) return null
         baseline[key] = signature; completed.remove(key)
-        return true
+        return (++nextToken).also { tokens[key] = it }
     }
-    /** The command got its answer (accepted); the guard now waits for the queue to refresh. [signature] is the current queue. */
-    fun completed(key: String, signature: List<Any>) { completed += key; onState(key, signature) }
+    /**
+     * The command got its answer (accepted); the guard now waits for the queue to refresh. [signature] is the current queue of
+     * [key]'s thread, or null when another thread is selected (then only that thread's own states can release it).
+     */
+    fun completed(key: String, token: Long, signature: List<Any>?) {
+        if (tokens[key] != token) return
+        completed += key
+        if (signature != null) onState(key, signature)
+    }
     /** The command failed or its outcome is uncertain: nothing to wait for. */
-    fun failed(key: String) = release(key)
+    fun failed(key: String, token: Long) { if (tokens[key] == token) release(key) }
     /** Feed every state: releases a completed operation once the queue differs from what the tap saw. */
     fun onState(key: String, signature: List<Any>) { if (key in completed && baseline[key] != signature) release(key) }
-    fun expire(key: String) { guard.expire(key); if (key !in guard.pending.value) forget(key) }
+    fun expire(key: String, token: Long) {
+        if (tokens[key] != token) return
+        guard.expire(key); if (key !in guard.pending.value) forget(key)
+    }
     private fun release(key: String) { guard.release(key); forget(key) }
-    private fun forget(key: String) { baseline.remove(key); completed.remove(key) }
+    private fun forget(key: String) { baseline.remove(key); completed.remove(key); tokens.remove(key) }
 }

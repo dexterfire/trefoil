@@ -630,10 +630,14 @@ class TrefoilViewModel internal constructor(application: Application, private va
     private fun queueOperation(failure: String, block: suspend () -> Unit) {
         val current = client.state.value
         val key = stopKey(current.environment?.id, current.selectedThreadId)
-        if (!queueGuard.tryBegin(key, current.queueSignature())) return
-        viewModelScope.launch { delay(queueGuard.holdMs); queueGuard.expire(key) }
+        val token = queueGuard.tryBegin(key, current.queueSignature()) ?: return
+        viewModelScope.launch { delay(queueGuard.holdMs); queueGuard.expire(key, token) }
         mutation(failure) {
-            try { block(); queueGuard.completed(key, client.state.value.queueSignature()) } catch (e: Throwable) { queueGuard.failed(key); throw e }
+            try {
+                block()
+                val now = client.state.value
+                queueGuard.completed(key, token, now.queueSignature().takeIf { stopKey(now.environment?.id, now.selectedThreadId) == key })
+            } catch (e: Throwable) { queueGuard.failed(key, token); throw e }
         }
     }
     fun cancelQueued(runId: String) = queueOperation("Could not remove the queued message. Check the queue before trying again.") { client.cancelQueuedMessage(runId) }
