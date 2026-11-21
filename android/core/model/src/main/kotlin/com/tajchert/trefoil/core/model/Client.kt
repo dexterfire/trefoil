@@ -81,6 +81,10 @@ data class ToolActivity(
     /** The turn item's last update; T3 times a work entry from `startedAt ?? updatedAt`. */
     val updatedAt: String? = null,
 )
+/** How a message sent while the thread works is delivered (T3 `ActiveTurnComposerAction` `queue` / `steer`). */
+enum class FollowUpMode { Queue, Steer }
+/** A user message waiting in the selected thread's queue: its queued run and message, with the message text. */
+data class QueuedMessage(val runId: String, val messageId: String, val text: String, val held: Boolean = false)
 data class ConversationRun(
     val id: String, val status: String,
     val requestedAt: String? = null, val startedAt: String? = null, val completedAt: String? = null,
@@ -202,6 +206,14 @@ data class ClientState(
     val backgroundWork: List<PendingBackgroundTask> = emptyList(),
     /** Server `environment.capabilities.threadStop`; false when not reported. */
     val threadStopSupported: Boolean = false,
+    /** Selected thread's user messages queued behind the active run (T3 `getUserQueuedThreadRuns`), in queue order. */
+    val queuedMessages: List<QueuedMessage> = emptyList(),
+    /** A stop (or restart) held the selected thread's queue; it starts again only on [Client.resumeQueue]. */
+    val queueHeld: Boolean = false,
+    /** The selected thread's active turn accepts steering (T3 `canPromoteToSteer`); otherwise follow-ups queue. */
+    val canSteer: Boolean = false,
+    /** Something on the selected thread can be stopped: a live run, pending background work or an active subagent. */
+    val canStop: Boolean = false,
     /** Session grants `diagnostics:read`, which `server.getUsageSummary` requires. Limits only need read access. */
     val canReadUsage: Boolean = false,
     /** Route of the live connection. For SSH: `EnvironmentRoute(Ssh, <ephemeral loopback>, Paired)`, display only, never persisted. */
@@ -274,7 +286,25 @@ interface TrefoilClient {
     /** Streams a signed asset into caller-owned storage; failures may leave partial bytes. */
     suspend fun downloadFile(reference: RemoteFileReference, output: java.io.OutputStream, environmentId: String, threadId: String, onProgress: (FileDownloadProgress) -> Unit = {}): DownloadedFile { error("File downloads are unavailable") }
     suspend fun sendMessage(text: String)
+    /**
+     * Sends [text] to the selected thread. While it works, [FollowUpMode.Queue] sends `queue_after_active` and
+     * [FollowUpMode.Steer] `start_immediately` with `deliveryIntent: "steer"` (refused locally unless
+     * [ClientState.canSteer]); an idle thread starts immediately either way. Never replayed.
+     */
+    suspend fun sendMessage(text: String, mode: FollowUpMode) { error("Follow-up delivery is unavailable") }
     suspend fun interruptRun()
+    /**
+     * Stops everything on the selected thread, like T3's thread Stop: `thread.stop` when [ClientState.threadStopSupported],
+     * otherwise `run.interrupt {runId, holdQueue: true}` on the live run, or on the latest run while background work is
+     * pending. Both hold the queue ([ClientState.queueHeld]). Never replayed.
+     */
+    suspend fun stopThread() { error("Stopping the thread is unavailable") }
+    /** `queued-run.cancel {runId}` for one of [ClientState.queuedMessages]. */
+    suspend fun cancelQueuedMessage(runId: String) { error("Queue changes are unavailable") }
+    /** Sends a queued message now: `queued-message.promote-to-steer` into the active run, or `queued-run.start` when idle. */
+    suspend fun steerQueuedMessage(runId: String) { error("Queue changes are unavailable") }
+    /** `queue.resume`: restarts a held queue. */
+    suspend fun resumeQueue() { error("Queue changes are unavailable") }
     /**
      * Stops one subagent of the selected (parent) thread, following T3 mobile's
      * `resolveSubagentStopTarget` rules. Never replayed; outcomes reconcile from the projection.
