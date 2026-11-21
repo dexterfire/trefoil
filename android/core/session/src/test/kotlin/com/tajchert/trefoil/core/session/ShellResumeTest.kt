@@ -4,6 +4,7 @@ import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.core.protocol.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.*
 import okhttp3.*
 import okhttp3.mockwebserver.*
@@ -99,6 +100,29 @@ class ShellResumeTest {
         assertNull("Evicted rows take their cursor along", resume.cursor("env"))
     }
 
+    @Test fun snapshotRecordedBeforeTheOriginWaitsForIt() {
+        var now = 1_000L
+        val resume = ShellResume { now }
+        assertFalse(resume.mayResume("env", rows))
+        resume.beginBeforeOrigin("env", setOf("env"))
+        resume.record(snapshot(10)); resume.record(delta(11))
+        assertFalse("No origin yet: never resumes", resume.mayResume("env", rows))
+        resume.originKnown(origin)
+        assertTrue(resume.mayResume("env", rows))
+        assertFalse("Other rows", resume.mayResume("env", ShellRows(mutableListOf<Any>(), mutableListOf<Any>())))
+        assertEquals(11L, resume.begin("env", origin, rows, setOf("env")))
+        resume.originKnown(null)
+        assertEquals("No pending origin: a no-op", 11L, resume.cursor("env")?.sequence)
+        resume.beginBeforeOrigin("env", setOf("env"))
+        assertNull("A snapshot start drops the old cursor", resume.cursor("env"))
+        resume.record(snapshot(12))
+        resume.originKnown(null)
+        assertNull("An unnamed build carries no cursor", resume.cursor("env"))
+        resume.beginBeforeOrigin("env", setOf("env")); resume.record(snapshot(13)); resume.originKnown(origin)
+        now += SHELL_RESUME_MAX_AGE_MS
+        assertFalse("Too old", resume.mayResume("env", rows))
+    }
+
     private class Fixture : AutoCloseable {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val client = T3Client(scope)
@@ -109,9 +133,14 @@ class ShellResumeTest {
         @Volatile var environmentId = "env"
         @Volatile var serverVersion: String? = "1.2.3"
         @Volatile var sessionDown = false
+        /** When false, `server.getConfig` requests wait in [heldConfigs] for [answerConfig]. */
+        @Volatile var answerConfigs = true
+        val heldConfigs = Channel<Pair<WebSocket, String>>(Channel.UNLIMITED)
+        /** Socket request tags and HTTP paths in arrival order. */
+        val log = java.util.concurrent.CopyOnWriteArrayList<String>()
         init {
             server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
-                override fun dispatch(request: RecordedRequest): MockResponse = when {
+                override fun dispatch(request: RecordedRequest): MockResponse = log.add(request.path.orEmpty().substringBefore("?")).let { when {
                     request.path == "/.well-known/t3/environment" -> json("""{"environmentId":"$environmentId","orchestrationProtocolVersion":2}""")
                     request.path == "/api/auth/session" && sessionDown -> MockResponse().setResponseCode(503)
                     request.path == "/api/auth/session" -> json("""{"authenticated":true,"permissions":["orchestration:read","orchestration:operate"]}""")
@@ -127,19 +156,21 @@ class ShellResumeTest {
                                 "Request" -> Unit
                                 else -> return
                             }
+                            log.add(frame.string("tag"))
                             when (frame.string("tag")) {
-                                "server.getConfig" -> {
-                                    val environment = serverVersion?.let { """"environment":{"environmentId":"$environmentId","serverVersion":"$it","databaseMigration":40,"capabilities":{}},""" }.orEmpty()
-                                    webSocket.send("""{"_tag":"Exit","requestId":"$id","exit":{"_tag":"Success","value":{$environment"providers":[]}}}""")
-                                }
+                                "server.getConfig" -> if (answerConfigs) answerConfig(webSocket to id) else heldConfigs.trySend(webSocket to id)
                                 "orchestration.subscribeShell" -> shells.trySend(Triple(webSocket, id, frame.obj("payload")))
                             }
                         }
                     })
                     else -> MockResponse().setResponseCode(404)
-                }
+                } }
             }
             server.start()
+        }
+        fun answerConfig(request: Pair<WebSocket, String>) {
+            val environment = serverVersion?.let { """"environment":{"environmentId":"$environmentId","serverVersion":"$it","databaseMigration":40,"capabilities":{}},""" }.orEmpty()
+            request.first.send("""{"_tag":"Exit","requestId":"${request.second}","exit":{"_tag":"Success","value":{$environment"providers":[]}}}""")
         }
         fun environment() = SavedEnvironment(environmentId, "Fixture", server.url("/").toString(), "fixture-token")
         suspend fun connect(): Triple<WebSocket, String, JsonObject> { client.connect(environment()); return nextShell() }
@@ -231,6 +262,52 @@ class ShellResumeTest {
             f.client.disconnect()
             assertEquals(20L, f.connect().afterSequence)
             assertEquals("A2", f.client.state.value.threads.single().title)
+        }
+    }
+
+    @Test fun coldConnectAsksForTheShellWithoutWaitingForTheConfig() = runBlocking {
+        Fixture().use { f ->
+            f.answerConfigs = false
+            val connecting = async { f.client.connect(f.environment()) }
+            val shell = f.nextShell()
+            assertNull(shell.afterSequence)
+            val config = withTimeout(5000) { f.heldConfigs.receive() }
+            assertTrue("The config is asked first", f.log.indexOf("server.getConfig") < f.log.indexOf("orchestration.subscribeShell"))
+            f.chunk(shell, """${Fixture.shell(10, Fixture.project, Fixture.thread("a"))}, {"kind":"synchronized"}""")
+            val early = f.client.state.value
+            assertEquals(ConnectionStatus.Connecting, early.connection)
+            assertTrue(early.shellLoaded)
+            assertFalse("Writes wait for a configured connection", early.canWrite || early.canWriteThreads || early.canRead || early.threadActionsConfigured)
+            f.answerConfig(config)
+            withTimeout(5000) { connecting.await() }
+            val live = withTimeout(5000) { f.client.state.first { it.canWrite } }
+            assertTrue(live.canWriteThreads && live.threadActionsConfigured && live.connection == ConnectionStatus.Connected)
+            withTimeout(5000) { while ("subscribeServerConfig" !in f.log || "/api/connect/link-state" !in f.log) delay(10) }
+            // The early snapshot's cursor took its origin from the config, so the next connect resumes.
+            f.client.disconnect(); f.answerConfigs = true
+            assertEquals(10L, f.connect().afterSequence)
+        }
+    }
+
+    @Test fun resumableCursorWaitsForTheConfigAndRouteHintsWaitForTheShell() = runBlocking {
+        Fixture().use { f ->
+            f.chunk(f.connect(), """${Fixture.shell(10, Fixture.project, Fixture.thread("a"))}, {"kind":"synchronized"}""")
+            // This connection's own hints arrive first, so none of them count against the next one.
+            withTimeout(5000) { while ("subscribeServerConfig" !in f.log || "/api/connect/link-state" !in f.log) delay(10) }
+            f.client.disconnect(); f.log.clear(); f.answerConfigs = false
+            val connecting = async { f.client.connect(f.environment()) }
+            val config = withTimeout(5000) { f.heldConfigs.receive() }
+            delay(200)
+            assertTrue("The origin decides whether the cursor resumes", f.shells.tryReceive().isFailure)
+            f.answerConfig(config)
+            val resumed = f.nextShell()
+            assertEquals(10L, resumed.afterSequence)
+            withTimeout(5000) { connecting.await() }
+            delay(200)
+            assertFalse("No route hints before the shell is synchronized", "subscribeServerConfig" in f.log || "/api/connect/link-state" in f.log)
+            f.chunk(resumed, """{"kind":"synchronized"}""")
+            withTimeout(5000) { while ("subscribeServerConfig" !in f.log || "/api/connect/link-state" !in f.log) delay(10) }
+            assertTrue(f.client.state.value.canWrite)
         }
     }
 

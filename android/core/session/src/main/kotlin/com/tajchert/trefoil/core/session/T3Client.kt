@@ -135,6 +135,8 @@ class T3Client(
     /** The live connection's preview-tunnel config, kept current by [serverConfigEvent]. Guarded by [lifecycleLock]. */
     private var tunnelConfig = PreviewTunnelConfig()
     private var linkStateJob: Job? = null
+    /** [startRouteHints] for the live connection, run at its first shell `synchronized` marker. */
+    private var pendingRouteHints: (() -> Unit)? = null
     /** Whether the first (getConfig + link-state) hint went out; earlier snapshots only update [directEndpoints]. */
     private var initialHintSent = false
     /** Mutations between their first local check and their outcome; see [isIdleForRouteSwitch]. */
@@ -394,7 +396,18 @@ class T3Client(
                     if (epoch == generation && socket?.send(EffectRpc.signal("Ping").toString()) != true) fail(epoch, "Connection lost; reconnect to refresh")
                 }
             } }
-            val config = rpc("server.getConfig", buildJsonObject {}).jsonObject
+            // Without a cursor that could resume these rows, the shell snapshot does not depend on the config: ask for both
+            // at once (config first, so its small reply leads). With one, the config's origin decides whether the cursor
+            // still resumes, so the shell waits for it.
+            val early = synchronized(lifecycleLock) {
+                check(epoch == generation) { "Connection was cancelled" }
+                !shellResume.mayResume(environment.id, ShellRows(state.value.projects, state.value.threads))
+            }
+            val config = coroutineScope {
+                val reply = async(start = CoroutineStart.UNDISPATCHED) { rpc("server.getConfig", buildJsonObject {}, epoch).jsonObject }
+                if (early) subscribeShellBeforeOrigin(epoch, environment.id)
+                reply.await()
+            }
             check(epoch == generation) { "Connection was cancelled" }
             authorized = mayOperate
             update { it.copy(threadActionsConfigured = true) }
@@ -410,11 +423,15 @@ class T3Client(
             }
             val defaultMode = RuntimeMode.fromWire(config.obj("settings").string("defaultRuntimeMode"))
             val origin = shellOrigin(environment.id, config)
-            synchronized(lifecycleLock) { check(epoch == generation) { "Connection was cancelled" }; directEndpoints = directEndpointHints(config); tunnelConfig = tunnel; liveShellOrigin = origin }
+            synchronized(lifecycleLock) { check(epoch == generation) { "Connection was cancelled" }; directEndpoints = directEndpointHints(config); tunnelConfig = tunnel; liveShellOrigin = origin; shellResume.originKnown(origin) }
             update { it.copy(connection = ConnectionStatus.Connected, activeRoute = route, canReadUsage = mayReadUsage, models = models, providers = providerInstances(config), defaultRuntimeMode = defaultMode, threadStopSupported = threadStop, previewTunnelSetting = tunnel.capability, previewTunnelDisabled = tunnel.disabled,
                 selectedModel = it.selectedModel?.let { selected -> models.firstOrNull { m -> m.instanceId == selected.instanceId && m.model == selected.model } ?: selected }) }
-            subscribeShell(epoch, environment.id, origin)
-            startRouteHints(epoch, environment, base)
+            // Route hints (a second config snapshot and the link-state read) would compete with the snapshot on a slow
+            // link; they wait for the shell's synchronized marker.
+            synchronized(lifecycleLock) { check(epoch == generation) { "Connection was cancelled" }; pendingRouteHints = { startRouteHints(epoch, environment, base) } }
+            if (!early) subscribeShell(epoch, environment.id, origin)
+            // An early shell may already be synchronized; writes still needed Connected, so re-evaluate them now.
+            synchronized(lifecycleLock) { if (epoch == generation) { writable(); shellLive() } }
             startRenewal(epoch, base)
             state.value.selectedThreadId?.let { selectThread(it) }
         } catch (error: CancellationException) {
@@ -443,6 +460,7 @@ class T3Client(
      * Route hints of the live connection: one [RouteHints] with `server.getConfig` `directEndpoints` and the
      * link-state tunnel, then one per `subscribeServerConfig` snapshot whose `directEndpoints` change. The config
      * stream is optional (its end never fails the session) and dies with the connection, like the link-state read.
+     * Started at the connection's first shell `synchronized` marker (see [shellLive]), never before.
      */
     private fun startRouteHints(epoch: Long, environment: SavedEnvironment, base: HttpUrl) = synchronized(lifecycleLock) {
         if (epoch != generation) return@synchronized
@@ -587,7 +605,7 @@ class T3Client(
         pending.values.forEach { it.completeExceptionally(IllegalStateException(message)) }; pending.clear()
         streams.clear(); heartbeat?.cancel(); socket?.cancel(); socket = null
     }
-    private fun resetRoute() { endDiscovery(); tunnelConfig = PreviewTunnelConfig(); activeBase = null; liveShellOrigin = null; directEndpoints = null; initialHintSent = false; configSubscription = null; linkStateJob?.cancel(); linkStateJob = null; renewJob?.cancel(); renewJob = null }
+    private fun resetRoute() { endDiscovery(); tunnelConfig = PreviewTunnelConfig(); activeBase = null; liveShellOrigin = null; pendingRouteHints = null; directEndpoints = null; initialHintSent = false; configSubscription = null; linkStateJob?.cancel(); linkStateJob = null; renewJob?.cancel(); renewJob = null }
     override suspend fun disconnect() = disconnectNow()
     /** [reason] replaces any stale error when the disconnect was not requested by the user. */
     private fun disconnectNow(reason: String? = null) = synchronized(lifecycleLock) {
@@ -817,6 +835,21 @@ class T3Client(
         val afterSequence = shellResume.begin(environmentId, origin, ShellRows(state.value.projects, state.value.threads), environmentStates.keys.toSet())
         shellSubscription = subscribe("orchestration.subscribeShell", shellSubscribeInput(afterSequence), ::shellItem)
     }
+    /**
+     * The snapshot subscription of a connect with no resumable cursor, sent alongside `server.getConfig`; its cursor
+     * gets the origin once the config answers ([ShellResume.originKnown]).
+     */
+    private fun subscribeShellBeforeOrigin(epoch: Long, environmentId: String) = synchronized(lifecycleLock) {
+        check(epoch == generation && state.value.environment?.id == environmentId) { "Connection was cancelled" }
+        shellResume.beginBeforeOrigin(environmentId, environmentStates.keys.toSet())
+        shellSubscription = subscribe("orchestration.subscribeShell", shellSubscribeInput(null), ::shellItem)
+    }
+    /** Starts what waits for both a configured connection and a synchronized shell. Caller holds [lifecycleLock]. */
+    private fun shellLive() {
+        if (!shellReady || state.value.connection != ConnectionStatus.Connected) return
+        startDiscovery()
+        pendingRouteHints?.let { pendingRouteHints = null; it() }
+    }
     private fun shellItem(item: JsonObject) {
         if (item.string("kind") == "snapshot-required") {
             // Only sent for `httpSnapshotFallback`, which Trefoil never asks for: drop the cursor and load a socket snapshot.
@@ -850,7 +883,7 @@ class T3Client(
             "synchronized" -> {
                 shellReady = true; writable()
                 shellRefresh?.complete(Unit); shellRefresh = null; shellRefreshResumed = false
-                startDiscovery()
+                shellLive()
             }
         }
         // After the rows changed: an item that failed to apply never moves the cursor.

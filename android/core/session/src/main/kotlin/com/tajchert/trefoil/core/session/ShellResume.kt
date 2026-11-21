@@ -41,8 +41,11 @@ internal class ShellRows(val projects: List<*>, val threads: List<*>) {
     fun sameAs(other: ShellRows) = projects === other.projects && threads === other.threads
 }
 
-/** The shell rows' cursor: the highest applied `sequence` since the authoritative snapshot taken at [snapshotAtMillis]. */
-internal data class ShellCursor(val origin: ShellOrigin, val sequence: Long, val snapshotAtMillis: Long, val rows: ShellRows)
+/**
+ * The shell rows' cursor: the highest applied `sequence` since the authoritative snapshot taken at [snapshotAtMillis].
+ * [origin] is null only while the subscription that recorded it waits for `server.getConfig`; such a cursor never resumes.
+ */
+internal data class ShellCursor(val origin: ShellOrigin?, val sequence: Long, val snapshotAtMillis: Long, val rows: ShellRows)
 
 /** `OrchestrationV2SubscribeShellInput`. Without `httpSnapshotFallback`, a gap the server cannot replay answers a socket snapshot. */
 internal fun shellSubscribeInput(afterSequence: Long?): JsonObject = buildJsonObject {
@@ -71,8 +74,42 @@ internal class ShellResume(private val clockMillis: () -> Long = System::current
     private val cursors = mutableMapOf<String, ShellCursor>()
     private var active: ShellOrigin? = null
     private var activeEnvironmentId: String? = null
+    /** The active subscription started before its origin was known; see [beginBeforeOrigin]. */
+    private var originPending = false
 
     fun cursor(environmentId: String): ShellCursor? = cursors[environmentId]
+
+    /**
+     * Whether [environmentId] has a cursor that could resume [rows] if the server origin still matches. False means
+     * no origin can make [begin] resume, so the subscription may start before `server.getConfig` answers.
+     */
+    fun mayResume(environmentId: String, rows: ShellRows): Boolean {
+        val cursor = cursors[environmentId] ?: return false
+        val age = clockMillis() - cursor.snapshotAtMillis
+        return cursor.origin != null && cursor.rows.sameAs(rows) && age in 0 until SHELL_RESUME_MAX_AGE_MS
+    }
+
+    /**
+     * Starts a snapshot subscription for [environmentId] before the server origin is known (only when [mayResume] is
+     * false). The snapshot it records waits for [originKnown]: a known origin completes the cursor, none drops it.
+     */
+    fun beginBeforeOrigin(environmentId: String, retainedEnvironments: Set<String>) {
+        cursors.keys.retainAll(retainedEnvironments + environmentId)
+        activeEnvironmentId = environmentId
+        active = null
+        originPending = true
+        cursors.remove(environmentId)
+    }
+
+    /** The origin of a subscription started with [beginBeforeOrigin]; a no-op otherwise. */
+    fun originKnown(origin: ShellOrigin?) {
+        if (!originPending) return
+        originPending = false
+        active = origin
+        val environmentId = activeEnvironmentId ?: return
+        val cursor = cursors[environmentId] ?: return
+        if (origin == null) cursors.remove(environmentId) else cursors[environmentId] = cursor.copy(origin = origin)
+    }
 
     /**
      * Starts a shell subscription for [environmentId] showing [rows]. Returns the `afterSequence` to resume
@@ -83,6 +120,7 @@ internal class ShellResume(private val clockMillis: () -> Long = System::current
         cursors.keys.retainAll(retainedEnvironments + environmentId)
         activeEnvironmentId = environmentId
         active = origin
+        originPending = false
         val cursor = cursors[environmentId]
         val age = cursor?.let { clockMillis() - it.snapshotAtMillis }
         val resumable = cursor != null && cursor.rows.sameAs(rows) && origin != null && cursor.origin == origin &&
@@ -104,7 +142,7 @@ internal class ShellResume(private val clockMillis: () -> Long = System::current
             "snapshot" -> if (item["resolvedRepositoryIdentityRoots"] !is JsonArray) {
                 val origin = active
                 val sequence = (item["snapshot"] as? JsonObject)?.sequence("snapshotSequence")
-                if (origin == null || sequence == null) cursors.remove(environmentId)
+                if ((origin == null && !originPending) || sequence == null) cursors.remove(environmentId)
                 else cursors[environmentId] = ShellCursor(origin, sequence, clockMillis(), rows)
                 return
             }
