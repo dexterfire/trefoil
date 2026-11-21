@@ -7,7 +7,9 @@ import androidx.lifecycle.viewModelScope
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.ui.ComposerSubmission
 import com.tajchert.trefoil.ui.SendOutcome
+import com.tajchert.trefoil.ui.QueueOperationGuard
 import com.tajchert.trefoil.ui.StopGuard
+import com.tajchert.trefoil.ui.queueSignature
 import com.tajchert.trefoil.ui.stopKey
 import com.tajchert.trefoil.core.session.EnvironmentProbe
 import com.tajchert.trefoil.core.session.EnvironmentTokenRenewer
@@ -123,6 +125,9 @@ class TrefoilViewModel internal constructor(application: Application, private va
     private val stopGuard = StopGuard(android.os.SystemClock::elapsedRealtime)
     /** Threads (see [stopKey]) whose Stop is in flight; each is held until the thread has nothing left to stop, or 10 s. */
     internal val stopPending: StateFlow<Set<String>> = stopGuard.pending
+    private val queueGuard = QueueOperationGuard(StopGuard(android.os.SystemClock::elapsedRealtime))
+    /** Threads (see [stopKey]) with a queue operation in flight; the queue strip disables its controls for them. */
+    internal val queueOperationPending: StateFlow<Set<String>> = queueGuard.pending
     /** Unsent new conversation; while non-null the UI shows the draft instead of the selected thread. */
     val draft: StateFlow<ThreadDraft?> = drafts.draft
     /** Emits once for every send (draft or thread) that did not deliver; the composer must leave its pending state. */
@@ -130,6 +135,7 @@ class TrefoilViewModel internal constructor(application: Application, private va
     init {
         // Stop is done holding once the selected thread has nothing left to stop.
         viewModelScope.launch { client.state.collect { if (!it.canStop) stopGuard.release(stopKey(it.environment?.id, it.selectedThreadId)) } }
+        viewModelScope.launch { client.state.collect { queueGuard.onState(stopKey(it.environment?.id, it.selectedThreadId), it.queueSignature()) } }
         // A launch whose thread a connected snapshot lists is settled, also one restored from an earlier session.
         viewModelScope.launch {
             client.state.map { state -> state.environment?.id?.takeIf { state.connection == ConnectionStatus.Connected }?.let { it to state.threads.mapTo(HashSet()) { t -> t.id } } }
@@ -617,9 +623,22 @@ class TrefoilViewModel internal constructor(application: Application, private va
             try { client.stopThread() } catch (e: Throwable) { stopGuard.release(key); throw e }
         }
     }
-    fun cancelQueued(runId: String) = mutation("Could not remove the queued message. Check the queue before trying again.") { client.cancelQueuedMessage(runId) }
-    fun steerQueued(runId: String) = mutation("Could not send the queued message now. Check the queue before trying again.") { client.steerQueuedMessage(runId) }
-    fun resumeQueue() = mutation("Could not resume the queue. Check the thread status before trying again.") { client.resumeQueue() }
+    /**
+     * A queue command (Resume, Send now, Remove) for the selected thread. The per-thread guard is taken here, synchronously at
+     * the tap: a second tap before the projection catches up is a no-op, never a second command.
+     */
+    private fun queueOperation(failure: String, block: suspend () -> Unit) {
+        val current = client.state.value
+        val key = stopKey(current.environment?.id, current.selectedThreadId)
+        if (!queueGuard.tryBegin(key, current.queueSignature())) return
+        viewModelScope.launch { delay(queueGuard.holdMs); queueGuard.expire(key) }
+        mutation(failure) {
+            try { block(); queueGuard.completed(key, client.state.value.queueSignature()) } catch (e: Throwable) { queueGuard.failed(key); throw e }
+        }
+    }
+    fun cancelQueued(runId: String) = queueOperation("Could not remove the queued message. Check the queue before trying again.") { client.cancelQueuedMessage(runId) }
+    fun steerQueued(runId: String) = queueOperation("Could not send the queued message now. Check the queue before trying again.") { client.steerQueuedMessage(runId) }
+    fun resumeQueue() = queueOperation("Could not resume the queue. Check the thread status before trying again.") { client.resumeQueue() }
     fun loadActivity(id: String) = action("Could not load activity output. Reconnect and try again.") { client.loadActivity(id) }
     fun stopSubagent(id: String) = mutation("Agent stop failed or its outcome is uncertain. Check the agent before trying again.") { client.stopSubagent(id) }
     fun threadAction(target: ThreadTarget, operation: ThreadAction, value: String?) = mutation("Could not update thread. Check its status before trying again.") { client.threadAction(target, operation, value) }

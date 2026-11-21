@@ -6,6 +6,8 @@ package com.tajchert.trefoil.ui
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -79,6 +81,8 @@ internal fun Conversation(
     onConsumeSendOutcome: (String) -> Unit = {},
     /** Threads (see [stopKey]) with a Stop in flight: the view model holds each until the thread has nothing left to stop, or 10 s. */
     stopPendingKeys: Set<String> = emptySet(),
+    /** Threads (see [stopKey]) with a queue command in flight: the queue strip's controls wait for it. */
+    queueOperationKeys: Set<String> = emptySet(),
     onCancelQueued: (String) -> Unit = {}, onSteerQueued: (String) -> Unit = {}, onResumeQueue: () -> Unit = {},
 ) {
     val c = Tf.colors
@@ -118,6 +122,8 @@ internal fun Conversation(
     // settled while the conversation was closed is reconciled from the view model's outcomes when it is shown again.
     var submissionId by rememberSaveable(state.environment?.id, composerKey) { mutableStateOf<String?>(null) }
     var revisionAtSend by rememberSaveable(state.environment?.id, composerKey) { mutableStateOf(0) }
+    // The text of the submission in flight: restored into an emptied, unedited composer if the send turns out to have failed.
+    var sentText by rememberSaveable(state.environment?.id, composerKey) { mutableStateOf("") }
     val stopPending = stopKey(state.environment?.id, state.selectedThreadId) in stopPendingKeys
     val canSend = state.canWrite && !state.busy
     /** The send settled: the composer clears unless the text was edited since the submission. */
@@ -126,6 +132,12 @@ internal fun Conversation(
         submitted = null
         submissionId?.let(onConsumeSendOutcome)
         submissionId = null
+    }
+    /** The send failed (or its outcome was lost): the composer frees up, and its text comes back unless it was edited since. */
+    fun failSubmission() {
+        val restore = editRevision == revisionAtSend && text.isEmpty() && sentText.isNotEmpty()
+        settle(clear = false)
+        if (restore) editText(sentText)
     }
     /**
      * The one send path: the Send button and the seeded first prompt both go through here. [requested] is the delivery the
@@ -139,8 +151,10 @@ internal fun Conversation(
         idsAtSend = ArrayList(state.messages.map { it.id } + state.queuedMessages.map { it.messageId })
         revisionAtSend = editRevision
         submitted = value
+        sentText = value
         if (draft != null) send(value)
         else {
+            submissionId?.let(onConsumeSendOutcome) // an earlier send the timeline already showed is superseded
             val submission = newSubmission(state, value)
             submissionId = submission.id
             submitMessage(submission, (route as? SendRoute.FollowUp)?.mode)
@@ -160,13 +174,18 @@ internal fun Conversation(
     // A follow-up behind a running turn shows up in the queue (or steers straight into the timeline), not as a new message.
     LaunchedEffect(state.messages, state.queuedMessages) {
         val pending = submitted
-        if (pending != null && sendAccepted(pending, state, idsAtSend)) settle(clear = true)
+        if (pending != null && sendAccepted(pending, state, idsAtSend)) {
+            // A matching message may be another client's. A correlated send frees the composer but keeps its submission, so its own
+            // outcome still decides: a later failure brings the text back (unless it was edited meanwhile).
+            if (submissionId == null) settle(clear = true)
+            else { if (editRevision == revisionAtSend) text = ""; submitted = null }
+        }
     }
     // The view model's answer for this submission: accepted (done, whether or not the message shows up yet) or failed (text stays).
     LaunchedEffect(submissionId, sendOutcomes) {
         when (submissionId?.let { sendOutcomes[it] }) {
             SendOutcome.Accepted -> settle(clear = true)
-            SendOutcome.Failed -> settle(clear = false)
+            SendOutcome.Failed -> failSubmission()
             null -> {}
         }
     }
@@ -174,7 +193,7 @@ internal fun Conversation(
     // settle it as failed, keeping the text so it can be sent again. Checked once when the composer is (re)created.
     LaunchedEffect(state.environment?.id, composerKey) {
         val id = submissionId
-        if (id != null && id !in sendOutcomes && id !in sendsInFlight) settle(clear = false)
+        if (id != null && id !in sendOutcomes && id !in sendsInFlight) failSubmission()
     }
     // Uncorrelated signals only free a send that has no submission of its own (a new-thread launch).
     LaunchedEffect(state.error) { if (state.error != null && submissionId == null) submitted = null }
@@ -313,7 +332,7 @@ internal fun Conversation(
                 QuickReplies(state.requests, canSend, respond)
                 if (thread != null && thread.isProviderNativeSubagentThread()) ReadOnlySubagentBar(thread, clock, onOpenParent)
                 else ConversationComposer(state, draft, text, ::editText, submitted != null, stopPending, onSetRuntimeMode, onSetModel, onSetModelOption,
-                    stop = interrupt, onSend = { mode -> submit(text, mode) }, canWriteNow = rawState.canWrite, onCancelQueued = onCancelQueued, onSteerQueued = onSteerQueued, onResumeQueue = onResumeQueue)
+                    stop = interrupt, onSend = { mode -> submit(text, mode) }, canWriteNow = rawState.canWrite, queueBusy = stopKey(state.environment?.id, state.selectedThreadId) in queueOperationKeys, onCancelQueued = onCancelQueued, onSteerQueued = onSteerQueued, onResumeQueue = onResumeQueue)
             }
         }
     }
@@ -358,7 +377,7 @@ private fun ConversationHeader(title: String, projectTitle: String?, branch: Str
 internal fun ConversationComposer(
     state: ClientState, draft: ThreadDraft?, text: String, onText: (String) -> Unit, waiting: Boolean, stopPending: Boolean,
     onSetRuntimeMode: (RuntimeMode) -> Unit, onSetModel: (ModelOption) -> Unit, onSetModelOption: (String, Any) -> Unit,
-    stop: () -> Unit, onSend: (FollowUpMode?) -> Unit, canWriteNow: Boolean = state.canWrite,
+    stop: () -> Unit, onSend: (FollowUpMode?) -> Unit, canWriteNow: Boolean = state.canWrite, queueBusy: Boolean = false,
     onCancelQueued: (String) -> Unit, onSteerQueued: (String) -> Unit, onResumeQueue: () -> Unit,
 ) {
     val c = Tf.colors
@@ -367,7 +386,7 @@ internal fun ConversationComposer(
     Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 16.dp, top = 4.dp)) {
         if (!state.canWrite) Text("Read only · reconnect to continue", Modifier.padding(start = 6.dp, bottom = 6.dp), style = noticeStyle)
         if (waiting) Text("Waiting for server confirmation…", Modifier.padding(start = 6.dp, bottom = 6.dp), style = noticeStyle)
-        if (draft == null && state.queuedMessages.isNotEmpty()) QueuedMessagesStrip(state, canWriteNow, onCancelQueued, onSteerQueued, onResumeQueue)
+        if (draft == null && (state.queuedMessages.isNotEmpty() || state.queuePaused)) QueuedMessagesStrip(state, canWriteNow && !queueBusy, onCancelQueued, onSteerQueued, onResumeQueue)
         Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = c.s1, contentColor = c.text, border = BorderStroke(1.dp, c.line)) {
             Column {
                 BasicTextField(
@@ -427,7 +446,14 @@ private fun PrimaryComposerButton(button: ComposerButton, canSteer: Boolean, sto
     }
 }
 
-/** User messages waiting behind the running turn: send one now, remove it, or resume a held queue. */
+/** Most queued rows the strip shows at once; more scroll inside it, so the editor and its actions stay on screen. */
+internal val QUEUE_STRIP_MAX_HEIGHT = 144.dp
+
+/**
+ * User messages waiting behind the running turn: send one now, remove it, or resume a held queue. A held queue shows its
+ * "Queue paused" header with Resume even when no row is listed (held automatic wakes count as held but are not rows).
+ * [canWrite] already folds in a queue command in flight.
+ */
 @Composable
 internal fun QueuedMessagesStrip(state: ClientState, canWrite: Boolean, onCancel: (String) -> Unit, onSteer: (String) -> Unit, onResume: () -> Unit) {
     val c = Tf.colors
@@ -437,13 +463,15 @@ internal fun QueuedMessagesStrip(state: ClientState, canWrite: Boolean, onCancel
                 Text("Queue paused", Modifier.weight(1f), style = TrefoilType.meta, color = c.amber)
                 TextButton(onClick = onResume, enabled = canWrite) { Text("Resume") }
             }
-            state.queuedMessages.forEach { queued ->
-                Row(Modifier.fillMaxWidth().padding(start = 14.dp, end = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(TfIcons.Queue, null, Modifier.size(16.dp), tint = c.muted)
-                    Text(queued.text, Modifier.weight(1f).padding(horizontal = 8.dp), style = TrefoilType.preview, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    TextButton(onClick = { onSteer(queued.runId) }, enabled = canWrite && queued.canSendNow) { Text("Send now") }
-                    IconButton(onClick = { onCancel(queued.runId) }, enabled = canWrite, modifier = Modifier.size(40.dp)) {
-                        Icon(TfIcons.Close, "Remove queued message", Modifier.size(18.dp))
+            Column(Modifier.heightIn(max = QUEUE_STRIP_MAX_HEIGHT).verticalScroll(rememberScrollState())) {
+                state.queuedMessages.forEach { queued ->
+                    Row(Modifier.fillMaxWidth().padding(start = 14.dp, end = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(TfIcons.Queue, null, Modifier.size(16.dp), tint = c.muted)
+                        Text(queued.text, Modifier.weight(1f).padding(horizontal = 8.dp), style = TrefoilType.preview, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        TextButton(onClick = { onSteer(queued.runId) }, enabled = canWrite && queued.canSendNow) { Text("Send now") }
+                        IconButton(onClick = { onCancel(queued.runId) }, enabled = canWrite, modifier = Modifier.size(40.dp)) {
+                            Icon(TfIcons.Close, "Remove queued message", Modifier.size(18.dp))
+                        }
                     }
                 }
             }

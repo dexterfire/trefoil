@@ -78,3 +78,25 @@ fun Composer_QueuePaused_Light() = Composer(fx.heldQueueState())
 @Preview(showBackground = true, widthDp = 400, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun Composer_QueuePaused_Dark() = Composer(fx.heldQueueState(), dark = true)
+
+/** Six queued follow-ups: capped at about three rows, scrolling inside the strip; the editor and Stop stay on screen. */
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400)
+@Composable
+fun Composer_LongQueue_Light() = Composer(fx.longQueueState())
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun Composer_LongQueue_Dark() = Composer(fx.longQueueState(), dark = true)
+
+/** Queue held with no listed rows (held automatic wakes): "Queue paused" with Resume still shows. */
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400)
+@Composable
+fun Composer_QueueHeldNoRows_Light() = Composer(fx.heldNoRowsState())
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun Composer_QueueHeldNoRows_Dark() = Composer(fx.heldNoRowsState(), dark = true)

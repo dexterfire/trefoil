@@ -475,6 +475,73 @@ class ConversationUiTest {
         compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("later and more")))
     }
 
+    @Test fun anotherClientsIdenticalQueuedMessageDoesNotDiscardTheSubmissionSoALaterFailureRestoresTheText() {
+        val outcomes = mutableStateOf<Map<String, SendOutcome>>(emptyMap())
+        val state = mutableStateOf(runningThread)
+        val sent = Sent()
+        compose.setContent { MaterialTheme { Conversation(state.value, {}, {}, { _, _, _ -> }, submitMessage = { s, m -> sent.submissions += s to m }, sendOutcomes = outcomes.value) } }
+        compose.onNodeWithText("Queue a message…").performTextInput("later")
+        compose.onNodeWithContentDescription("Queue message").performClick()
+        // Someone else queued the same text: the projection looks like a confirmation and frees the composer.
+        compose.runOnIdle { state.value = state.value.copy(queuedMessages = listOf(QueuedMessage("other", "other-msg", "later"))) }
+        compose.onNodeWithText("Waiting for server confirmation…").assertDoesNotExist()
+        compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
+        // Our own send then fails: the text comes back.
+        compose.runOnIdle { outcomes.value = mapOf(sent.submissions.single().first.id to SendOutcome.Failed) }
+        compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("later")))
+    }
+
+    @Test fun aFailureNeverOverwritesTextTheUserTypedAfterAPrematureConfirmation() {
+        val outcomes = mutableStateOf<Map<String, SendOutcome>>(emptyMap())
+        val state = mutableStateOf(runningThread)
+        val sent = Sent()
+        compose.setContent { MaterialTheme { Conversation(state.value, {}, {}, { _, _, _ -> }, submitMessage = { s, m -> sent.submissions += s to m }, sendOutcomes = outcomes.value) } }
+        compose.onNodeWithText("Queue a message…").performTextInput("later")
+        compose.onNodeWithContentDescription("Queue message").performClick()
+        compose.runOnIdle { state.value = state.value.copy(queuedMessages = listOf(QueuedMessage("other", "other-msg", "later"))) }
+        compose.onNode(hasSetTextAction()).performTextInput("something new")
+        compose.runOnIdle { outcomes.value = mapOf(sent.submissions.single().first.id to SendOutcome.Failed) }
+        compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("something new")))
+    }
+
+    @Test fun heldQueueWithNoRowsStillOffersResume() {
+        var resumed = 0
+        val state = runningThread.copy(queueHeld = true, queuedMessages = emptyList())
+        compose.setContent { MaterialTheme { Conversation(state, {}, {}, { _, _, _ -> }, onResumeQueue = { resumed++ }) } }
+        compose.onNodeWithText("Queue paused").assertExists()
+        compose.onNodeWithText("Resume").performClick()
+        compose.runOnIdle { assertEquals(1, resumed) }
+    }
+
+    @Test fun noStripWhenNothingIsQueuedOrHeld() {
+        compose.setContent { MaterialTheme { Conversation(runningThread, {}, {}, { _, _, _ -> }) } }
+        compose.onNodeWithTag("queued-strip").assertDoesNotExist()
+    }
+
+    @Test fun queueControlsAreDisabledWhileAQueueOperationIsInFlight() {
+        val state = runningThread.copy(canSteer = true, queueHeld = true, queuedMessages = listOf(QueuedMessage("q1", "m1", "First", held = true, canSendNow = true)))
+        val busy = mutableStateOf(emptySet<String>())
+        compose.setContent { MaterialTheme { Conversation(state, {}, {}, { _, _, _ -> }, queueOperationKeys = busy.value) } }
+        compose.onNodeWithText("Resume").assertIsEnabled()
+        compose.runOnIdle { busy.value = setOf(stopKey("env", "fixture")) }
+        compose.onNodeWithText("Resume").assertIsNotEnabled()
+        compose.onNodeWithText("Send now").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Remove queued message").assertIsNotEnabled()
+        compose.runOnIdle { busy.value = emptySet() }
+        compose.onNodeWithText("Resume").assertIsEnabled()
+    }
+
+    @Test fun aLongQueueIsCappedAndScrollsSoTheComposerStaysOnScreen() {
+        val rows = (1..8).map { QueuedMessage("q$it", "m$it", "Queued $it", canSendNow = true) }
+        compose.setContent { MaterialTheme { Conversation(runningThread.copy(canSteer = true, queuedMessages = rows), {}, {}, { _, _, _ -> }) } }
+        val density = compose.density
+        val strip = compose.onNodeWithTag("queued-strip").fetchSemanticsNode().size.height
+        assertTrue("strip $strip px stays within the cap plus chrome", strip <= with(density) { (QUEUE_STRIP_MAX_HEIGHT + 24.dp).roundToPx() })
+        compose.onNodeWithText("Steer or queue a message…").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Stop").assertIsDisplayed()
+    }
+
+
     @Test fun submissionCarriesTheEnvironmentAndThreadItWasMadeFor() {
         val outcomes = mutableStateOf<Map<String, SendOutcome>>(emptyMap())
         val sent = submitAndCapture(outcomes)

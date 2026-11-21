@@ -147,6 +147,15 @@ object ConversationFixtures {
     fun heldQueueState(): ClientState = chatState().copy(queueHeld = true, queuedMessages = listOf(
         QueuedMessage("queued-1", "qm-1", "Also bump the version and update the changelog before you finish.", held = true, canSendNow = true)))
 
+    /** Six follow-ups: the strip caps at about three rows and scrolls, so the editor and Stop stay visible. */
+    fun longQueueState(): ClientState = steerableState().copy(queuedMessages = listOf(
+        "Also bump the version and update the changelog before you finish.", "Then open the PR.", "Run the screenshot tests on the dark theme too.",
+        "Tidy the imports in the files you touched.", "Squash the fixup commits.", "Post the summary in the thread.").mapIndexed { i, text ->
+        QueuedMessage("queued-${i + 1}", "qm-${i + 1}", text, canSendNow = true) })
+
+    /** Held automatic wakes count as held but are not rows: the paused header with Resume shows alone. */
+    fun heldNoRowsState(): ClientState = chatState().copy(queueHeld = true, queuedMessages = emptyList())
+
     private val longThreadPrompts = listOf("Add a dark theme preview.", "Cover the thread list too.", "Now the settings screen.",
         "Fix the clipped title.", "Run lint.", "Update the README.", "Bump the version.", "Check the widget colors.",
         "Record the screenshots.", "Run the unit tests.", "Tidy the imports.", "Rename the fixture.", "Squash the commits.", "Open the PR.")

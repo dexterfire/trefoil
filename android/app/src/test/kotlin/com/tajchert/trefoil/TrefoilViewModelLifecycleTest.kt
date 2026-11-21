@@ -51,6 +51,18 @@ class TrefoilViewModelLifecycleTest {
     private fun advance(ms: Long) = shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(ms))
     private fun setPongAge(age: Long) = T3Client::class.java.getDeclaredField("pongAt").apply { isAccessible = true }.setLong(client, System.currentTimeMillis() - age)
 
+    @Test fun aSecondQueueTapDuringAnInFlightOperationSendsNothing() {
+        T3Client::class.java.getDeclaredField("authorized").apply { isAccessible = true }.setBoolean(client, true)
+        mutable.value = mutable.value.copy(queueHeld = true, queuedMessages = listOf(QueuedMessage("run-q", "msg-q", "later", held = true, canSendNow = true)))
+        model.resumeQueue()
+        model.resumeQueue()
+        model.steerQueued("run-q")
+        model.cancelQueued("run-q")
+        advance(500)
+        assertEquals("only the first tap dispatches", 1, sent.count { it.contains("queue.resume") || it.contains("queued-run") || it.contains("queued-message") })
+        assertEquals(setOf("fixture:thread"), model.queueOperationPending.value)
+    }
+
     @Test fun stalePongReconnectsEvenWhenStateIsConnected() {
         model.pause()
         setPongAge(20_001)
