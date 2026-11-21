@@ -143,7 +143,8 @@ class T3Client(
     private var projection = JsonObject(emptyMap())
     private var projectionRevision = 0L
     private var threadGeneration = 0L
-    // Memory only: navigation/foreground refreshes retain content without writing transcripts to disk.
+    // Memory only: navigation/foreground refreshes retain content without writing transcripts to disk. A retained state
+    // keeps its rows and `shellLoaded`, so reconnecting to it shows them at once; a new environment starts unloaded.
     private val environmentStates = linkedMapOf<String, ClientState>()
     private val threadProjections = linkedMapOf<Pair<String, String>, JsonObject>()
     private fun cacheState() {
@@ -812,7 +813,8 @@ class T3Client(
                     // It supplements repository identity; it is never an authoritative thread reset.
                     update { current -> current.copy(projects = current.projects.filterNot { p -> projects.any { it.id == p.id } } + projects) }
                 } else {
-                    update { it.copy(projects = projects, threads = snapshot.objects("threads").map { threadSummary(it) } + snapshot.objects("archivedThreads").map { threadSummary(it, archived = true) }) }
+                    // An authoritative snapshot: from here on an empty list means "no threads", not "loading".
+                    update { it.copy(projects = projects, threads = snapshot.objects("threads").map { threadSummary(it) } + snapshot.objects("archivedThreads").map { threadSummary(it, archived = true) }, shellLoaded = true) }
                 }
             }
             "project.updated" -> { val value = project(item.obj("project")); update { it.copy(projects = it.projects.filterNot { p -> p.id == value.id } + value) } }

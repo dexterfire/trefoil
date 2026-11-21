@@ -309,6 +309,35 @@ class ShellResumeTest {
         }
     }
 
+    @Test fun shellLoadedTellsAnEmptyListFromOneStillLoading() = runBlocking {
+        Fixture().use { f ->
+            assertFalse(f.client.state.value.shellLoaded)
+            val first = f.connect()
+            assertFalse("A fresh environment has no snapshot yet", f.client.state.value.shellLoaded)
+            f.chunk(first, """{"kind":"snapshot","resolvedRepositoryIdentityRoots":["/fixture/p"],"snapshot":{"snapshotSequence":3,"projects":[${Fixture.project}],"threads":[],"archivedThreads":[]}}""")
+            assertFalse("Project enrichment is not a thread snapshot", f.client.state.value.shellLoaded)
+            f.chunk(first, Fixture.shell(10, Fixture.project, ""))
+            assertTrue("An empty snapshot is loaded, not loading", f.client.state.value.shellLoaded)
+            assertTrue(f.client.state.value.threads.isEmpty())
+            f.client.disconnect()
+            assertTrue("Retained rows stay loaded while offline", f.client.state.value.shellLoaded)
+            f.connect()
+            assertTrue("Reconnecting restores the retained rows", f.client.state.value.shellLoaded)
+            assertFalse(f.client.state.value.canWrite)
+
+            f.client.disconnect()
+            f.client.forgetEnvironment("env")
+            assertFalse(f.client.state.value.shellLoaded)
+            f.environmentId = "another"
+            f.connect()
+            assertFalse("Another environment's rows are not this one's", f.client.state.value.shellLoaded)
+            f.client.disconnect(); f.environmentId = "env"
+            f.connect()
+            assertFalse("A forgotten environment starts over", f.client.state.value.shellLoaded)
+            assertTrue(f.client.state.value.threads.isEmpty())
+        }
+    }
+
     @Test fun snapshotRequiredResubscribesForASocketSnapshot() = runBlocking {
         Fixture().use { f ->
             f.chunk(f.connect(), """${Fixture.shell(10, Fixture.project, Fixture.thread("a"))}, {"kind":"synchronized"}""")
