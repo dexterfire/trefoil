@@ -100,11 +100,17 @@ class TrefoilViewModel internal constructor(application: Application, private va
     val replyDraftPreviews: StateFlow<Map<ComposerDraftKey, ComposerDraft>> = composerDraftStore.drafts
         .map { all -> all.filterKeys { it is ComposerDraftKey.Reply }.mapValues { (_, d) -> d.copy(text = d.text.lineSequence().map { it.trim() }.first { it.isNotEmpty() }, updatedAtMillis = 0) } }
         .distinctUntilChanged().stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
-    private val drafts = ThreadDraftController(viewModelScope, ComposerDraftSettlingClient(MutationTrackingClient(client, mutationsInFlight), composerDraftStore)) { _notice.value = it }
+    /** The client every composer send goes through: it counts the mutation and clears the accepted reply's draft. */
+    private val composerClient = ComposerDraftSettlingClient(MutationTrackingClient(client, mutationsInFlight), composerDraftStore)
+    private val drafts = ThreadDraftController(viewModelScope, composerClient) { _notice.value = it }
+    private val followUpFailed = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
+    private val _followUpAccepted = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
+    /** Emits when the server accepted a follow-up send (steer or queue), so the composer stops waiting for it to appear in the timeline. */
+    val followUpAccepted: SharedFlow<Unit> = _followUpAccepted.asSharedFlow()
     /** Unsent new conversation; while non-null the UI shows the draft instead of the selected thread. */
     val draft: StateFlow<ThreadDraft?> = drafts.draft
     /** Emits once for every send (draft or thread) that did not deliver; the composer must leave its pending state. */
-    val sendFailed: SharedFlow<Unit> = drafts.sendFailed
+    val sendFailed: SharedFlow<Unit> = merge(drafts.sendFailed, followUpFailed).shareIn(viewModelScope, SharingStarted.Eagerly)
     init {
         // A launch whose thread a connected snapshot lists is settled, also one restored from an earlier session.
         viewModelScope.launch {
@@ -554,8 +560,28 @@ class TrefoilViewModel internal constructor(application: Application, private va
      * the draft and its ids so it can be reconciled or explicitly resent without a duplicate.
      */
     fun send(text: String) = drafts.send(text)
+    /**
+     * A reply with an explicit delivery [mode] while the thread works (steer or queue). A draft still launches its
+     * thread. The send goes once through the draft-clearing client with [send]'s failure semantics: a failed or
+     * uncertain outcome keeps the draft, shows a notice and emits [sendFailed]; nothing is ever replayed.
+     */
+    fun send(text: String, mode: FollowUpMode) {
+        if (draft.value != null) return drafts.send(text)
+        viewModelScope.launch {
+            _notice.value = null
+            val failure = try { composerClient.sendMessage(text, mode); null }
+            catch (e: CancellationException) { coroutineContext.ensureActive(); FOLLOW_UP_UNCERTAIN }
+            catch (_: UncertainOutcomeException) { FOLLOW_UP_UNCERTAIN }
+            catch (e: Exception) { e.message ?: "Could not send the message." }
+            if (failure != null) { _notice.value = failure; followUpFailed.tryEmit(Unit) } else _followUpAccepted.tryEmit(Unit)
+        }
+    }
+    /** Stops the selected thread (run, background work, subagents) and holds its queue. */
+    fun stopThread() = mutation("Stop outcome is uncertain. Check the thread status before trying again.") { client.stopThread() }
+    fun cancelQueued(runId: String) = mutation("Could not remove the queued message. Check the queue before trying again.") { client.cancelQueuedMessage(runId) }
+    fun steerQueued(runId: String) = mutation("Could not send the queued message now. Check the queue before trying again.") { client.steerQueuedMessage(runId) }
+    fun resumeQueue() = mutation("Could not resume the queue. Check the thread status before trying again.") { client.resumeQueue() }
     fun loadActivity(id: String) = action("Could not load activity output. Reconnect and try again.") { client.loadActivity(id) }
-    fun interrupt() = mutation("Interrupt outcome is uncertain. Check the run status.") { client.interruptRun() }
     fun stopSubagent(id: String) = mutation("Agent stop failed or its outcome is uncertain. Check the agent before trying again.") { client.stopSubagent(id) }
     fun threadAction(target: ThreadTarget, operation: ThreadAction, value: String?) = mutation("Could not update thread. Check its status before trying again.") { client.threadAction(target, operation, value) }
     fun undoSettlement(undo: SettlementUndo) = mutation("Could not undo settlement. Check the thread status.") { client.undoSettlement(undo) }
@@ -1044,6 +1070,7 @@ class TrefoilViewModel internal constructor(application: Application, private va
     private companion object {
         const val LAST_ENVIRONMENT = "lastEnvironmentId"
         const val KEEP_CONNECTED = "keepConnectedInBackground"
+        const val FOLLOW_UP_UNCERTAIN = "Message outcome is uncertain. Check the conversation before sending again."
         const val SSH_FAILURE = "SSH connection failed. Check the address, login and running T3 server."
     }
 }
@@ -1179,12 +1206,15 @@ internal fun List<SavedEnvironment>.withReconnected(configured: SavedEnvironment
  * unless it was edited since. Failed or uncertain sends keep the drafts.
  */
 internal class ComposerDraftSettlingClient(private val inner: TrefoilClient, private val store: ComposerDraftStore) : TrefoilClient by inner {
-    override suspend fun sendMessage(text: String) {
+    override suspend fun sendMessage(text: String) = settling(text) { inner.sendMessage(text) }
+    override suspend fun sendMessage(text: String, mode: FollowUpMode) = settling(text) { inner.sendMessage(text, mode) }
+
+    private suspend fun settling(text: String, send: suspend () -> Unit) {
         val state = inner.state.value
         val key = state.environment?.id?.let { environment -> state.selectedThreadId?.let { ComposerDraftKey.Reply(environment, it) } }
         // Only a draft that holds exactly the sent text may be cleared by its ack.
         val revision = key?.let { store.revisionIfText(it, text) }
-        inner.sendMessage(text)
+        send()
         if (key != null && revision != null) store.clearIfUnchanged(key, revision)
     }
 
@@ -1229,6 +1259,7 @@ internal class ComposerDraftSettlingClient(private val inner: TrefoilClient, pri
 /** Counts the mutations [ThreadDraftController] sends, so a route switch can wait for them to settle. */
 internal class MutationTrackingClient(private val inner: TrefoilClient, private val inFlight: AtomicInteger) : TrefoilClient by inner {
     override suspend fun sendMessage(text: String) = inFlight.tracked { inner.sendMessage(text) }
+    override suspend fun sendMessage(text: String, mode: FollowUpMode) = inFlight.tracked { inner.sendMessage(text, mode) }
     override suspend fun launchThread(draft: ThreadDraft, firstMessage: String) = inFlight.tracked { inner.launchThread(draft, firstMessage) }
     override suspend fun setRuntimeMode(mode: RuntimeMode) = inFlight.tracked { inner.setRuntimeMode(mode) }
     override suspend fun setModel(model: ModelOption) = inFlight.tracked { inner.setModel(model) }

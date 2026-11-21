@@ -45,6 +45,8 @@ fun TrefoilApp(
     onSetRuntimeMode: (RuntimeMode) -> Unit, onSetModel: (ModelOption) -> Unit,
     onReconnect: () -> Unit, onDisconnect: () -> Unit, onForget: (SavedEnvironment) -> Unit,
     onThreadShown: (Boolean) -> Unit = {},
+    onSendFollowUp: (String, FollowUpMode) -> Unit = { text, _ -> onSend(text) },
+    onCancelQueued: (String) -> Unit = {}, onSteerQueued: (String) -> Unit = {}, onResumeQueue: () -> Unit = {},
     keepConnected: Boolean = false, onSetModelOption: (String, Any) -> Unit = { _, _ -> },
     onKeepConnectedChange: (Boolean) -> Unit = {},
     onSshConnect: (SshConnectionInput) -> Unit = {},
@@ -62,6 +64,7 @@ fun TrefoilApp(
     isScreenAccessCurrent: (ScreenAccess) -> Boolean = { false },
     fileDownloadUi: FileDownloadUi = FileDownloadUi(),
     sendFailed: Flow<Unit> = emptyFlow(),
+    sendAccepted: Flow<Unit> = emptyFlow(),
     onThreadAction: (ThreadTarget, ThreadAction, String?) -> Unit = { _, _, _ -> },
     onUndoSettlement: (SettlementUndo) -> Unit = {},
     machineProbes: Map<String, MachineProbe> = emptyMap(),
@@ -295,8 +298,8 @@ fun TrefoilApp(
                                         if (!twoPane) ConnectionBanner(state, onReconnect)
                                         Box(Modifier.weight(1f)) {
                                             conversationState.SaveableStateProvider("${state.environment?.id}:${if (draft != null) "draft:${draft.projectId}" else state.selectedThreadId}") {
-                                                Conversation(state, onSend, onInterrupt, onRespond, onLoadActivity = onLoadActivity, composerDrafts = composerDrafts, fileDownloadUi = fileDownloadUi,
-                                                    draft = draft, onSetRuntimeMode = onSetRuntimeMode, onSetModel = onSetModel, onSetModelOption = onSetModelOption, sendFailed = sendFailed,
+                                                Conversation(state, onSend, onInterrupt, onRespond, sendFollowUp = onSendFollowUp, onCancelQueued = onCancelQueued, onSteerQueued = onSteerQueued, onResumeQueue = onResumeQueue, onLoadActivity = onLoadActivity, composerDrafts = composerDrafts, fileDownloadUi = fileDownloadUi,
+                                                    draft = draft, onSetRuntimeMode = onSetRuntimeMode, onSetModel = onSetModel, onSetModelOption = onSetModelOption, sendFailed = sendFailed, sendAccepted = sendAccepted,
                                                     onBack = if (backParent != null) ({ select(backParent.id) }) else if (twoPane) null else ({ cancelDraft(); showThread = false }),
                                                     onOpenParent = parentThread?.let { p -> { select(p.id) } },
                                                     onOpenAgents = if (roster != null) ({ showAgents = true }) else null,

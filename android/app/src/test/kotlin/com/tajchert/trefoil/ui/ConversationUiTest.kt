@@ -352,7 +352,7 @@ class ConversationUiTest {
 
     @Test fun stopStaysEnabledThroughBriefRefreshGapsButNotThroughOutages() {
         val live = ClientState(selectedThreadId = "fixture", canWrite = true, canRead = true, canWriteThreads = true, connection = ConnectionStatus.Connected,
-            activeRunId = "run", messages = listOf(ConversationMessage("m", "assistant", "Working")))
+            activeRunId = "run", canStop = true, messages = listOf(ConversationMessage("m", "assistant", "Working")))
         val state = mutableStateOf(live)
         compose.mainClock.autoAdvance = false
         compose.setContent { MaterialTheme { Conversation(state.value, {}, {}, { _, _, _ -> }) } }
@@ -387,5 +387,75 @@ class ConversationUiTest {
         compose.setContent { TrefoilTheme(darkTheme = true) { Box(Modifier.width(390.dp).height(844.dp)) { Conversation(state, {}, {}, { _, _, _ -> }, onBack = {}) } } }
         compose.onNodeWithTag("html-render:h").assertExists()
         compose.onAllNodesWithTag("html-render:h").assertCountEquals(1)
+    }
+
+    private val runningThread get() = ClientState(selectedThreadId = "fixture", canWrite = true, connection = ConnectionStatus.Connected, activeRunId = "run", canStop = true,
+        messages = listOf(ConversationMessage("old", "user", "Start", runId = "run")))
+
+    @Test fun queuedFollowUpClearsTheConfirmationWaitWithoutATimelineMessage() {
+        val state = mutableStateOf(runningThread.copy(canSteer = true))
+        val sent = mutableListOf<Pair<String, FollowUpMode>>()
+        compose.setContent { MaterialTheme { Conversation(state.value, {}, {}, { _, _, _ -> }, sendFollowUp = { text, mode -> sent += text to mode }) } }
+        compose.onNodeWithText("Steer or queue a message…").performTextInput("Then open the PR.")
+        compose.onNodeWithContentDescription("Steer message").performClick()
+        compose.onNodeWithText("Waiting for server confirmation…").assertExists()
+        compose.runOnIdle {
+            assertEquals(listOf("Then open the PR." to FollowUpMode.Steer), sent)
+            state.value = state.value.copy(queuedMessages = listOf(QueuedMessage("q", "qm", "Then open the PR.")))
+        }
+        compose.onNodeWithText("Waiting for server confirmation…").assertDoesNotExist()
+        compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
+        compose.onNodeWithText("Then open the PR.").assertExists()
+    }
+
+    @Test fun serverAcknowledgementClearsTheConfirmationWait() {
+        val accepted = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        compose.setContent { MaterialTheme { Conversation(runningThread, {}, {}, { _, _, _ -> }, sendFollowUp = { _, _ -> }, sendAccepted = accepted) } }
+        compose.onNodeWithText("Queue a message…").performTextInput("later")
+        compose.onNodeWithContentDescription("Queue message").performClick()
+        compose.onNodeWithText("Waiting for server confirmation…").assertExists()
+        compose.runOnIdle { accepted.tryEmit(Unit) }
+        compose.onNodeWithText("Waiting for server confirmation…").assertDoesNotExist()
+        compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
+    }
+
+    @Test fun longPressOffersQueueAlongsideTheSteerDefault() {
+        val sent = mutableListOf<FollowUpMode>()
+        compose.setContent { MaterialTheme { Conversation(runningThread.copy(canSteer = true), {}, {}, { _, _, _ -> }, sendFollowUp = { _, mode -> sent += mode }) } }
+        compose.onNodeWithText("Steer or queue a message…").performTextInput("later")
+        compose.onNodeWithContentDescription("Steer message").performTouchInput { longClick() }
+        compose.onNodeWithText("Redirect the running turn now").assertExists()
+        compose.onNodeWithText("Queue message").performClick()
+        compose.runOnIdle { assertEquals(listOf(FollowUpMode.Queue), sent) }
+    }
+
+    @Test fun queuedStripRoutesSendNowAndRemoveAndResume() {
+        val steered = mutableListOf<String>(); val cancelled = mutableListOf<String>(); var resumed = 0
+        val state = runningThread.copy(canSteer = true, queueHeld = true, queuedMessages = listOf(QueuedMessage("q1", "m1", "First", held = true), QueuedMessage("q2", "m2", "Second", held = true)))
+        compose.setContent { MaterialTheme { Conversation(state, {}, {}, { _, _, _ -> }, onSteerQueued = { steered += it }, onCancelQueued = { cancelled += it }, onResumeQueue = { resumed++ }) } }
+        compose.onNodeWithText("Queue paused").assertExists()
+        compose.onNodeWithText("Resume").performClick()
+        compose.onAllNodesWithText("Send now")[1].performClick()
+        compose.onAllNodesWithContentDescription("Remove queued message")[0].performClick()
+        compose.runOnIdle { assertEquals(1, resumed); assertEquals(listOf("q2"), steered); assertEquals(listOf("q1"), cancelled) }
+    }
+
+    @Test fun sendNowIsDisabledWhileARunCannotBeSteered() {
+        val state = runningThread.copy(queuedMessages = listOf(QueuedMessage("q1", "m1", "First")))
+        compose.setContent { MaterialTheme { Conversation(state, {}, {}, { _, _, _ -> }) } }
+        compose.onNodeWithText("Send now").assertIsNotEnabled()
+        compose.onNodeWithText("Queue paused").assertDoesNotExist()
+    }
+
+    @Test fun stopDisablesUntilTheThreadHasNothingLeftToStop() {
+        val state = mutableStateOf(runningThread)
+        var stops = 0
+        compose.setContent { MaterialTheme { Conversation(state.value, {}, { stops++ }, { _, _, _ -> }) } }
+        compose.onNodeWithContentDescription("Stop").performClick()
+        compose.onNodeWithContentDescription("Stop").assertIsNotEnabled()
+        compose.runOnIdle { assertEquals(1, stops); state.value = state.value.copy(activeRunId = null, canStop = false) }
+        compose.onNodeWithContentDescription("Send message").assertExists()
+        compose.runOnIdle { state.value = state.value.copy(activeRunId = "run2", canStop = true) }
+        compose.onNodeWithContentDescription("Stop").assertIsEnabled()
     }
 }

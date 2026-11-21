@@ -58,7 +58,7 @@ class ConversationRenderTest {
     private val needsYou get() = base.copy(activeRunId = null, threads = base.threads.map { it.copy(activeRunId = null) },
         messages = listOf(user, answer.copy(id = "a2", runId = "run2", ordinal = 9, text = "Start implementing, beginning with steps 1–2?")),
         requests = listOf(RuntimeRequest("approval", "Run command", "psql -h prod -c \"select * from districts where name = city\"")))
-    private val working get() = base.copy(activeRunId = "run2", messages = listOf(user.copy(runId = "run2")), activities = work.map { it.copy(runId = "run2", status = if (it.id == "s1") "running" else "completed") })
+    private val working get() = base.copy(activeRunId = "run2", canStop = true, messages = listOf(user.copy(runId = "run2")), activities = work.map { it.copy(runId = "run2", status = if (it.id == "s1") "running" else "completed") })
     private val completed get() = base.copy(activeRunId = null, threads = base.threads.map { it.copy(activeRunId = null) }, messages = listOf(user, answer), activities = work,
         runs = listOf(ConversationRun("run", "completed", startedAt = "2026-11-06T10:00:00Z", completedAt = "2026-11-06T10:06:00Z")))
     private val questions get() = base.copy(activeRunId = null, messages = listOf(user),

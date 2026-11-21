@@ -4,6 +4,8 @@
 package com.tajchert.trefoil.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -65,6 +67,11 @@ internal fun Conversation(
     otherNeedsYou: Int = 0,
     /** Local unsent reply text; the composer starts from it and writes every change back. */
     composerDrafts: ComposerDraftUi = ComposerDraftUi(),
+    /** Sends [text] to a running thread as a steer or a queued follow-up; defaults to a plain [send]. */
+    sendFollowUp: (String, FollowUpMode) -> Unit = { text, _ -> send(text) },
+    /** Emits when a follow-up was accepted by the server, so the composer never waits for it to show up in the timeline. */
+    sendAccepted: Flow<Unit> = emptyFlow(),
+    onCancelQueued: (String) -> Unit = {}, onSteerQueued: (String) -> Unit = {}, onResumeQueue: () -> Unit = {},
 ) {
     val c = Tf.colors
     // A draft hides whatever thread was previously selected; its first message creates the real thread.
@@ -97,14 +104,19 @@ internal fun Conversation(
     fun editText(value: String) { text = value; edited = true; if (composerDrafts.loaded) editorKey?.let { composerDrafts.updateText(it, value) } }
     var submitted by rememberSaveable(state.environment?.id, composerKey) { mutableStateOf<String?>(null) }
     var messageIdsAtSend by rememberSaveable(state.environment?.id, composerKey) { mutableStateOf(arrayListOf<String>()) }
+    var queuedIdsAtSend by rememberSaveable(state.environment?.id, composerKey) { mutableStateOf(arrayListOf<String>()) }
+    // Stop is disabled from the tap until the thread has nothing left to stop, or for 10 s (desktop `useStopPhase`).
+    var stopPending by remember(state.environment?.id, composerKey) { mutableStateOf(false) }
     val canSend = state.canWrite && !state.busy
-    /** The one send path: the Send button and the seeded first prompt both go through here. */
-    fun submit(value: String): Boolean {
+    /** The one send path: the Send button and the seeded first prompt both go through here. A null [mode] follows the primary action. */
+    fun submit(value: String, mode: FollowUpMode? = null): Boolean {
         if (value.isBlank() || submitted != null || !canSend) return false
         edited = true // the accepted send clears the stored draft; a late-loading one must not refill the composer
         messageIdsAtSend = ArrayList(state.messages.map { it.id })
+        queuedIdsAtSend = ArrayList(state.queuedMessages.map { it.messageId })
         submitted = value
-        send(value)
+        if (state.runningFollowUp(draft != null)) sendFollowUp(value, mode ?: resolveComposerButton(state, false, value, false, false).action.followUp ?: FollowUpMode.Queue)
+        else send(value)
         return true
     }
     // Survives recomposition and configuration change so the seed is never submitted twice.
@@ -117,12 +129,23 @@ internal fun Conversation(
             onSeedConsumed()
         }
     }
-    LaunchedEffect(state.messages) {
+    // A follow-up behind a running turn shows up in the queue (or steers straight into the timeline), not as a new message.
+    LaunchedEffect(state.messages, state.queuedMessages) {
         val pending = submitted
-        if (pending != null && state.messages.any { it.role == "user" && it.text == pending && it.id !in messageIdsAtSend }) {
+        if (pending != null && sendAccepted(pending, state, messageIdsAtSend, queuedIdsAtSend)) {
             if (text == pending) text = ""
             submitted = null
         }
+    }
+    // The server acknowledged the send: done, whether or not the message has appeared in the projection yet.
+    LaunchedEffect(sendAccepted) {
+        sendAccepted.collect {
+            val pending = submitted
+            if (pending != null) { if (text == pending) text = ""; submitted = null }
+        }
+    }
+    LaunchedEffect(state.canStop, stopPending) {
+        if (stopPending) { if (state.canStop) delay(STOP_PENDING_MS); stopPending = false }
     }
     LaunchedEffect(state.error) { if (state.error != null) submitted = null }
     // Identical consecutive errors do not retrigger the effect above, so every failed send also emits here.
@@ -259,7 +282,8 @@ internal fun Conversation(
             Column(Modifier.windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))) {
                 QuickReplies(state.requests, canSend, respond)
                 if (thread != null && thread.isProviderNativeSubagentThread()) ReadOnlySubagentBar(thread, clock, onOpenParent)
-                else ConversationComposer(state, draft, text, ::editText, submitted != null, onSetRuntimeMode, onSetModel, onSetModelOption, interrupt) { submit(text) }
+                else ConversationComposer(state, draft, text, ::editText, submitted != null, stopPending, onSetRuntimeMode, onSetModel, onSetModelOption,
+                    stop = { stopPending = true; interrupt() }, onSend = { mode -> submit(text, mode) }, onCancelQueued = onCancelQueued, onSteerQueued = onSteerQueued, onResumeQueue = onResumeQueue)
             }
         }
     }
@@ -301,17 +325,19 @@ private fun ConversationHeader(title: String, projectTitle: String?, branch: Str
 }
 
 @Composable
-private fun ConversationComposer(
-    state: ClientState, draft: ThreadDraft?, text: String, onText: (String) -> Unit, waiting: Boolean,
-    onSetRuntimeMode: (RuntimeMode) -> Unit, onSetModel: (ModelOption) -> Unit, onSetModelOption: (String, Any) -> Unit, interrupt: () -> Unit, onSend: () -> Unit,
+internal fun ConversationComposer(
+    state: ClientState, draft: ThreadDraft?, text: String, onText: (String) -> Unit, waiting: Boolean, stopPending: Boolean,
+    onSetRuntimeMode: (RuntimeMode) -> Unit, onSetModel: (ModelOption) -> Unit, onSetModelOption: (String, Any) -> Unit,
+    stop: () -> Unit, onSend: (FollowUpMode?) -> Unit,
+    onCancelQueued: (String) -> Unit, onSteerQueued: (String) -> Unit, onResumeQueue: () -> Unit,
 ) {
     val c = Tf.colors
-    val running = state.activeRunId != null
-    val canSend = state.canWrite && !state.busy
     val noticeStyle = TrefoilType.meta.copy(fontSize = 12.sp, color = c.muted)
+    val button = resolveComposerButton(state, draft != null, text, waiting, stopPending)
     Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 16.dp, top = 4.dp)) {
         if (!state.canWrite) Text("Read only · reconnect to continue", Modifier.padding(start = 6.dp, bottom = 6.dp), style = noticeStyle)
         if (waiting) Text("Waiting for server confirmation…", Modifier.padding(start = 6.dp, bottom = 6.dp), style = noticeStyle)
+        if (draft == null && state.queuedMessages.isNotEmpty()) QueuedMessagesStrip(state, onCancelQueued, onSteerQueued, onResumeQueue)
         Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = c.s1, contentColor = c.text, border = BorderStroke(1.dp, c.line)) {
             Column {
                 BasicTextField(
@@ -320,15 +346,74 @@ private fun ConversationComposer(
                     modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 2.dp),
                     decorationBox = { inner ->
                         Box {
-                            if (text.isEmpty()) Text(if (draft != null) "What should the agent do?" else if (running) "Queue a message…" else "Reply…", style = MaterialTheme.typography.bodyLarge, color = c.muted)
+                            if (text.isEmpty()) Text(composerPlaceholder(state, draft != null), style = MaterialTheme.typography.bodyLarge, color = c.muted)
                             inner()
                         }
                     },
                 )
                 Row(Modifier.fillMaxWidth().padding(start = 10.dp, end = 6.dp, top = 4.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     ComposerPickers(state, draft, onSetRuntimeMode, onSetModel, onSetModelOption, Modifier.weight(1f))
-                    if (running && text.isBlank()) CircleButton("Stop", TfIcons.Stop, c.text, c.bg, canSend, interrupt)
-                    else CircleButton(if (running) "Queue message" else "Send message", TfIcons.Send, c.accent, c.onAccent, canSend && text.isNotBlank() && !waiting, onSend)
+                    PrimaryComposerButton(button, state.canSteer, stop, onSend)
+                }
+            }
+        }
+    }
+}
+
+/** Stop, Send, Steer or Queue. While a follow-up can be sent, a long press offers both delivery modes. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun PrimaryComposerButton(button: ComposerButton, canSteer: Boolean, stop: () -> Unit, onSend: (FollowUpMode?) -> Unit) {
+    val c = Tf.colors
+    var menu by remember { mutableStateOf(false) }
+    val (icon, container, content) = when (button.action) {
+        ComposerPrimary.Stop -> Triple(TfIcons.Stop, c.text, c.bg)
+        ComposerPrimary.Steer -> Triple(TfIcons.Steer, c.accent, c.onAccent)
+        ComposerPrimary.Queue -> Triple(TfIcons.Queue, c.accent, c.onAccent)
+        ComposerPrimary.Send -> Triple(TfIcons.Send, c.accent, c.onAccent)
+    }
+    Box {
+        Surface(shape = CircleShape, color = container, contentColor = content,
+            modifier = Modifier.size(44.dp).alpha(if (button.enabled) 1f else .4f)
+                .semantics { contentDescription = button.action.description; role = Role.Button }
+                .combinedClickable(
+                    enabled = button.enabled,
+                    onLongClickLabel = if (button.offersAlternate) "Choose steer or queue" else null,
+                    onLongClick = if (button.offersAlternate) ({ menu = true }) else null,
+                    onClick = { if (button.action == ComposerPrimary.Stop) stop() else onSend(null) },
+                )) {
+            Box(contentAlignment = Alignment.Center) { Icon(icon, null, Modifier.size(22.dp)) }
+        }
+        DropdownMenu(menu, { menu = false }) {
+            DropdownMenuItem(text = { Column { Text("Steer message"); Text(if (canSteer) "Redirect the running turn now" else "Not supported by this agent right now", style = MaterialTheme.typography.labelSmall, color = c.muted) } },
+                leadingIcon = { Icon(TfIcons.Steer, null, Modifier.size(18.dp), tint = c.muted) }, enabled = canSteer,
+                onClick = { menu = false; onSend(FollowUpMode.Steer) })
+            DropdownMenuItem(text = { Column { Text("Queue message"); Text("Send after the current turn finishes", style = MaterialTheme.typography.labelSmall, color = c.muted) } },
+                leadingIcon = { Icon(TfIcons.Queue, null, Modifier.size(18.dp), tint = c.muted) },
+                onClick = { menu = false; onSend(FollowUpMode.Queue) })
+        }
+    }
+}
+
+/** User messages waiting behind the running turn: send one now, remove it, or resume a held queue. */
+@Composable
+internal fun QueuedMessagesStrip(state: ClientState, onCancel: (String) -> Unit, onSteer: (String) -> Unit, onResume: () -> Unit) {
+    val c = Tf.colors
+    val sendNow = canSendQueuedNow(state)
+    Surface(Modifier.fillMaxWidth().padding(bottom = 8.dp).testTag("queued-strip"), shape = RoundedCornerShape(16.dp), color = c.s2, contentColor = c.text, border = BorderStroke(1.dp, c.line)) {
+        Column(Modifier.padding(vertical = 4.dp)) {
+            if (state.queuePaused) Row(Modifier.fillMaxWidth().padding(start = 14.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Queue paused", Modifier.weight(1f), style = TrefoilType.meta, color = c.amber)
+                TextButton(onClick = onResume, enabled = state.canWrite) { Text("Resume") }
+            }
+            state.queuedMessages.forEach { queued ->
+                Row(Modifier.fillMaxWidth().padding(start = 14.dp, end = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(TfIcons.Queue, null, Modifier.size(16.dp), tint = c.muted)
+                    Text(queued.text, Modifier.weight(1f).padding(horizontal = 8.dp), style = TrefoilType.preview, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    TextButton(onClick = { onSteer(queued.runId) }, enabled = sendNow) { Text("Send now") }
+                    IconButton(onClick = { onCancel(queued.runId) }, enabled = state.canWrite, modifier = Modifier.size(40.dp)) {
+                        Icon(TfIcons.Close, "Remove queued message", Modifier.size(18.dp))
+                    }
                 }
             }
         }
@@ -349,14 +434,6 @@ internal fun ReadOnlySubagentBar(thread: ThreadSummary, now: Long, onOpenParent:
             }
             if (onOpenParent != null) OutlinedButton(onClick = onOpenParent) { Text("Open parent") }
         }
-    }
-}
-
-@Composable
-private fun CircleButton(description: String, icon: ImageVector, container: Color, content: Color, enabled: Boolean, onClick: () -> Unit) {
-    Surface(onClick = onClick, enabled = enabled, shape = CircleShape, color = container, contentColor = content,
-        modifier = Modifier.size(44.dp).alpha(if (enabled) 1f else .4f).semantics { contentDescription = description; role = Role.Button }) {
-        Box(contentAlignment = Alignment.Center) { Icon(icon, null, Modifier.size(22.dp)) }
     }
 }
 
@@ -422,6 +499,9 @@ internal fun rememberSteadyCanWrite(state: ClientState): Boolean {
 }
 
 private const val STALE_GRACE_MS = 1_500L
+
+/** A Stop that never moves the thread to idle re-enables after this long. */
+private const val STOP_PENDING_MS = 10_000L
 
 private const val LOAD_EARLIER_KEY = "load-earlier"
 

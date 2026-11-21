@@ -90,6 +90,10 @@ object TfIcons {
     val Mic by lazy { strokeIcon("mic", rect(9f, 3f, 6f, 11f, 3f), "M18 11a6 6 0 0 1-12 0M12 17v4") }
     /** Arrow up: send / start. */
     val Send by lazy { strokeIcon("send", "M12 19V5M6 11l6-6 6 6") }
+    /** Corner arrow: steer the running turn with a message. */
+    val Steer by lazy { strokeIcon("steer", "M4 20v-7a5 5 0 0 1 5-5h11M15 3l5 5-5 5") }
+    /** List with plus: queue a message behind the running turn. */
+    val Queue by lazy { strokeIcon("queue", "M4 7h12M4 12h8M4 17h6M18 14v6M15 17h6") }
     /** Two people: the thread's agents. */
     val Agents by lazy { strokeIcon("agents", circle(9f, 8f, 3f), "M3 20a6 6 0 0 1 12 0", circle(17f, 9f, 2.4f), "M16.5 14.2A5 5 0 0 1 21 19") }
     val Stop by lazy { strokeIcon("stop", filled = listOf(rect(5f, 5f, 14f, 14f, 3f))) }

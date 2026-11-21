@@ -16,6 +16,7 @@ import com.tajchert.trefoil.core.model.ConversationRun
 import com.tajchert.trefoil.core.model.ModelOption
 import com.tajchert.trefoil.core.model.PendingBackgroundTask
 import com.tajchert.trefoil.core.model.Question
+import com.tajchert.trefoil.core.model.QueuedMessage
 import com.tajchert.trefoil.core.model.RemoteFileReference
 import com.tajchert.trefoil.core.model.RuntimeMode
 import com.tajchert.trefoil.core.model.RuntimeRequest
@@ -107,7 +108,7 @@ object ConversationFixtures {
 
     /** Active turn: "Working for" header, a settled subagent and a finished command, then the trailing Thinking row. */
     fun workingState(): ClientState = chatState().copy(
-        threads = listOf(workingThread()), activeRunId = "run-2",
+        threads = listOf(workingThread()), activeRunId = "run-2", canStop = true,
         runs = listOf(ConversationRun("run-2", "running", startedAt = RUN_STARTED)),
         messages = listOf(msg("m1", "user", "Now run the unit tests too.", 1), livePlan),
         activities = listOf(liveThought, agentItem("a-agent", "s-review", "completed", 4),
@@ -117,7 +118,7 @@ object ConversationFixtures {
 
     /** Active turn waiting on a running subagent, plus a roster-only agent rendered at the end of the turn. */
     fun liveSubagentState(): ClientState = chatState().copy(
-        threads = listOf(workingThread()), activeRunId = "run-2",
+        threads = listOf(workingThread()), activeRunId = "run-2", canStop = true,
         runs = listOf(ConversationRun("run-2", "running", startedAt = RUN_STARTED)),
         messages = listOf(msg("m1", "user", "Lint crashes with a FIR lazy resolve error. Can you find out why?", 1),
             livePlan.copy(text = "I'll have a subagent reproduce the crash and find the cause. It will fix it only if the fix is clear and low-risk.")),
@@ -127,11 +128,24 @@ object ConversationFixtures {
 
     /** The parent's turn ended while two delegated subagents keep running. */
     fun backgroundWorkState(): ClientState = chatState().copy(
+        canStop = true,
         backgroundWork = listOf(
             PendingBackgroundTask("turn-item:delegated-task:a", "subagent", "Stream A: boundary ingestion (OSM)", childThreadId = "thread:delegated-task:a"),
             PendingBackgroundTask("turn-item:delegated-task:b", "subagent", "Stream B: tile cache warmup", childThreadId = "thread:delegated-task:b"),
         ),
     )
+
+    /** Working thread whose turn accepts steering: the composer sends a steer by default. */
+    fun steerableState(): ClientState = workingState().copy(canSteer = true)
+
+    /** Two follow-ups waiting behind the running turn. */
+    fun queuedState(): ClientState = steerableState().copy(queuedMessages = listOf(
+        QueuedMessage("queued-1", "qm-1", "Also bump the version and update the changelog before you finish."),
+        QueuedMessage("queued-2", "qm-2", "Then open the PR.")))
+
+    /** A Stop held the queue: it waits for Resume. */
+    fun heldQueueState(): ClientState = chatState().copy(queueHeld = true, queuedMessages = listOf(
+        QueuedMessage("queued-1", "qm-1", "Also bump the version and update the changelog before you finish.", held = true)))
 
     private val longThreadPrompts = listOf("Add a dark theme preview.", "Cover the thread list too.", "Now the settings screen.",
         "Fix the clipped title.", "Run lint.", "Update the README.", "Bump the version.", "Check the widget colors.",
