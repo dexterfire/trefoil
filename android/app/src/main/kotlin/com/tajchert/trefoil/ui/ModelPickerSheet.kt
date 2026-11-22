@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -186,6 +187,8 @@ internal fun ModelPickerContent(
     var tab by rememberSaveable { mutableStateOf<String?>(null) }
     val activeTab = tab?.takeIf { it == FAVOURITES_TAB || catalog.sections.any { s -> s.instanceId == it } } ?: initialTab
     val expandedFamilies = remember { mutableStateMapOf<String, Boolean>() }
+    // Above the width switch, so crossing 600 dp (a fold, a resized window) keeps the user's place in the list.
+    val listState = rememberLazyListState()
 
     fun pick(option: ModelOption) {
         picked = option
@@ -195,7 +198,7 @@ internal fun ModelPickerContent(
 
     val ui = PickerUi(
         models, providers, preferences, catalog, results, query, { query = it }, activeTab, highlighted, applied, values, enabled, optionsEnabled, canStar, starsEnabled,
-        showFast, threadSelection, expandedFamilies, ::pick, onToggleFavorite, onSetModelOption,
+        showFast, threadSelection, expandedFamilies, ::pick, onToggleFavorite, onSetModelOption, listState,
     )
     // Two panes once the window is 600 dp wide (the sheet is at most 680 dp); the phone layout below that. Read from the configuration, like the
     // height cap, rather than BoxWithConstraints: a subcompose layout would change how the phone body is measured.
@@ -212,7 +215,7 @@ internal class PickerUi(
     val query: String, val setQuery: (String) -> Unit, val activeTab: String, val highlighted: ModelOption?, val applied: Boolean, val values: ModelOptionValues,
     val enabled: Boolean, val optionsEnabled: Boolean, val canStar: Boolean, val starsEnabled: Boolean, val showFast: Boolean, val threadSelection: Boolean,
     val expandedFamilies: MutableMap<String, Boolean>, val pick: (ModelOption) -> Unit, val onToggleFavorite: (ModelKey, Boolean) -> Unit,
-    val onSetModelOption: (String, Any) -> Unit,
+    val onSetModelOption: (String, Any) -> Unit, val listState: LazyListState,
 ) {
     val searching: Boolean get() = query.isNotBlank()
     val multiProvider: Boolean get() = catalog.sections.size > 1
@@ -299,7 +302,7 @@ internal fun PickerLazyList(ui: PickerUi) {
     val highlighted = ui.highlighted
     val enabled = ui.enabled
     // No top content padding: sticky headers pin at the padding edge, so the 6 dp gap above the first row is a leading item instead.
-    LazyColumn(contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    LazyColumn(state = ui.listState, contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
         item(key = "top-gap") { Spacer(Modifier.height(4.dp)) }
         when {
             ui.searching -> {

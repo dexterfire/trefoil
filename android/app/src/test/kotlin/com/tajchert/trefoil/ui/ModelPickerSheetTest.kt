@@ -1,6 +1,12 @@
 package com.tajchert.trefoil.ui
 
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.test.hasScrollToNodeAction
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.assertCountEquals
@@ -179,6 +185,21 @@ class ModelPickerTabletTest {
         show(listOf(opus, sonnet), opus)
         compose.onAllNodes(isTab).assertCountEquals(0)
         compose.onNodeWithContentDescription("Model Opus").assertIsDisplayed()
+    }
+
+    @Test fun crossingTheTabletWidthKeepsTheListPosition() {
+        val many = (0 until 30).map { ModelOption("claude", "m$it", "M$it") }
+        var wide by mutableStateOf(true)
+        compose.setContent {
+            val config = android.content.res.Configuration(LocalConfiguration.current).apply { screenWidthDp = if (wide) 800 else 400 }
+            CompositionLocalProvider(LocalConfiguration provides config) {
+                TrefoilTheme { ModelPickerContent(many, providers, many[0], emptyMap(), true, {}, {}, { _, _ -> }) }
+            }
+        }
+        compose.onNode(hasScrollToNodeAction()).performScrollToNode(hasContentDescription("Model M25"))
+        compose.onNodeWithContentDescription("Model M25").assertIsDisplayed()
+        wide = false
+        compose.onNodeWithContentDescription("Model M25").assertIsDisplayed()
     }
 
     @Test fun loadingShowsTabletSkeleton() {
