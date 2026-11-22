@@ -12,8 +12,8 @@ const val UNCERTAIN_MESSAGE = "Message outcome is uncertain. Check the conversat
  * one thread (the main dispatcher in the app): state is not synchronized.
  *
  * A draft keeps its `threadId`/`commandId` until the thread is known to exist. After an uncertain
- * launch it stays, and once the session is connected again and the shell lists its `threadId`, the
- * draft is cleared and that thread selected. An explicit resend while it is absent reuses the same
+ * launch it stays, and once the session is connected again and its live shell ([ClientState.shellLive]) lists its
+ * `threadId`, the draft is cleared and that thread selected. An explicit resend while it is absent reuses the same
  * ids, which the server deduplicates; nothing is ever resent automatically.
  */
 class ThreadDraftController(
@@ -118,7 +118,9 @@ class ThreadDraftController(
 
     private fun reconcile(state: ClientState) {
         val pending = _draft.value ?: return
-        if (launching || state.connection != ConnectionStatus.Connected || state.environment?.id != environmentId) return
+        // Only rows the current connection's shell confirmed (shellLive): a cached or retained row may list a thread the
+        // server has since deleted, and clearing the draft on it would lose the user's text.
+        if (launching || state.connection != ConnectionStatus.Connected || !state.shellLive || state.environment?.id != environmentId) return
         if (state.threads.none { it.id == pending.threadId }) return
         clear(); open(pending.threadId)
     }

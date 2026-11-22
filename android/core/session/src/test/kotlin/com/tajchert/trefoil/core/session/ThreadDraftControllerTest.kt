@@ -10,7 +10,7 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class ThreadDraftControllerTest {
     private val environment = SavedEnvironment("env-1", "Fixture", "https://fixture.invalid", "fixture-token")
-    private val connected = ClientState(environment = environment, connection = ConnectionStatus.Connected, canWrite = true,
+    private val connected = ClientState(environment = environment, connection = ConnectionStatus.Connected, canWrite = true, shellLive = true,
         threads = listOf(ThreadSummary("t", "p", "Existing")))
 
     private class FakeClient(initial: ClientState) : TrefoilClient {
@@ -120,6 +120,30 @@ class ThreadDraftControllerTest {
         assertEquals(draft, h.controller.draft.value)
         assertEquals(1, h.failures.size)
         assertTrue(h.notices.last().orEmpty().contains("rejected"))
+    }
+
+    @Test(timeout = 30_000) fun cachedRowsListingTheLaunchedThreadNeverClearTheDraft() = runTest {
+        val h = harness()
+        h.client.launch = { throw UncertainOutcomeException("lost") }
+        h.controller.start(draft)
+        h.controller.send("hello")
+        runCurrent()
+        // Connected, but the rows are still the cached ones (no synchronized marker yet): they may list a thread the server
+        // has since deleted, so they are no evidence.
+        val stale = connected.copy(shellLive = false, threads = connected.threads + ThreadSummary(draft.threadId, "p", "Hello"))
+        h.client.mutable.value = stale
+        runCurrent()
+        assertEquals("Stale rows never settle the launch", draft, h.controller.draft.value)
+        assertTrue(h.client.selected.isEmpty())
+        // The catch-up removed the deleted thread: the draft is still there to resend.
+        h.client.mutable.value = connected
+        runCurrent()
+        assertEquals(draft, h.controller.draft.value)
+        // A live shell listing it settles it.
+        h.client.mutable.value = stale.copy(shellLive = true)
+        runCurrent()
+        assertNull(h.controller.draft.value)
+        assertEquals(listOf(draft.threadId), h.client.selected)
     }
 
     @Test fun rejectedLaunchOfAThreadThatExistsOpensIt() = runTest {

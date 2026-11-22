@@ -195,7 +195,7 @@ class ConnectionPlanTest {
 
     @OptIn(ExperimentalCoroutinesApi::class)
     @Test fun editedRetryNeverReusesTheIdsOfADifferentPrompt() = runTest {
-        val state = MutableStateFlow(ClientState(environment = SavedEnvironment("env", "Mac", "https://mac.example/", "token"), connection = ConnectionStatus.Connected))
+        val state = MutableStateFlow(ClientState(environment = SavedEnvironment("env", "Mac", "https://mac.example/", "token"), connection = ConnectionStatus.Connected, shellLive = true))
         val store = ComposerDraftStore(MemoryDrafts(), backgroundScope).also { runCurrent() }
         val key = ComposerDraftKey.NewThread("env", "p1")
         store.update(key, "A")
@@ -212,6 +212,38 @@ class ConnectionPlanTest {
         assertNotEquals("A was accepted: B launches as a new thread", "thread-A", dispatched?.threadId)
         assertNotEquals("command-A", dispatched?.commandId)
         assertNull("B was accepted too", store.get(key))
+    }
+
+    @Test(timeout = 30_000) fun aResendNeverSettlesAPendingLaunchOnCachedRows() = runTest {
+        // Connected, but the rows are cached ones still waiting for the catch-up: they list A's thread, which the server may
+        // have deleted since.
+        val state = MutableStateFlow(ClientState(environment = SavedEnvironment("env", "Mac", "https://mac.example/", "token"), connection = ConnectionStatus.Connected,
+            shellLive = false, threads = listOf(ThreadSummary("thread-A", "p1", "A"))))
+        val store = ComposerDraftStore(MemoryDrafts(), backgroundScope).also { runCurrent() }
+        val key = ComposerDraftKey.NewThread("env", "p1")
+        store.update(key, "A")
+        store.recordLaunch(key, "thread-A", "command-A", "A")
+        store.update(key, "B")
+        var dispatched: ThreadDraft? = null
+        val client = ComposerDraftSettlingClient(SendOnlyClient(state, onLaunch = { dispatched = it; it.threadId }) {}, store)
+        val retry = ThreadDraft("p1", ModelOption("codex", "gpt"), threadId = "thread-A", commandId = "command-A")
+        assertTrue("Stale rows are no evidence: fails without dispatching", runCatching { client.launchThread(retry, "B") }.isFailure)
+        assertNull(dispatched)
+        assertEquals("The draft and its pending launch are kept", "B", store.get(key)?.text)
+        assertEquals("command-A", store.get(key)?.pendingLaunch?.commandId)
+        // The connection's own shell is synchronized and lists it: now it settles and B launches anew.
+        state.value = state.value.copy(shellLive = true)
+        client.launchThread(retry, "B")
+        assertNotEquals("thread-A", dispatched?.threadId)
+    }
+
+    @Test fun launchEvidenceIsOnlyTheLiveShell() {
+        val environment = SavedEnvironment("env", "Mac", "https://mac.example/", "token")
+        val rows = listOf(ThreadSummary("t1", "p1", "One"))
+        val cached = ClientState(environment = environment, connection = ConnectionStatus.Connected, shellLoaded = true, shellLive = false, threads = rows)
+        assertNull("Connected with cached rows is no evidence", launchEvidence(cached))
+        assertNull(launchEvidence(cached.copy(connection = ConnectionStatus.Connecting, shellLive = true)))
+        assertEquals("env" to setOf("t1"), launchEvidence(cached.copy(shellLive = true)))
     }
 
     private class SendOnlyClient(

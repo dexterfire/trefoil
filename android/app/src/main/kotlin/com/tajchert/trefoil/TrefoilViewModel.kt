@@ -157,9 +157,10 @@ class TrefoilViewModel internal constructor(
                 queueGuard.onState(key) { it.queueSignature() }
             }
         }
-        // A launch whose thread a connected snapshot lists is settled, also one restored from an earlier session.
+        // A launch whose thread a connected snapshot lists is settled, also one restored from an earlier session. Only the
+        // live shell counts (see launchEvidence): cached or retained rows may still list a thread the server has since deleted.
         viewModelScope.launch {
-            client.state.map { state -> state.environment?.id?.takeIf { state.connection == ConnectionStatus.Connected }?.let { it to state.threads.mapTo(HashSet()) { t -> t.id } } }
+            client.state.map(::launchEvidence)
                 .distinctUntilChanged()
                 .combine(composerDraftStore.drafts) { snapshot, _ -> snapshot }
                 .collect { snapshot -> snapshot?.let { (environmentId, threadIds) -> composerDraftStore.reconcileLaunches(environmentId, threadIds) } }
@@ -1429,6 +1430,12 @@ internal enum class PlanOutcome { Connected, NeedsSshLogin }
 internal class MachineRemovedException : Exception("This machine was removed while connecting")
 /** The cold-start connect found its machine unreachable; it ends without a notice. */
 private class QuietStartupFailure(val environmentId: String) : Exception("Machine unreachable")
+/**
+ * The threads that settle pending launches of the shown machine: only rows the current connection's shell confirmed
+ * ([ClientState.shellLive]); null while connecting or showing cached or retained rows, which may list a deleted thread.
+ */
+internal fun launchEvidence(state: ClientState): Pair<String, Set<String>>? =
+    state.environment?.id?.takeIf { state.connection == ConnectionStatus.Connected && state.shellLive }?.let { it to state.threads.mapTo(HashSet()) { t -> t.id } }
 /** A direct connect that never got as far as a successful session check, for reachability reasons only ([ConnectFailure]). */
 internal fun Exception.isUnreachableFailure(): Boolean = this is PairingException && failure == ConnectFailure.Unreachable
 
@@ -1549,7 +1556,7 @@ internal class ComposerDraftSettlingClient(private val inner: TrefoilClient, pri
             launch = draft.copy(threadId = pending.threadId, commandId = pending.commandId); resend = true
         } else if (pending != null) {
             val state = inner.state.value
-            if (state.connection != ConnectionStatus.Connected || state.environment?.id != environment || state.threads.none { it.id == pending.threadId })
+            if (state.connection != ConnectionStatus.Connected || !state.shellLive || state.environment?.id != environment || state.threads.none { it.id == pending.threadId })
                 throw IllegalStateException(UNCONFIRMED_LAUNCH)
             store.settleLaunched(environment, pending.threadId)
             if (draft.threadId == pending.threadId || draft.commandId == pending.commandId)
