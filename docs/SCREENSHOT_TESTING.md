@@ -56,6 +56,17 @@ WIDGET_SHOTS=1 ./gradlew :app:testDebugUnitTest --tests '*WidgetScreenshotTest' 
 
 Known gaps: the background is flat, and widgets that use a Glance `LazyColumn` (usage table, full limit bars) render without their rows.
 
+### README screenshots
+
+`ReadmeScreenshots.kt` (data in `ReadmeFixtures.kt`) renders the README images as full 400x880 dp screens. After re-recording, copy them into `docs/screenshots/` at 540 px wide (run from the repo root):
+
+```sh
+D=android/app/src/screenshotTestDefaultDebug/reference/com/tajchert/trefoil/screenshots/ReadmeScreenshotsKt
+for n in Threads Orchestration Agents Approval Usage; do
+  sips --resampleWidth 540 $D/Readme_${n}_*.png --out docs/screenshots/$(echo $n | tr A-Z a-z).png
+done
+```
+
 ## Adding a preview test
 
 1. Use the file for the area, or add one named after it (`UsageScreenshots.kt`). Put area-specific fake data in a matching `*Fixtures.kt`.

@@ -17,16 +17,25 @@ A native Android client for [T3 Code](https://github.com/pingdotgg/t3code): chec
 
 <table>
   <tr>
-    <td align="center"><img src="docs/screenshots/threads.png" width="200" alt="Thread list grouped into Needs you, Pinned and Recent"></td>
-    <td align="center"><img src="docs/screenshots/working.png" width="200" alt="A conversation with an agent working and a subagent finished"></td>
-    <td align="center"><img src="docs/screenshots/approval.png" width="200" alt="A command approval card with Allow and Deny"></td>
-    <td align="center"><img src="docs/screenshots/usage.png" width="200" alt="Provider limits and usage"></td>
+    <td align="center"><img src="docs/screenshots/threads.png" width="260" alt="Thread list with Grok, Antigravity, Claude, Codex, Cursor and OpenCode threads grouped into Needs you, Working and Recent"></td>
+    <td align="center"><img src="docs/screenshots/orchestration.png" width="260" alt="Claude Fable running Codex, Grok, Antigravity and Claude subagents in one turn"></td>
+    <td align="center"><img src="docs/screenshots/agents.png" width="260" alt="Agents sheet listing each subagent with its provider, model and reasoning effort"></td>
   </tr>
   <tr>
-    <td align="center"><sub><b>Threads</b></sub></td>
-    <td align="center"><sub><b>Live work</b></sub></td>
+    <td align="center"><sub><b>Every provider, one list</b></sub></td>
+    <td align="center"><sub><b>Fable orchestrating subagents</b></sub></td>
+    <td align="center"><sub><b>Agents across providers</b></sub></td>
+  </tr>
+</table>
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/approval.png" width="260" alt="A Grok command approval card with Allow and Deny"></td>
+    <td align="center"><img src="docs/screenshots/usage.png" width="260" alt="Limits for Claude, Codex, Cursor and Antigravity"></td>
+  </tr>
+  <tr>
     <td align="center"><sub><b>Approvals</b></sub></td>
-    <td align="center"><sub><b>Usage</b></sub></td>
+    <td align="center"><sub><b>Limits, Antigravity included</b></sub></td>
   </tr>
 </table>
 
