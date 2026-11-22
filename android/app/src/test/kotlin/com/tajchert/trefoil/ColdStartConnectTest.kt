@@ -13,6 +13,15 @@ import com.tajchert.trefoil.core.model.MachineProbe
 import com.tajchert.trefoil.core.model.SavedEnvironment
 import com.tajchert.trefoil.core.model.SshHostKey
 import com.tajchert.trefoil.core.model.SshProfile
+import com.tajchert.trefoil.core.model.ConnectionStatus
+import com.tajchert.trefoil.core.model.Project
+import com.tajchert.trefoil.core.model.ThreadAction
+import com.tajchert.trefoil.core.model.ThreadSummary
+import com.tajchert.trefoil.core.model.ThreadTarget
+import com.tajchert.trefoil.core.session.CachedShell
+import com.tajchert.trefoil.core.session.CachedShellCursor
+import com.tajchert.trefoil.core.session.ShellCacheStore
+import java.util.concurrent.ConcurrentHashMap
 import com.tajchert.trefoil.security.EnvironmentStore
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -48,6 +57,19 @@ class ColdStartConnectTest {
         override fun write(environments: List<SavedEnvironment>) = synchronized(this) { saved = environments; lastKnown = environments }
         override fun <T> locked(block: () -> T): T = synchronized(this) { block() }
     }
+
+    /** The encrypted shell cache, in memory. */
+    private class MemoryShellCache(vararg initial: CachedShell) : ShellCacheStore {
+        val entries = ConcurrentHashMap(initial.associateBy { it.environmentId })
+        val reads = CopyOnWriteArrayList<String>()
+        override suspend fun read(environmentId: String): CachedShell? { reads += environmentId; return entries[environmentId] }
+        override suspend fun write(shell: CachedShell) { entries[shell.environmentId] = shell }
+        override suspend fun delete(environmentId: String) { entries.remove(environmentId) }
+        override suspend fun retainOnly(environmentIds: Set<String>) { entries.keys.retainAll(environmentIds) }
+    }
+
+    private fun cached(id: String) = CachedShell(id, listOf(Project("p", "Project")),
+        listOf(ThreadSummary("t1", "p", "First"), ThreadSummary("t2", "p", "Second")), CachedShellCursor("1.0.0", null, 9, System.currentTimeMillis()), 1)
 
     /** Accepts connections and never answers until [dropAll] closes them, which fails the client's TLS handshake. */
     private inner class HangingServer : AutoCloseable {
@@ -90,9 +112,9 @@ class ColdStartConnectTest {
     private val probed = CopyOnWriteArrayList<String>()
 
     /** With [probes], machine probes answer from it (missing: Unreachable) instead of reaching the fixtures. */
-    private fun start(store: MemoryStore, lastUsed: String?, probes: Map<String, MachineProbe>? = null) {
+    private fun start(store: MemoryStore, lastUsed: String?, probes: Map<String, MachineProbe>? = null, shellCache: ShellCacheStore = MemoryShellCache()) {
         prefs.edit().apply { if (lastUsed == null) remove(LAST_ENVIRONMENT) else putString(LAST_ENVIRONMENT, lastUsed) }.commit()
-        model = TrefoilViewModel(RuntimeEnvironment.getApplication(), store)
+        model = TrefoilViewModel(RuntimeEnvironment.getApplication(), store, shellCache = shellCache)
         if (probes != null) model.machineProbe = { environment, _ -> probed += environment.id; probes[environment.id] ?: MachineProbe.Unreachable }
         awaitTrue { model.environments.value == store.saved }
         model.resume()
@@ -273,5 +295,51 @@ class ColdStartConnectTest {
         idleFor(200)
         assertNull(model.sshLogin.value)
         assertEquals("An SSH machine's failure is shown", ConnectionPhase.Failed, model.connectionAttempt.value.phase)
+    }
+
+    @Test fun theColdStartShowsTheCachedRowsNotLiveAndAQuietFailureKeepsTheCache() {
+        val alphaServer = HangingServer(); val betaServer = HangingServer()
+        val cache = MemoryShellCache(cached("alpha"), cached("beta"))
+        start(MemoryStore(listOf(machine("alpha", alphaServer), machine("beta", betaServer))), lastUsed = "alpha", probes = emptyMap(), shellCache = cache)
+        awaitTrue { alphaServer.accepted.get() >= 1 }
+        val shown = model.state.value
+        assertEquals("alpha", shown.environment?.id)
+        assertEquals("The cached rows show while connecting", listOf("t1", "t2"), shown.threads.map { it.id })
+        assertTrue(shown.shellLoaded)
+        assertFalse("Cached rows are never live", shown.shellLive)
+        assertFalse(shown.canWrite); assertFalse(shown.canWriteThreads); assertFalse(shown.canRead)
+        assertEquals(ConnectionStatus.Connecting, shown.connection)
+        assertEquals("Only the machine shown at start is read", listOf("alpha"), cache.reads.toList())
+
+        // Nothing can be written from cached rows: the action fails locally.
+        model.threadAction(ThreadTarget("alpha", "t1"), ThreadAction.Settle, null)
+        awaitTrue { model.notice.value != null }
+
+        alphaServer.refuse()
+        awaitTrue { "beta" in probed }
+        assertNull("The failed selection is cleared", model.state.value.environment)
+        idleFor(300)
+        assertEquals("A quiet cold-start failure deselects and never wipes", setOf("alpha", "beta"), cache.entries.keys)
+        assertEquals(listOf("t1", "t2"), cache.entries["alpha"]?.threads?.map { it.id })
+    }
+
+    @Test fun forgettingAMachineWipesItsCacheEntryOnly() {
+        val alphaServer = HangingServer(); val betaServer = HangingServer()
+        val cache = MemoryShellCache(cached("alpha"), cached("beta"))
+        val store = MemoryStore(listOf(machine("alpha", alphaServer), machine("beta", betaServer)))
+        start(store, lastUsed = null, probes = emptyMap(), shellCache = cache)
+        model.forget(store.saved.first { it.id == "alpha" })
+        awaitTrue { !cache.entries.containsKey("alpha") && store.saved.none { it.id == "alpha" } }
+        idleFor(200)
+        assertEquals(setOf("beta"), cache.entries.keys)
+    }
+
+    @Test fun entriesOfMachinesNoLongerSavedAreRemovedAtStart() {
+        val alphaServer = HangingServer()
+        val cache = MemoryShellCache(cached("alpha"), cached("gone"))
+        start(MemoryStore(listOf(machine("alpha", alphaServer))), lastUsed = "gone", probes = emptyMap(), shellCache = cache)
+        awaitTrue { !cache.entries.containsKey("gone") }
+        assertEquals(setOf("alpha"), cache.entries.keys)
+        assertTrue("A machine no longer saved shows nothing", model.state.value.threads.isEmpty())
     }
 }

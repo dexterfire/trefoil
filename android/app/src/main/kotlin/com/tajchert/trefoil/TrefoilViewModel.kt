@@ -14,6 +14,9 @@ import com.tajchert.trefoil.ui.stopKey
 import com.tajchert.trefoil.core.session.EnvironmentProbe
 import com.tajchert.trefoil.core.session.EnvironmentTokenRenewer
 import com.tajchert.trefoil.core.session.T3Client
+import com.tajchert.trefoil.core.session.CachedShell
+import com.tajchert.trefoil.core.session.ShellCacheStore
+import com.tajchert.trefoil.core.session.ShellCacheWriter
 import com.tajchert.trefoil.core.session.withTokenOf
 import com.tajchert.trefoil.core.session.ComposerDraft
 import com.tajchert.trefoil.core.session.ComposerDraftDiscard
@@ -31,6 +34,7 @@ import com.tajchert.trefoil.security.ComposerDraftFileStore
 import com.tajchert.trefoil.security.EnvironmentStore
 import com.tajchert.trefoil.security.EnvironmentWrites
 import com.tajchert.trefoil.security.EnvironmentVault
+import com.tajchert.trefoil.security.EncryptedShellCacheStore
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
@@ -54,6 +58,8 @@ class TrefoilViewModel internal constructor(
     private val vault: EnvironmentStore,
     /** Process-wide ([AppHttp]): the client, the renewer and the probe share its connection pool. */
     http: OkHttpClient = AppHttp.client,
+    /** Encrypted on-device shell rows per machine; replaced only by tests. */
+    private val shellCache: ShellCacheStore = EncryptedShellCacheStore.get(application),
 ) : AndroidViewModel(application) {
     constructor(application: Application) : this(application, EnvironmentVault(application))
     /** One renewer for the client and the probe, so DPoP renewals of a machine are serialized and land in the vault. */
@@ -269,17 +275,55 @@ class TrefoilViewModel internal constructor(
 
     /** Every machine write goes through this; see [EnvironmentWrites] for what a failed read may do. */
     private val environmentWrites = EnvironmentWrites(vault)
+    /** The vault was read in this process; only then may cache entries of machines it does not list be removed. */
+    private var vaultRead = false
     private val initialized = viewModelScope.async {
         try {
             vaultMutex.withLock {
                 _environments.value = withContext(Dispatchers.IO) { environmentWrites.load() }
+                vaultRead = true
                 hostKeys = withContext(Dispatchers.IO) { vault.readHostKeys() }
             }
         } catch (e: CancellationException) { throw e }
         catch (_: Exception) { _notice.value = "Saved credentials could not be unlocked. Pair this device again." }
     }
 
+    /**
+     * Writes the shown machine's shell rows to [shellCache], debounced and off the main thread; only saved machines are
+     * written. Its scope outlives this model, so the flush in [onCleared] completes.
+     */
+    private val shellCacheWriter = ShellCacheWriter(shellCache, CoroutineScope(SupervisorJob() + Dispatchers.IO), snapshot = { id ->
+        if (_environments.value.any { it.id == id }) client.shellCacheEntry(id) else null
+    })
+    /** Machines whose cache entry was read (or forgotten) in this process: read at most once, never after a forget. Main thread. */
+    private val shellCacheRead = mutableSetOf<String>()
+    /**
+     * The cold start shows the last-used machine's cached rows as soon as the vault is loaded: the file is read alongside
+     * the vault, and restored once the machine is known to be still saved. The cold-start connect waits for it.
+     */
+    private val startupShellRestore = viewModelScope.async {
+        val id = prefs.getString(LAST_ENVIRONMENT, null) ?: return@async
+        val cached = readShellCache(id)
+        initialized.await()
+        restoreShellCache(id, cached)
+    }
+
     init {
+        viewModelScope.launch {
+            initialized.await()
+            if (vaultRead) shellCacheWriter.retainOnly(_environments.value.mapTo(HashSet()) { it.id })
+        }
+        viewModelScope.launch {
+            // Rows are compared by identity: the client replaces the lists whenever they change.
+            client.state.map { ShellCacheTrigger(it.environment?.id, it.projects, it.threads, it.shellLoaded, it.connection) }
+                .distinctUntilChanged { a, b -> a.environmentId == b.environmentId && a.projects === b.projects && a.threads === b.threads &&
+                    a.loaded == b.loaded && a.connection == b.connection }
+                .collect { trigger ->
+                    val id = trigger.environmentId ?: return@collect
+                    if (trigger.connection == ConnectionStatus.Disconnected || trigger.connection == ConnectionStatus.Error) shellCacheWriter.flush(id)
+                    else if (trigger.loaded) shellCacheWriter.changed(id)
+                }
+        }
         viewModelScope.launch { client.routeHints.collect { hints -> learnRoutes(hints) } }
         viewModelScope.launch {
             combine(client.state.map { Triple(it.connection, it.environment?.id, it.activeRoute) }.distinctUntilChanged(), _environments) { _, _ -> }
@@ -402,7 +446,8 @@ class TrefoilViewModel internal constructor(
     private fun quietStartupFailed(epoch: Long, environmentId: String) {
         quietFailedEpoch = epoch
         _machineProbes.update { it + (environmentId to MachineProbe.Unreachable) }
-        if (state.value.environment?.id == environmentId && state.value.connection != ConnectionStatus.Connected) client.forgetEnvironment(environmentId)
+        // Deselected, not forgotten: the machine's retained rows, resume cursor and cache entry stay for the next attempt.
+        if (state.value.environment?.id == environmentId && state.value.connection != ConnectionStatus.Connected) client.deselectEnvironment(environmentId)
         if (selectedEnvironment?.id == environmentId) selectedEnvironment = null
         if (attemptEnvironmentId == environmentId) attemptEnvironmentId = null
         _connectionAttempt.value = ConnectionAttempt()
@@ -427,7 +472,30 @@ class TrefoilViewModel internal constructor(
             }
         }
         stored.forEach { unsavedHints.remove(it.id) }
+        val removed = _environments.value.any { previous -> stored.none { it.id == previous.id } }
         _environments.value = stored
+        // A forgotten machine, or a new pairing over a vault never readable here: its rows must not stay on the device.
+        if (removed || newPairing) shellCacheWriter.retainOnly(stored.mapTo(HashSet()) { it.id })
+    }
+
+    private suspend fun readShellCache(environmentId: String): CachedShell? =
+        try { shellCache.read(environmentId) } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+
+    /**
+     * Restores [cached] rows of [environmentId] into the client (never live: no reads or writes until the connection's
+     * `synchronized` marker), once per machine per process, only while it is saved and never after it was forgotten.
+     */
+    private fun restoreShellCache(environmentId: String, cached: CachedShell?) {
+        if (!shellCacheRead.add(environmentId) || cached == null || _environments.value.none { it.id == environmentId }) return
+        // Marked first: the restore emits state whose collector may flush at once, and these rows are already stored.
+        shellCacheWriter.markWritten(cached)
+        client.restoreShell(cached)
+    }
+
+    /** Before connecting [environmentId]: its cached rows, unless this process already read them (or holds newer rows). */
+    private suspend fun restoreShellCacheBeforeConnect(environmentId: String) {
+        if (environmentId in shellCacheRead) return
+        restoreShellCache(environmentId, readShellCache(environmentId))
     }
 
     /**
@@ -554,6 +622,7 @@ class TrefoilViewModel internal constructor(
         // A request made before its machine was forgotten never connects it (nor pairs it anew).
         val environment = _environments.value.firstOrNull { it.id == requested.id } ?: throw MachineRemovedException()
         selectedEnvironment = environment.forStorage()
+        restoreShellCacheBeforeConnect(environment.id)
         val fullPlan = environment.candidateRoutes().let { plan -> startAt?.let { start -> plan.dropWhile { !sameRoute(it, start) } }?.ifEmpty { null } ?: plan }
         val plan = usableRoutes(fullPlan, cellularOnly)
         val skipped = fullPlan.filter { route -> plan.none { it === route } }
@@ -604,6 +673,7 @@ class TrefoilViewModel internal constructor(
         val saved = normalized.savedEnvironmentId?.let { id -> _environments.value.firstOrNull { it.id == id && it.ssh != null } }
         // A reconnect of a machine forgotten meanwhile must not turn into a new pairing.
         if (normalized.savedEnvironmentId?.let { id -> _environments.value.none { it.id == id } } == true) throw MachineRemovedException()
+        saved?.let { restoreShellCacheBeforeConnect(it.id) }
         val expected = hostKeys.firstOrNull { it.host.equals(normalized.host, ignoreCase = true) && it.port == normalized.port }?.fingerprint
             ?: saved?.ssh?.takeIf { it.host.equals(normalized.host, ignoreCase = true) && it.port == normalized.port }?.fingerprint
         pendingInput = normalized
@@ -859,6 +929,8 @@ class TrefoilViewModel internal constructor(
         }
     }
     fun forget(environment: SavedEnvironment) = action("Could not remove saved credentials.") {
+        // Before anything suspends: a cache read still running for this machine is never restored.
+        shellCacheRead += environment.id
         composerDraftStore.clearEnvironment(environment.id)
         if (drafts.environmentId == environment.id || state.value.environment?.id == environment.id) clearDraft()
         if (selectedEnvironment?.id == environment.id || state.value.environment?.id == environment.id) { cancelSsh(); keepAliveLatched = true }
@@ -874,6 +946,7 @@ class TrefoilViewModel internal constructor(
             }
             if (reconnectWhenOnline?.id == environment.id) reconnectWhenOnline = null
             client.forgetEnvironment(environment.id)
+            shellCacheWriter.wipe(environment.id)
             fileDownloads.htmlRenders.evictEnvironment(environment.id)
             // Deleted before connection attempts run again: one queued behind this lock then finds no row and stops.
             initialized.await()
@@ -887,6 +960,7 @@ class TrefoilViewModel internal constructor(
     private fun updateThreadViewing() = client.setThreadViewing(foreground && threadShown)
     fun pause() {
         flushComposerDrafts()
+        state.value.environment?.id?.let(shellCacheWriter::flush)
         if (!foreground) return
         screenSessions.pause()
         foreground = false
@@ -1008,6 +1082,8 @@ class TrefoilViewModel internal constructor(
             initialized.await()
             if (!foreground) return@launch
             var failedLastUsed: String? = null
+            // The cached rows are in place before the cold-start connect shows that machine.
+            if (connectLastUsedFirst) startupShellRestore.await()
             if (connectLastUsedFirst) connectLastUsedNow()?.let { (id, attempt, attemptEpoch) ->
                 attempt.join()
                 if (!foreground) return@launch
@@ -1275,6 +1351,8 @@ class TrefoilViewModel internal constructor(
         tunnelMonitor?.cancel()
         val closing = tunnel; tunnel = null
         if (closing != null) Thread({ closing.close() }, "trefoil-ssh-cleanup").apply { isDaemon = true; start() }
+        // Taken now, written on the cache's own scope.
+        state.value.environment?.id?.let(shellCacheWriter::flush)
         client.close()
     }
 
@@ -1284,6 +1362,9 @@ class TrefoilViewModel internal constructor(
         const val SSH_FAILURE = "SSH connection failed. Check the address, login and running T3 server."
     }
 }
+
+/** What a shell cache write depends on; rows compared by identity. */
+private class ShellCacheTrigger(val environmentId: String?, val projects: List<Project>, val threads: List<ThreadSummary>, val loaded: Boolean, val connection: ConnectionStatus)
 
 /** Starts and stops the keep-alive service; [ServiceKeepAliveControl] in production. */
 internal interface KeepAliveControl {
