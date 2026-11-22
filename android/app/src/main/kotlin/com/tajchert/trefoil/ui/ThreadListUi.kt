@@ -198,6 +198,13 @@ internal fun threadDraftRows(drafts: Map<ComposerDraftKey, ComposerDraft>, envir
 internal fun threadListLoading(state: ClientState): Boolean = !state.hasShellRows() &&
     state.connection in setOf(ConnectionStatus.Connecting, ConnectionStatus.Reconnecting, ConnectionStatus.Connected)
 
+/**
+ * Rows on screen are not live yet: kept from an earlier connection or restored from the on-device cache while the
+ * connection is made, or resuming before its `synchronized` marker. The list shows them under the progress bar.
+ */
+internal fun threadListUpdating(state: ClientState): Boolean = state.shellLoaded && !state.shellLive && state.threads.isNotEmpty() &&
+    state.connection in setOf(ConnectionStatus.Connecting, ConnectionStatus.Reconnecting, ConnectionStatus.Connected)
+
 /** "No threads" is a fact only about a loaded shell; while it is loading or never loaded the list stays blank. */
 internal fun threadListShowsEmpty(state: ClientState): Boolean = state.hasShellRows() && !state.busy
 
@@ -268,7 +275,7 @@ internal fun ThreadList(
         if (searching || query.isNotEmpty()) ThreadSearchField(query, { query = it }) { query = ""; searching = false }
         ThreadFilterChips(filter, counts, state.projects, projects[projectId], { filter = it }, { projectId = it })
         val loading = threadListLoading(state)
-        if ((state.busy || loading) && state.threads.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp).height(2.dp), color = c.accent, trackColor = c.s2)
+        if ((state.busy || loading) && state.threads.isEmpty() || threadListUpdating(state)) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp).height(2.dp), color = c.accent, trackColor = c.s2)
         PullToRefreshBox(isRefreshing, onRefresh, Modifier.weight(1f).fillMaxWidth()) {
             val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottomInset + if (railLayout) 24.dp else 96.dp)) {

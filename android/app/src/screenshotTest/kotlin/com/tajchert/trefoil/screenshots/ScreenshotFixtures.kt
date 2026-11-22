@@ -63,6 +63,6 @@ object ScreenshotFixtures {
 
     fun connectedState(threads: List<ThreadSummary> = this.threads) = ClientState(
         environment = workstation, connection = ConnectionStatus.Connected, projects = projects,
-        threads = threads, models = models, canRead = true, canWrite = true, canWriteThreads = true, shellLoaded = true,
+        threads = threads, models = models, canRead = true, canWrite = true, canWriteThreads = true, shellLoaded = true, shellLive = true,
     )
 }

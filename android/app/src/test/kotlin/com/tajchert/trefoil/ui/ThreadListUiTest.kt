@@ -210,6 +210,17 @@ class ThreadListUiTest {
         assertFalse(threadListLoading(fixture))
         assertTrue(threadListShowsEmpty(fixture))
     }
+    @Test fun cachedRowsShowUnderTheProgressBarUntilTheShellIsLive() {
+        val cached = ClientState(threads = fixture.threads, shellLoaded = true)
+        for (status in listOf(ConnectionStatus.Connecting, ConnectionStatus.Reconnecting, ConnectionStatus.Connected)) {
+            assertTrue("$status", threadListUpdating(cached.copy(connection = status)))
+            assertFalse("live rows: $status", threadListUpdating(cached.copy(connection = status, shellLive = true)))
+            assertFalse("rows are shown, not placeholders: $status", threadListLoading(cached.copy(connection = status)))
+        }
+        // Offline rows say so through the banner, not a progress bar that never ends.
+        for (status in listOf(ConnectionStatus.Disconnected, ConnectionStatus.Error)) assertFalse("$status", threadListUpdating(cached.copy(connection = status)))
+        assertFalse("No rows: the loading placeholders instead", threadListUpdating(cached.copy(threads = emptyList(), connection = ConnectionStatus.Connecting)))
+    }
 
     /* ---------- Design renders (build/reports/ui/design-*.png) ---------- */
 

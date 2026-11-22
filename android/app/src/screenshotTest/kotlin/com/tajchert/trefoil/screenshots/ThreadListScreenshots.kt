@@ -4,6 +4,7 @@ import android.content.res.Configuration
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.tooling.preview.Preview
 import com.android.tools.screenshot.PreviewTest
+import com.tajchert.trefoil.core.model.ConnectionStatus
 import com.tajchert.trefoil.core.session.ComposerDraft
 import com.tajchert.trefoil.core.session.ComposerDraftKey
 import com.tajchert.trefoil.ui.ComposerDraftUi
@@ -82,6 +83,24 @@ fun ThreadList_Drafts_Light() {
 @Composable
 fun ThreadList_Drafts_Dark() {
     TrefoilTheme(darkTheme = true) { ThreadList(ScreenshotFixtures.connectedState(draftThreads()), select = {}, create = {}, composerDrafts = draftsUi()) }
+}
+
+/** Rows restored from the on-device cache (or kept from the last connection) while connecting: shown, not live, under the progress bar. */
+private fun cachedWhileConnectingState() = ScreenshotFixtures.connectedState().copy(connection = ConnectionStatus.Connecting, shellLive = false,
+    canRead = false, canWrite = false, canWriteThreads = false)
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, heightDp = 800)
+@Composable
+fun ThreadList_CachedWhileConnecting_Light() {
+    TrefoilTheme(darkTheme = false) { ThreadList(cachedWhileConnectingState(), select = {}, create = {}) }
+}
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, heightDp = 800, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun ThreadList_CachedWhileConnecting_Dark() {
+    TrefoilTheme(darkTheme = true) { ThreadList(cachedWhileConnectingState(), select = {}, create = {}) }
 }
 
 /** Connected (or connecting) before the first shell snapshot: placeholder rows and the progress bar, never "no threads". */
