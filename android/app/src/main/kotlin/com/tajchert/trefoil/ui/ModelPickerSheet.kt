@@ -102,11 +102,15 @@ internal fun fastModeOn(model: ModelOption?, explicit: ModelOptionValues): Boole
 }
 
 /** Composer pill text: `<model>` plus ` · Fast` when Fast mode is on; effort has its own icon pill. */
-internal fun modelPillLabel(model: ModelOption?, explicit: ModelOptionValues): String {
-    if (model == null) return "Model"
+internal fun modelPillLabel(model: ModelOption?, explicit: ModelOptionValues, loading: Boolean = false, empty: String = "Model"): String {
+    if (model == null) return if (loading) "Loading models…" else empty
     val parts = listOfNotNull(model.label, if (fastModeOn(model, explicit)) "Fast" else null)
     return parts.joinToString(" · ")
 }
+
+/** Accessibility text for the model pill: `Model: loading` while the catalog is on its way, `not set` without a model. */
+internal fun modelPillDescription(model: ModelOption?, explicit: ModelOptionValues, loading: Boolean): String =
+    "Model: " + if (model != null) modelPillLabel(model, explicit) else if (loading) "loading" else "not set"
 
 /** Whether picking [model] leaves the sheet open for effort/Fast choices; [showFast] false means Fast mode has no control. */
 internal fun hasModelOptions(model: ModelOption?, showFast: Boolean = true): Boolean =
@@ -363,12 +367,12 @@ internal fun rememberAnimationsOff(): Boolean {
     }
 }
 
-/** Pulsing alpha for placeholder bars (0.4..0.75), read lazily from a graphics layer; static when animations are off. */
+/** Pulsing alpha for placeholder bars (0.55..1.0), read lazily from a graphics layer; static when animations are off. */
 @Composable
 internal fun rememberSkeletonAlpha(): () -> Float {
     val pulse = if (rememberAnimationsOff()) null else rememberInfiniteTransition(label = "modelSkeleton")
-        .animateFloat(.4f, .75f, infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "modelSkeletonAlpha")
-    return { pulse?.value ?: .55f }
+        .animateFloat(.55f, 1f, infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "modelSkeletonAlpha")
+    return { pulse?.value ?: .75f }
 }
 
 /** Loading state: disabled search and tabs plus four pulsing placeholder rows (static when animations are off). */
@@ -387,8 +391,8 @@ private fun ModelPickerSkeleton() {
             listOf(24.dp, 88.dp, 72.dp).forEach { width -> Box(Modifier.size(width, 16.dp).graphicsLayer { this.alpha = alpha() }.background(c.s2, RoundedCornerShape(8.dp))) }
         }
         HorizontalDivider(color = c.line)
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            repeat(4) { Box(Modifier.fillMaxWidth().height(52.dp).graphicsLayer { this.alpha = alpha() }.background(c.s2, barShape)) }
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            repeat(4) { Box(Modifier.fillMaxWidth().height(52.dp).graphicsLayer { this.alpha = alpha() }.background(c.s3, barShape)) }
         }
         Spacer(Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
     }

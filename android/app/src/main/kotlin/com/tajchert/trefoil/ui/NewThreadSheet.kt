@@ -318,7 +318,8 @@ internal fun NewThreadSheetContent(
             var effortMenu by remember { mutableStateOf(false) }
             var modeMenu by remember { mutableStateOf(false) }
             Box {
-                SheetPill(model?.let { modelPillLabel(it, explicitOptions) } ?: "No models", TfIcons.Sparkle, "Model: ${model?.let { modelPillLabel(it, explicitOptions) } ?: "not set"}", enabled = state.models.isNotEmpty() || modelPickerLoading(state.models, state.connection)) { modelMenu = true }
+                val modelsLoading = modelPickerLoading(state.models, state.connection)
+                SheetPill(modelPillLabel(model, explicitOptions, modelsLoading, empty = "No models"), TfIcons.Sparkle, modelPillDescription(model, explicitOptions, modelsLoading), enabled = state.models.isNotEmpty() || modelsLoading) { modelMenu = true }
                 // An effort pick takes the chosenEffort path, the Fast switch the chosenFast one; both persist with the draft.
                 if (modelMenu) ModelPickerSheet(
                     models = state.models, providers = state.providers, current = model, explicit = explicitOptions, enabled = loaded, dismiss = { modelMenu = false },
@@ -363,7 +364,7 @@ internal fun NewThreadSheetContent(
                 }
             }
         }
-        if (state.models.isEmpty()) Text("No models reported by this environment. Reconnect to refresh configuration.", style = TrefoilType.meta, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = 10.dp))
+        if (state.models.isEmpty() && !modelPickerLoading(state.models, state.connection)) Text("No models reported by this environment. Reconnect to refresh configuration.", style = TrefoilType.meta, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = 10.dp))
         Text("Workspace uses the server default.", style = TrefoilType.meta, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = 10.dp))
     }
 }
@@ -415,7 +416,7 @@ private fun SheetPill(label: String?, icon: ImageVector, description: String, en
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(if (label == null) 4.dp else 6.dp),
     ) {
         Icon(icon, null, Modifier.size(if (label == null) 18.dp else 14.dp), tint = if (enabled) c.text else c.muted)
-        if (label != null) Text(label, style = TrefoilType.meta, color = if (enabled) c.text else c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (label != null) Text(label, Modifier.weight(1f, fill = false), style = TrefoilType.meta, color = if (enabled) c.text else c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Icon(TfIcons.ChevronDown, null, Modifier.size(14.dp), tint = c.muted)
     }
 }

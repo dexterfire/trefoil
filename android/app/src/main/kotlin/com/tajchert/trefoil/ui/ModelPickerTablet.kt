@@ -48,7 +48,7 @@ internal fun TabletPickerBody(ui: PickerUi, closeSheet: () -> Unit, loading: Boo
                 }
                 else -> Row(Modifier.fillMaxSize()) {
                     if (ui.multiProvider) ProviderRail(ui, onRail)
-                    Column(Modifier.weight(1f).fillMaxHeight()) {
+                    Column(Modifier.weight(1f).fillMaxHeight().navigationBarsPadding()) {
                         Spacer(Modifier.height(8.dp))
                         PickerSearchField(ui)
                         ui.singleSection?.takeIf { !ui.multiProvider && !ui.searching }?.let { SingleProviderBanner(it, ui.threadSelection) }
@@ -62,7 +62,6 @@ internal fun TabletPickerBody(ui: PickerUi, closeSheet: () -> Unit, loading: Boo
                 }
             }
         }
-        Spacer(Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
     }
 }
 
@@ -72,7 +71,7 @@ private fun ProviderRail(ui: PickerUi, onRail: (String) -> Unit) {
     val c = Tf.colors
     val favourites = ui.catalog.favorites
     Row(Modifier.fillMaxHeight()) {
-        Column(Modifier.width(56.dp).fillMaxHeight().background(c.rail).verticalScroll(rememberScrollState()).padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(Modifier.width(56.dp).fillMaxHeight().background(c.rail).navigationBarsPadding().verticalScroll(rememberScrollState()).padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             val onFavourites = !ui.searching && ui.activeTab == FAVOURITES_TAB
             RailButton(onFavourites, if (favourites.isEmpty()) "Favourites" else "Favourites, ${favourites.size} models", { onRail(FAVOURITES_TAB) }) {
                 Icon(if (onFavourites) TfIcons.StarFilled else TfIcons.Star, null, Modifier.size(20.dp), tint = if (onFavourites) c.amber else c.muted)
@@ -91,10 +90,11 @@ private fun RailButton(selected: Boolean, description: String, onClick: () -> Un
     Box(Modifier.fillMaxWidth().height(48.dp)) {
         if (selected) Box(Modifier.align(Alignment.CenterStart).size(3.dp, 24.dp).background(c.accent, RoundedCornerShape(topEnd = 2.dp, bottomEnd = 2.dp)))
         Box(
-            Modifier.align(Alignment.Center).size(48.dp).clip(RoundedCornerShape(12.dp)).background(if (selected) c.accentSoft else Color.Transparent)
-                .selectable(selected, role = Role.Tab, onClick = onClick).semantics { contentDescription = description },
+            Modifier.align(Alignment.Center).size(48.dp).selectable(selected, role = Role.Tab, onClick = onClick).semantics { contentDescription = description },
             contentAlignment = Alignment.Center,
-        ) { icon() }
+        ) {
+            Box(Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).background(if (selected) c.accentSoft else Color.Transparent), contentAlignment = Alignment.Center) { icon() }
+        }
     }
 }
 
@@ -143,8 +143,9 @@ private fun OptionsPane(
         if (fast != null) {
             val on = fastModeOn(model, values)
             val label = fast.label.ifBlank { "Fast mode" }
+            if (reasoning != null) HorizontalDivider(color = c.line)
             Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp)) {
-                Text(label, Modifier.padding(start = 4.dp, bottom = 6.dp), style = TrefoilType.meta, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                SectionLabel(label, Modifier.padding(start = 4.dp, bottom = 6.dp))
                 SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().semantics { contentDescription = label }) {
                     val colors = SegmentedButtonDefaults.colors(
                         activeContainerColor = c.accentSoft, activeContentColor = c.accent, activeBorderColor = c.accent,
@@ -154,17 +155,29 @@ private fun OptionsPane(
                     )
                     SegmentedButton(
                         !on, { if (on) onSetModelOption(fast.id, false) }, SegmentedButtonDefaults.itemShape(0, 2), Modifier.heightIn(min = 48.dp), optionsEnabled, colors,
-                        border = SegmentedButtonDefaults.borderStroke(if (!on) c.accent else c.line), icon = {}, label = { Text("Standard", maxLines = 1) },
+                        border = SegmentedButtonDefaults.borderStroke(segmentBorder(!on, optionsEnabled)), icon = {}, label = { Text("Standard", style = MaterialTheme.typography.labelMedium.copy(fontSize = 13.sp), maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     )
                     SegmentedButton(
                         on, { if (!on) onSetModelOption(fast.id, true) }, SegmentedButtonDefaults.itemShape(1, 2), Modifier.heightIn(min = 48.dp), optionsEnabled, colors,
-                        border = SegmentedButtonDefaults.borderStroke(if (on) c.accent else c.line),
-                        icon = { Icon(TfIcons.Bolt, null, Modifier.size(SegmentedButtonDefaults.IconSize)) }, label = { Text("Fast", maxLines = 1) },
+                        border = SegmentedButtonDefaults.borderStroke(segmentBorder(on, optionsEnabled)),
+                        icon = { Icon(TfIcons.Bolt, null, Modifier.size(SegmentedButtonDefaults.IconSize)) }, label = { Text("Fast", style = MaterialTheme.typography.labelMedium.copy(fontSize = 13.sp), maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     )
                 }
             }
         }
         Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
+    }
+}
+
+/** Accent outline only for the active segment while options are enabled; disabled or pending segments stay on the quiet line colours. */
+@Composable
+private fun segmentBorder(active: Boolean, enabled: Boolean): Color {
+    val c = Tf.colors
+    return when {
+        enabled && active -> c.accent
+        enabled || active -> c.line
+        else -> c.line.copy(alpha = .5f)
     }
 }
 
@@ -174,19 +187,20 @@ private fun TabletSkeleton() {
     val c = Tf.colors
     val alpha = rememberSkeletonAlpha()
     Row(Modifier.fillMaxSize().testTag("model-picker-loading").semantics(mergeDescendants = true) { contentDescription = "Loading models" }) {
-        Column(Modifier.width(56.dp).fillMaxHeight().background(c.rail).padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            repeat(3) { Box(Modifier.fillMaxWidth().height(48.dp), contentAlignment = Alignment.Center) { Box(Modifier.size(22.dp).graphicsLayer { this.alpha = alpha() }.background(c.s2, CircleShape)) } }
+        Column(Modifier.width(56.dp).fillMaxHeight().background(c.rail).navigationBarsPadding().padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            val dot = if (c.isDark) c.s3 else c.muted.copy(alpha = .22f)
+            repeat(3) { Box(Modifier.fillMaxWidth().height(48.dp), contentAlignment = Alignment.Center) { Box(Modifier.size(22.dp).graphicsLayer { this.alpha = alpha() }.background(dot, CircleShape)) } }
         }
         VerticalDivider(color = c.line)
-        Column(Modifier.weight(1f).fillMaxHeight()) {
+        Column(Modifier.weight(1f).fillMaxHeight().navigationBarsPadding()) {
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 "", {}, enabled = false, singleLine = true, placeholder = { Text("Search models…") }, shape = TfFieldShape, colors = tfFieldColors(),
                 leadingIcon = { Icon(TfIcons.Search, null, Modifier.size(18.dp), tint = c.muted.copy(alpha = .5f)) },
                 modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
             )
-            Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                repeat(4) { Box(Modifier.fillMaxWidth().height(52.dp).graphicsLayer { this.alpha = alpha() }.background(c.s2, RoundedCornerShape(12.dp))) }
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                repeat(4) { Box(Modifier.fillMaxWidth().height(52.dp).graphicsLayer { this.alpha = alpha() }.background(c.s3, RoundedCornerShape(12.dp))) }
             }
         }
     }

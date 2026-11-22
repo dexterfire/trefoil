@@ -48,6 +48,18 @@ class ModelPickerSheetTest {
     @Test fun pillLabelShowsFast() = assertEquals("Opus · Fast", modelPillLabel(claude, mapOf("effort" to "low", "fastMode" to true)))
     @Test fun pillLabelWithoutOptions() = assertEquals("GPT-5", modelPillLabel(plain, mapOf("effort" to "low")))
     @Test fun pillLabelWithoutModel() = assertEquals("Model", modelPillLabel(null, emptyMap()))
+    @Test fun pillReadsLoadingWhileCatalogIsOnItsWay() {
+        assertEquals("Loading models…", modelPillLabel(null, emptyMap(), loading = true, empty = "No models"))
+        assertEquals("Model: loading", modelPillDescription(null, emptyMap(), loading = true))
+    }
+    @Test fun pillReadsNoModelsOnlyWhenNotLoading() {
+        assertEquals("No models", modelPillLabel(null, emptyMap(), loading = false, empty = "No models"))
+        assertEquals("Model: not set", modelPillDescription(null, emptyMap(), loading = false))
+    }
+    @Test fun pillShowsModelEvenWhileLoadingFlagIsSet() {
+        assertEquals("Opus", modelPillLabel(claude, emptyMap(), loading = true))
+        assertEquals("Model: Opus", modelPillDescription(claude, emptyMap(), loading = true))
+    }
     @Test fun unknownValueFallsBackToId() = assertEquals("max", reasoningChoice(claude, mapOf("effort" to "max"))?.label)
     @Test fun noReasoningChoiceWithoutDescriptor() = assertNull(reasoningChoice(plain, emptyMap()))
     @Test fun fastOnlyModelHasNoOptionsWhenFastHidden() {
