@@ -106,6 +106,12 @@ class T3Client(
     private var threadReady = false
     private var authorized = false
     private var previewAuthorized = false
+    /** The session holds `settings:write`; [ClientState.canWriteSettings] also needs a live shell. */
+    private var settingsAuthorized = false
+    /** Model preferences the live connection's server last reported, before [pendingFavorites] apply. */
+    private var serverPreferences = ModelPreferences()
+    /** Favourite changes sent on this connection and not answered yet, oldest first: shown optimistically, never resent. */
+    private val pendingFavorites = mutableListOf<FavoriteChange>()
     private var serverBrowser = false
     private var browserScreensFresh = false
     private var deviceScreensFresh = false
@@ -185,7 +191,7 @@ class T3Client(
         val current = state.value
         current.environment?.id?.let { id ->
             environmentStates.remove(id)
-            environmentStates[id] = current.copy(canWrite = false, canWriteThreads = false, canRead = false, shellLive = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = null, screens = ScreenCatalog(), localServers = LocalServerCatalog(), portForwards = emptyList())
+            environmentStates[id] = current.copy(canWrite = false, canWriteThreads = false, canWriteSettings = false, canRead = false, shellLive = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = null, screens = ScreenCatalog(), localServers = LocalServerCatalog(), portForwards = emptyList())
             evictRetained()
         }
     }
@@ -472,7 +478,7 @@ class T3Client(
             if (state.value.environment?.id != environment.id) usageCache.clear()
             val retained = environmentStates[environment.id] ?: ClientState()
             projection = JsonObject(emptyMap())
-            update { retained.copy(environment = environment, connection = ConnectionStatus.Connecting, canWrite = false, canWriteThreads = false, canRead = false, shellLive = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = null, settlementUndo = null, threadActionsConfigured = false, activeRoute = null,
+            update { retained.copy(environment = environment, connection = ConnectionStatus.Connecting, canWrite = false, canWriteThreads = false, canWriteSettings = false, modelPreferences = ModelPreferences(), canRead = false, shellLive = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = null, settlementUndo = null, threadActionsConfigured = false, activeRoute = null,
                 localServers = LocalServerCatalog(), previewTunnelSetting = null, previewTunnelDisabled = false, portForwards = emptyList()) }
         }
         // Set once the session check succeeded: any later failure is [ConnectFailure.AfterSession].
@@ -484,6 +490,7 @@ class T3Client(
             val permissions = (session["permissions"] ?: session["scopes"]) as? JsonArray
             val mayOperate = permissions?.any { it.jsonPrimitive.content == "orchestration:operate" } == true
             val mayReadUsage = permissions?.any { (it as? JsonPrimitive)?.contentOrNull == "diagnostics:read" } == true
+            val mayWriteSettings = permissions?.any { (it as? JsonPrimitive)?.contentOrNull == "settings:write" } == true
             val ticket = try { ticketRequest("/api/auth/websocket-ticket/rpc") } catch (error: HttpFailure) {
                 if (error.status != 404) throw error
                 ticketRequest("/api/auth/websocket-ticket")
@@ -542,21 +549,22 @@ class T3Client(
             val tunnel = PreviewTunnelConfig().withConfig(config)
             val models = config.objects("providers").filter { it["enabled"]?.jsonPrimitive?.booleanOrNull != false }.flatMap { provider ->
                 val modes = supportedRuntimeModes(provider)
-                provider.objects("models").map { ModelOption(provider.string("instanceId"), it.string("slug"), it.string("name"), modes, modelOptionDescriptors(it)) }
+                provider.objects("models").map { catalogModelOption(provider.string("instanceId"), modes, it) }
             }
             val defaultMode = RuntimeMode.fromWire(config.obj("settings").string("defaultRuntimeMode"))
             val (defaultModel, projectDefaults) = newThreadDefaults(config["settings"] as? JsonObject)
+            val preferences = modelPreferences(config["settings"] as? JsonObject, ModelPreferences())
             val origin = shellOrigin(environment.id, config)
             val providers = providerInstances(config)
             val endpoints = directEndpointHints(config)
             beforeConnectPublished?.invoke()
             synchronized(lifecycleLock) {
                 check(epoch == generation) { "Connection was cancelled" }
-                authorized = mayOperate; previewAuthorized = mayPreview; serverBrowser = browserCapable
+                authorized = mayOperate; previewAuthorized = mayPreview; settingsAuthorized = mayWriteSettings; serverPreferences = preferences; serverBrowser = browserCapable
                 directEndpoints = endpoints; tunnelConfig = tunnel; liveShellOrigin = origin; shellResume.originKnown(origin)
                 // An early shell synchronized before its origin was known has a checkpoint without its cursor.
                 if (shellSynced) checkpointShell(marker = false)
-                update { it.copy(connection = ConnectionStatus.Connected, threadActionsConfigured = true, activeRoute = route, canReadUsage = mayReadUsage, models = models, providers = providers, defaultRuntimeMode = defaultMode, defaultModelSelection = defaultModel, projectDefaults = projectDefaults, threadStopSupported = threadStop, previewTunnelSetting = tunnel.capability, previewTunnelDisabled = tunnel.disabled,
+                update { it.copy(connection = ConnectionStatus.Connected, threadActionsConfigured = true, activeRoute = route, canReadUsage = mayReadUsage, models = models, providers = providers, defaultRuntimeMode = defaultMode, defaultModelSelection = defaultModel, projectDefaults = projectDefaults, modelPreferences = preferences, threadStopSupported = threadStop, previewTunnelSetting = tunnel.capability, previewTunnelDisabled = tunnel.disabled,
                     selectedModel = it.selectedModel?.let { selected -> models.firstOrNull { m -> m.instanceId == selected.instanceId && m.model == selected.model } ?: selected }) }
                 // Route hints (a second config snapshot and the link-state read) would compete with the snapshot on a slow
                 // link; they wait for the shell's synchronized marker.
@@ -618,15 +626,15 @@ class T3Client(
     }
 
     /**
-     * A `snapshot` feeds the route hints and the preview-tunnel config; a `settingsUpdated` event only the latter (it
-     * carries no policy, so the last snapshot's policy stands). Every other event is ignored. A snapshot without
+     * A `snapshot` feeds the route hints, the preview-tunnel config and the model preferences; a `settingsUpdated` event
+     * only the latter two (it carries no policy, so the last snapshot's policy stands). Every other event is ignored. A snapshot without
      * `directEndpoints` says nothing and keeps the last hint.
      */
     private fun serverConfigEvent(epoch: Long, environmentId: String, event: JsonObject) {
         if (epoch != generation) return
         when (event.string("type")) {
-            "settingsUpdated" -> ((event["payload"] as? JsonObject)?.get("settings") as? JsonObject)?.let { applyTunnelConfig(tunnelConfig.withSettings(it)) }
-            "snapshot" -> (event["config"] as? JsonObject)?.let { applyTunnelConfig(tunnelConfig.withConfig(it)) }
+            "settingsUpdated" -> ((event["payload"] as? JsonObject)?.get("settings") as? JsonObject)?.let { applyTunnelConfig(tunnelConfig.withSettings(it)); applyModelPreferences(it) }
+            "snapshot" -> (event["config"] as? JsonObject)?.let { applyTunnelConfig(tunnelConfig.withConfig(it)); applyModelPreferences(it["settings"] as? JsonObject) }
         }
         if (event.string("type") != "snapshot") return
         val endpoints = directEndpointHints(event.obj("config")) ?: return
@@ -640,6 +648,20 @@ class T3Client(
      * policy current: they stop counting, and the `TunnelDisabled` handshake decides. Caller holds [lifecycleLock].
      */
     private fun configStreamLost() = applyTunnelConfig(tunnelConfig.copy(settingEnabled = null, policyAllows = null))
+
+    /** Adopts the model preferences of server [settings] (a missing key keeps the last value). Caller holds [lifecycleLock]. */
+    private fun applyModelPreferences(settings: JsonObject?) {
+        serverPreferences = modelPreferences(settings, serverPreferences)
+        publishModelPreferences()
+    }
+    /** Publishes [serverPreferences] with the [pendingFavorites] on top. Caller holds [lifecycleLock]. */
+    private fun publishModelPreferences() {
+        val favorites = pendingFavorites.fold(serverPreferences.favorites) { list, change ->
+            if (!change.favorite) list - change.key else if (change.key in list) list else list + change.key
+        }
+        val shown = serverPreferences.copy(favorites = favorites)
+        if (state.value.modelPreferences != shown) update { it.copy(modelPreferences = shown) }
+    }
 
     /** Publishes the preview-tunnel config. Caller holds [lifecycleLock]. */
     private fun applyTunnelConfig(config: PreviewTunnelConfig) {
@@ -664,7 +686,7 @@ class T3Client(
 
     /**
      * Counts every mutation from its first local check until its outcome: message send, interrupt, thread stop, queue changes, request response,
-     * runtime mode and model changes, thread launch, subagent stop, thread actions and settlement undo. Reads
+     * runtime mode and model changes, model favourites, thread launch, subagent stop, thread actions and settlement undo. Reads
      * (configuration, projections, usage, screens, downloads) do not count; a switch only re-reads them.
      */
     override fun isIdleForRouteSwitch(): Boolean = mutationsInFlight.get() == 0
@@ -738,13 +760,13 @@ class T3Client(
         fileDownloads.forEach { it.cancel() }; fileDownloads.clear()
         generation++
         refreshSignals?.close(); refreshJob?.cancel(); visits.reset(null); visitTimer?.cancel(); visitTimer = null
-        shellReady = false; shellSynced = false; deferredThread = null; threadReady = false; authorized = false; previewAuthorized = false
+        shellReady = false; shellSynced = false; deferredThread = null; threadReady = false; authorized = false; previewAuthorized = false; settingsAuthorized = false
         endShellStream(message)
         resetRoute()
         resetScreens()
         stopPortForwards()
-        undoPlan = null; pendingModelSelections = null
-        update { it.copy(connection =ConnectionStatus.Error, canWrite = false, canWriteThreads = false, canRead = false, shellLive = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = message, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
+        undoPlan = null; pendingModelSelections = null; serverPreferences = ModelPreferences(); pendingFavorites.clear()
+        update { it.copy(connection =ConnectionStatus.Error, canWrite = false, canWriteThreads = false, canWriteSettings = false, modelPreferences = ModelPreferences(), canRead = false, shellLive = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = message, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
         pending.values.forEach { it.completeExceptionally(IllegalStateException(message)) }; pending.clear()
         streams.clear(); heartbeat?.cancel(); socket?.cancel(); socket = null
     }
@@ -758,13 +780,13 @@ class T3Client(
         visits.reset(null); visitTimer?.cancel(); visitTimer = null
         socket?.close(1000, null); socket = null
         pending.values.forEach { it.completeExceptionally(IllegalStateException("Disconnected; pending command outcome may be uncertain")) }
-        pending.clear(); streams.clear(); threadSubscription = null; shellReady = false; shellSynced = false; deferredThread = null; threadReady = false; authorized = false; previewAuthorized = false
+        pending.clear(); streams.clear(); threadSubscription = null; shellReady = false; shellSynced = false; deferredThread = null; threadReady = false; authorized = false; previewAuthorized = false; settingsAuthorized = false
         endShellStream("Disconnected before the thread list refreshed")
         resetRoute()
         resetScreens()
         stopPortForwards()
-        undoPlan = null; pendingModelSelections = null
-        update { it.copy(connection =ConnectionStatus.Disconnected, canWrite = false, canWriteThreads = false, canRead = false, shellLive = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = reason ?: it.error, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
+        undoPlan = null; pendingModelSelections = null; serverPreferences = ModelPreferences(); pendingFavorites.clear()
+        update { it.copy(connection =ConnectionStatus.Disconnected, canWrite = false, canWriteThreads = false, canWriteSettings = false, modelPreferences = ModelPreferences(), canRead = false, shellLive = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = reason ?: it.error, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
     }
 
     private fun usageEnvironment(): SavedEnvironment {
@@ -996,6 +1018,7 @@ class T3Client(
         val fresh = shellReady && (it.selectedThreadId == null || threadReady) && it.connection == ConnectionStatus.Connected
         it.copy(canRead = fresh, canWrite = authorized && fresh,
             canWriteThreads = authorized && shellReady && it.connection == ConnectionStatus.Connected,
+            canWriteSettings = settingsAuthorized && shellReady && it.connection == ConnectionStatus.Connected,
             shellLive = shellReady && it.connection == ConnectionStatus.Connected)
     }
     /** Memory-only shell cursors; see [ShellResume]. */
@@ -1652,6 +1675,41 @@ class T3Client(
             }) }
         }
     }
+    /** One favourite change; compared by identity, so two equal changes in flight stay separate. */
+    private class FavoriteChange(val key: ModelKey, val favorite: Boolean)
+    /**
+     * Shows the change at once and sends `server.updateSettings` `setModelFavorites` once on this connection. A reply
+     * adopts the server's `favorites`; any failure drops this change only, so the last server value (and other changes
+     * still in flight) show again. A lost reply never fails the session: the config stream or the next connection
+     * reports the server's list. Refused without `settings:write`, a live shell, or a server that reports favourites.
+     */
+    override suspend fun setModelFavorite(key: ModelKey, favorite: Boolean): Unit = mutating {
+        val notSent = "Wait for a fresh connection before changing favourites"
+        val (epoch, change) = synchronized(lifecycleLock) {
+            check(state.value.canWriteSettings) { notSent }
+            check(serverPreferences.synced) { "This T3 server does not sync favourites" }
+            val change = FavoriteChange(key, favorite)
+            pendingFavorites += change; publishModelPreferences()
+            generation to change
+        }
+        val payload = buildJsonObject { put("patch", buildJsonObject { put("setModelFavorites", buildJsonArray { add(buildJsonObject {
+            put("provider", key.instanceId); put("model", key.model); put("favorite", favorite)
+        }) }) }) }
+        try {
+            val reply = rpc("server.updateSettings", payload, epoch, guard = { state.value.canWriteSettings })
+            synchronized(lifecycleLock) {
+                if (epoch == generation) { pendingFavorites.remove(change); applyModelPreferences(reply as? JsonObject) }
+            }
+        } catch (error: Exception) {
+            synchronized(lifecycleLock) { if (epoch == generation && pendingFavorites.remove(change)) publishModelPreferences() }
+            if (error is CancellationException) throw error
+            throw IllegalStateException(when (error) {
+                is CommandNotSent -> notSent
+                is ServerRejected -> "T3 rejected the favourite change. Try again."
+                else -> "The favourite change was not confirmed. Favourites show the server's list once it reports it."
+            }, error)
+        }
+    }
     /** A thread model selection compared by value: instance, model, and explicit options. */
     private data class ModelSelection(val instanceId: String, val model: String, val options: ModelOptionValues)
     /**
@@ -1944,7 +2002,7 @@ class T3Client(
         if (environmentStates[id]?.shellLoaded == true) return false
         val base = (if (shown) current else environmentStates[id]) ?: ClientState()
         val restored = base.copy(projects = shell.projects, threads = shell.threads, shellLoaded = true, shellLive = false,
-            canWrite = false, canWriteThreads = false, canRead = false, canReadUsage = false, busy = false)
+            canWrite = false, canWriteThreads = false, canWriteSettings = false, canRead = false, canReadUsage = false, busy = false)
         if (shown) mutable.value = restored
         environmentStates.remove(id)
         environmentStates[id] = restored

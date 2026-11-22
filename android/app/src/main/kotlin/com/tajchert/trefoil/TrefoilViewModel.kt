@@ -864,6 +864,14 @@ class TrefoilViewModel internal constructor(
     fun setModel(model: ModelOption) = drafts.setModel(model)
     /** Provider option ([value] String or Boolean). Draft: updates locally. Selected thread: dispatches `thread.model-selection.set`. */
     fun setModelOption(id: String, value: Any) = drafts.setModelOption(id, value)
+    /** Stars or unstars [key] in the server's favourites (shared with T3 desktop); a failure shows as a notice. */
+    fun setModelFavorite(key: ModelKey, favorite: Boolean) {
+        viewModelScope.launch {
+            try { composerClient.setModelFavorite(key, favorite) }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { _notice.value = e.message ?: "Could not change favourites." }
+        }
+    }
 
     /** Keeps the draft: reconnecting is the same environment, and an uncertain launch is reconciled after it. */
     fun reconnect() {
@@ -1584,6 +1592,7 @@ internal class MutationTrackingClient(private val inner: TrefoilClient, private 
     override suspend fun setRuntimeMode(mode: RuntimeMode) = inFlight.tracked { inner.setRuntimeMode(mode) }
     override suspend fun setModel(model: ModelOption) = inFlight.tracked { inner.setModel(model) }
     override suspend fun setModelOption(id: String, value: Any) = inFlight.tracked { inner.setModelOption(id, value) }
+    override suspend fun setModelFavorite(key: ModelKey, favorite: Boolean) = inFlight.tracked { inner.setModelFavorite(key, favorite) }
 }
 
 internal inline fun <T> AtomicInteger.tracked(block: () -> T): T {

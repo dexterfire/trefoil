@@ -50,4 +50,32 @@ class ModelOptionsWireTest {
         assertEquals(Json.parseToJsonElement("""[{"id":"effort","value":"high"},{"id":"fastMode","value":true}]"""),
             modelOptionsJson(mapOf("effort" to "high", "fastMode" to true)))
     }
+
+    @Test fun parsesCatalogMetadataAndDefaultsWhenAbsentOrMalformed() {
+        val full = catalogModelOption("codex", listOf(RuntimeMode.Auto), obj("""{"slug":"gpt-6.2-sol","name":"GPT-6.2-Sol","shortName":"Sol","subProvider":"openai","isLegacy":false,"isDefault":true,"badge":"new","future":{}}"""))
+        assertEquals(ModelOption("codex", "gpt-6.2-sol", "GPT-6.2-Sol", listOf(RuntimeMode.Auto), shortName = "Sol", subProvider = "openai", isDefault = true, badge = "new"), full)
+        val older = catalogModelOption("claudeAgent", emptyList(), obj("""{"slug":"claude-opus-4-6","name":"Claude Opus 4.6","isLegacy":true}"""))
+        assertTrue(older.isLegacy); assertFalse(older.isDefault); assertNull(older.shortName); assertNull(older.badge)
+        val malformed = catalogModelOption("x", emptyList(), obj("""{"slug":"m","name":"M","shortName":" ","isLegacy":"true","isDefault":1,"badge":null}"""))
+        assertEquals(ModelOption("x", "m", "M"), malformed)
+    }
+
+    @Test fun parsesModelPreferencesAndKeepsMissingKeys() {
+        val settings = obj("""{"favorites":[{"provider":"codex","model":"gpt-6.2-sol"},{"provider":"claudeAgent","model":"claude-opus-5-5"},{"provider":"codex","model":"gpt-6.2-sol"},{"provider":"codex"},"x"],
+            "providerModelPreferences":{"codex":{"hiddenModels":["gpt-6-luna",1],"modelOrder":["gpt-6.2-sol","gpt-6.1-terra"]},"cursor":{"hiddenModels":[],"modelOrder":[]},"bad":3}}""".replace("\n", ""))
+        val prefs = modelPreferences(settings, ModelPreferences())
+        assertEquals(ModelPreferences(
+            favorites = listOf(ModelKey("codex", "gpt-6.2-sol"), ModelKey("claudeAgent", "claude-opus-5-5")),
+            hiddenModels = mapOf("codex" to setOf("gpt-6-luna")), modelOrder = mapOf("codex" to listOf("gpt-6.2-sol", "gpt-6.1-terra")), synced = true,
+        ), prefs)
+        // Missing keys keep the last value; an empty favourites list is a reported (synced) empty list.
+        assertEquals(prefs, modelPreferences(obj("""{"enablePreviewTunnel":true}"""), prefs))
+        assertEquals(prefs.copy(favorites = emptyList()), modelPreferences(obj("""{"favorites":[]}"""), prefs))
+        assertEquals(prefs.copy(hiddenModels = emptyMap(), modelOrder = emptyMap()), modelPreferences(obj("""{"providerModelPreferences":{}}"""), prefs))
+        // Older servers omit favourites: not synced.
+        assertEquals(ModelPreferences(), modelPreferences(obj("""{"defaultRuntimeMode":"auto"}"""), ModelPreferences()))
+        assertEquals(ModelPreferences(), modelPreferences(null, ModelPreferences()))
+        assertNull(modelFavorites(obj("""{"favorites":"broken"}""")))
+        assertEquals(ModelPreferences(synced = true), modelPreferences(obj("""{"favorites":[]}"""), ModelPreferences()))
+    }
 }
