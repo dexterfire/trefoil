@@ -116,7 +116,7 @@ class ModelFavoritesTest {
         }
     }
 
-    @Test fun showsAChangeAtOnceAdoptsTheReplyAndRevertsOnlyAFailedChange() = runBlocking {
+    @Test fun showsAChangeAtOnceConfirmsItsKeyAndRevertsOnlyAFailedChange() = runBlocking {
         Fixture().use { f ->
             f.connect()
             val star = async { f.client.setModelFavorite(luna, true) }
@@ -131,10 +131,10 @@ class ModelFavoritesTest {
             assertTrue(unstar.await().isFailure)
             assertEquals(listOf(sol, luna), favorites(f))
             assertTrue(f.client.state.value.canWriteSettings)
-            // The reply is the server's whole settings: its favourites win.
-            Fixture.complete(request.ws, request.id, """{"favorites":[{"provider":"codex","model":"luna"},{"provider":"codex","model":"sol"}],"enablePreviewTunnel":true}""")
+            // The reply confirms its own key only: its whole-settings snapshot may be older than the config stream.
+            Fixture.complete(request.ws, request.id, """{"favorites":[{"provider":"codex","model":"luna"}],"enablePreviewTunnel":true}""")
             star.await()
-            assertEquals(listOf(luna, sol), favorites(f))
+            assertEquals(listOf(sol, luna), favorites(f))
             // A disconnect before the reply drops the change; nothing is resent on the next connection.
             val lost = async { runCatching { f.client.setModelFavorite(sol, false) } }
             withTimeout(5000) { f.updates.receive() }

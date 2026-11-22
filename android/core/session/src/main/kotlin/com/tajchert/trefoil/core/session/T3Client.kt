@@ -1679,7 +1679,8 @@ class T3Client(
     private class FavoriteChange(val key: ModelKey, val favorite: Boolean)
     /**
      * Shows the change at once and sends `server.updateSettings` `setModelFavorites` once on this connection. A reply
-     * adopts the server's `favorites`; any failure drops this change only, so the last server value (and other changes
+     * confirms this key only (its whole-settings snapshot may be older than a `settingsUpdated` already applied); any
+     * failure drops this change only, so the last server value (and other changes
      * still in flight) show again. A lost reply never fails the session: the config stream or the next connection
      * reports the server's list. Refused without `settings:write`, a live shell, or a server that reports favourites.
      */
@@ -1696,9 +1697,14 @@ class T3Client(
             put("provider", key.instanceId); put("model", key.model); put("favorite", favorite)
         }) }) }) }
         try {
-            val reply = rpc("server.updateSettings", payload, epoch, guard = { state.value.canWriteSettings })
+            rpc("server.updateSettings", payload, epoch, guard = { state.value.canWriteSettings })
             synchronized(lifecycleLock) {
-                if (epoch == generation) { pendingFavorites.remove(change); applyModelPreferences(reply as? JsonObject) }
+                if (epoch == generation) {
+                    pendingFavorites.remove(change)
+                    val list = serverPreferences.favorites
+                    serverPreferences = serverPreferences.copy(favorites = if (!favorite) list - key else if (key in list) list else list + key)
+                    publishModelPreferences()
+                }
             }
         } catch (error: Exception) {
             synchronized(lifecycleLock) { if (epoch == generation && pendingFavorites.remove(change)) publishModelPreferences() }
