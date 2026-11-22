@@ -131,6 +131,8 @@ data class RuntimeRequest(val id: String, val title: String, val detail: String 
 data class ModelOption(
     val instanceId: String, val model: String, val label: String = model, val supportedRuntimeModes: List<RuntimeMode> = emptyList(),
     val descriptors: List<ModelOptionDescriptor> = emptyList(),
+    /** Catalog metadata (T3 `ServerProviderModel`): optional short name, backend, legacy/default flags and `badge` ("new"). */
+    val shortName: String? = null, val subProvider: String? = null, val isLegacy: Boolean = false, val isDefault: Boolean = false, val badge: String? = null,
 ) {
     /** The model's reasoning control (T3 `isReasoningSelect`): the first reasoning select. */
     val reasoning: ModelOptionDescriptor.Select? get() = descriptors.filterIsInstance<ModelOptionDescriptor.Select>().firstOrNull { it.isReasoning }
@@ -233,6 +235,10 @@ data class ClientState(
     val defaultModelSelection: ModelDefault? = null,
     /** Server `settings.projectSettingsOverrides`, by project id: only the new-thread defaults a project overrides. */
     val projectDefaults: Map<String, NewThreadDefaults> = emptyMap(),
+    /** Server `settings.favorites` and `settings.providerModelPreferences`; [ModelPreferences.synced] false when not reported. */
+    val modelPreferences: ModelPreferences = ModelPreferences(),
+    /** True when the session holds `settings:write`, so favourites can be changed on the server. */
+    val canWriteSettings: Boolean = false,
     /** Selected thread's projection `subagents[]`, in wire order. */
     val subagents: List<Subagent> = emptyList(),
     /** Selected thread's pending background work (T3 `derivePendingBackgroundWork`); empty while a run is live. */
@@ -387,6 +393,8 @@ interface TrefoilClient {
      * `thread.model-selection.set`, keeping its other options. Refuses an id or value the model does not offer.
      */
     suspend fun setModelOption(id: String, value: Any) { error("Model option changes are unavailable") }
+    /** Stars or unstars one model with `server.updateSettings` `setModelFavorites`; never replayed after a disconnect. */
+    suspend fun setModelFavorite(key: ModelKey, favorite: Boolean) { error("Favourites are unavailable") }
     /**
      * Reads historical cost/token usage of the connected environment (`server.getUsageSummary`).
      * [awaitRefresh] false asks for a provisional answer (`provisional: true`, served from a 60 s cache); true always
