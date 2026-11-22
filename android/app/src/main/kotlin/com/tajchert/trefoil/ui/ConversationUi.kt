@@ -45,6 +45,13 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 
+/**
+ * Saved-state key of a new-thread composer. It names the draft's identity, not only its project: a launched draft's
+ * composer is left holding its accepted submission (the thread opens instead of settling it), and the project's next
+ * draft must start with a fresh composer. A relaunch of an uncertain draft reuses the ids, and so its composer.
+ */
+internal fun draftComposerKey(draft: ThreadDraft) = "draft:${draft.projectId}:${draft.threadId}"
+
 @Composable
 internal fun Conversation(
     rawState: ClientState, send: (String) -> Unit, interrupt: () -> Unit, respond: (String, String, Map<String, List<String>>) -> Unit,
@@ -103,7 +110,7 @@ internal fun Conversation(
         return
     }
     // A new-thread conversation edits its project's NewThread draft; a thread edits its Reply draft.
-    val composerKey = if (draft != null) "draft:${draft.projectId}" else state.selectedThreadId
+    val composerKey = if (draft != null) draftComposerKey(draft) else state.selectedThreadId
     val editorKey = state.environment?.id?.let { environment ->
         if (draft != null) ComposerDraftKey.NewThread(environment, draft.projectId) else state.selectedThreadId?.let { ComposerDraftKey.Reply(environment, it) }
     }

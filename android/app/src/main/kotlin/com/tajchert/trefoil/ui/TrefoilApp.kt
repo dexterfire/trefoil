@@ -305,7 +305,7 @@ fun TrefoilApp(
                                     Column(modifier.statusBarsPadding().windowInsetsPadding(BottomBarsAndIme)) {
                                         if (!twoPane) ConnectionBanner(state, onReconnect)
                                         Box(Modifier.weight(1f)) {
-                                            conversationState.SaveableStateProvider("${state.environment?.id}:${if (draft != null) "draft:${draft.projectId}" else state.selectedThreadId}") {
+                                            conversationState.SaveableStateProvider("${state.environment?.id}:${if (draft != null) draftComposerKey(draft) else state.selectedThreadId}") {
                                                 Conversation(state, onSend, onStop, onRespond, submitMessage = onSubmitMessage, sendOutcomes = sendOutcomes, sendsInFlight = sendsInFlight, onConsumeSendOutcome = onConsumeSendOutcome, stopPendingKeys = stopPendingKeys, queueOperationKeys = queueOperationKeys, onCancelQueued = onCancelQueued, onSteerQueued = onSteerQueued, onResumeQueue = onResumeQueue, onLoadActivity = onLoadActivity, composerDrafts = composerDrafts, fileDownloadUi = fileDownloadUi,
                                                     draft = draft, onSetRuntimeMode = onSetRuntimeMode, onSetModel = onSetModel, onSetModelOption = onSetModelOption, sendFailed = sendFailed,
                                                     onBack = if (backParent != null) ({ select(backParent.id) }) else if (twoPane) null else ({ cancelDraft(); showThread = false }),

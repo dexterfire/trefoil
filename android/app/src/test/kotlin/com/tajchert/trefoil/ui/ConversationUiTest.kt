@@ -651,4 +651,38 @@ class ConversationUiTest {
         compose.onNodeWithContentDescription("Stop").performClick()
         compose.runOnIdle { assertEquals(1, stops) }
     }
+
+    /** Regression: a launched draft's composer kept its submission, so the project's next draft waited forever and refused to send. */
+    @Test fun aSecondDraftInTheSameProjectStartsWithAFreshComposer() {
+        val base = ClientState(connection = ConnectionStatus.Connected, canWrite = true, environment = SavedEnvironment("env", "Env", "https://e.test", "t"),
+            projects = listOf(Project("p", "backend")), models = listOf(ModelOption("codex", "gpt-a", "Model A")))
+        val first = ThreadDraft("p", base.models[0])
+        val draft = mutableStateOf<ThreadDraft?>(first)
+        val state = mutableStateOf(base)
+        val sends = mutableListOf<String>()
+        compose.setContent {
+            val holder = rememberSaveableStateHolder()
+            MaterialTheme {
+                val d = draft.value
+                holder.SaveableStateProvider("env:${if (d != null) draftComposerKey(d) else state.value.selectedThreadId}") {
+                    Conversation(state.value, { sends += it }, {}, { _, _, _ -> }, draft = d)
+                }
+            }
+        }
+        compose.onNodeWithText("What should the agent do?").performTextInput("First task")
+        compose.onNodeWithContentDescription("Send message").performClick()
+        compose.onNodeWithText("Waiting for server confirmation…").assertExists()
+        // The launch is accepted: the draft clears and its thread opens, so the draft composer never sees the message.
+        compose.runOnIdle {
+            draft.value = null
+            state.value = base.copy(threads = listOf(ThreadSummary(first.threadId, "p", "First")), selectedThreadId = first.threadId,
+                messages = listOf(ConversationMessage("m1", "user", "First task")))
+        }
+        compose.runOnIdle { draft.value = ThreadDraft("p", base.models[0]); state.value = base }
+        compose.onNodeWithText("Waiting for server confirmation…").assertDoesNotExist()
+        compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
+        compose.onNodeWithText("What should the agent do?").performTextInput("Second task")
+        compose.onNodeWithContentDescription("Send message").performClick()
+        compose.runOnIdle { assertEquals(listOf("First task", "Second task"), sends) }
+    }
 }
