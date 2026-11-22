@@ -69,6 +69,9 @@ class EnvironmentVault(context: Context) : EnvironmentStore {
         val bytes = SecretEnvelope.encode(cipher.iv, cipher.doFinal(plaintext.encodeToByteArray()))
         val stream = destination.startWrite()
         try { stream.write(bytes); destination.finishWrite(stream) } catch (e: Exception) { destination.failWrite(stream); throw e }
+        // finishWrite logs and returns when its rename fails, leaving the old file: [lastKnown] must not take the new list then.
+        val committed = try { destination.baseFile.readBytes().contentEquals(bytes) } catch (_: Exception) { false }
+        if (!committed) throw java.io.IOException("Vault write was not committed")
     }
     private companion object {
         /** One lock per process: instances share the same file. */

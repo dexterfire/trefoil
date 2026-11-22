@@ -45,6 +45,8 @@ class VaultWritesTest {
         /** When set, the next write waits for it (after [writeEntered] opens), as a slow keystore write would. */
         @Volatile var writeGate: CountDownLatch? = null
         val writeEntered = CountDownLatch(1)
+        /** Writes return normally but leave the old list on disk (an AtomicFile rename that failed and only logged). */
+        @Volatile var uncommittedWrites = false
         override fun read() = synchronized(this) {
             if (failingReads > 0) { failingReads--; throw IllegalStateException("unreadable") }
             saved.also { lastKnown = it }
@@ -53,7 +55,8 @@ class VaultWritesTest {
         override fun writeHostKeys(keys: List<SshHostKey>) = Unit
         override fun write(environments: List<SavedEnvironment>) = synchronized(this) {
             writeGate?.let { gate -> writeGate = null; writeEntered.countDown(); gate.await() }
-            saved = environments; lastKnown = environments
+            if (!uncommittedWrites) saved = environments
+            lastKnown = environments
         }
         override fun <T> locked(block: () -> T): T = synchronized(this) { block() }
     }
@@ -241,5 +244,14 @@ class VaultWritesTest {
         store.failingReads = 1
         assertThrows(IllegalStateException::class.java) { storeRenewedToken(store, alpha.copy(accessToken = "alpha-r2"), setOf("alpha-r1")) }
         assertEquals("alpha-r1", store.saved.first { it.id == "alpha" }.accessToken)
+    }
+
+    @Test fun aRenewalWhoseWriteDidNotCommitIsNeverConfirmed() {
+        start()
+        store.uncommittedWrites = true
+        val renewed = alpha.copy(accessToken = "alpha-r1", accessTokenExpiresAtMillis = 5_000)
+        assertFalse("The view model reads the vault back", runBlocking { withTimeout(10_000) { model.saveRenewedToken(renewed, setOf("alpha-old")) } })
+        assertFalse("So does the widget's store", storeRenewedToken(store, renewed, setOf("alpha-old")))
+        assertEquals("alpha-old", store.saved.first { it.id == "alpha" }.accessToken)
     }
 }

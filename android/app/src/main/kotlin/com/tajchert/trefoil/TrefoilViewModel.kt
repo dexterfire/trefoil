@@ -500,13 +500,14 @@ class TrefoilViewModel internal constructor(
 
     /**
      * Stores a renewed DPoP token over the same session's older token only; a newer pairing's token is never replaced.
-     * Returns whether the vault holds [renewed]'s token afterwards (false keeps the renewer's chain for the next store).
+     * Returns whether the vault holds [renewed]'s token afterwards, read back from it rather than taken from what was
+     * written (a write can return without committing); false keeps the renewer's chain for the next store.
      */
     internal suspend fun saveRenewedToken(renewed: SavedEnvironment, replaces: Set<String>): Boolean {
         initialized.await()
         return vaultMutex.withLock {
             save { saved -> saved.map { if (it.id == renewed.id && it.accessToken in replaces) it.withTokenOf(renewed) else it } }
-            _environments.value.any { it.id == renewed.id && it.accessToken == renewed.accessToken }
+            withContext(Dispatchers.IO) { vault.locked { vault.read() } }.any { it.id == renewed.id && it.accessToken == renewed.accessToken }
         }
     }
 
