@@ -60,6 +60,7 @@ private fun strokeIcon(name: String, vararg paths: String, filled: List<String> 
     }.build()
 
 private const val EFFORT_BARS = 4
+private const val STAR = "M12 3l2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 17.8 6.2 20.9l1.1-6.5L2.6 9.8l6.5-.9z"
 private const val SHIELD = "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"
 
 private fun effortBarsIcon(filled: Int): ImageVector = ImageVector.Builder("effortBars$filled", 24.dp, 24.dp, 24f, 24f).apply {
@@ -109,6 +110,11 @@ object TfIcons {
         strokeIcon("shieldOff", "M2 2l20 20", "M5 5a1 1 0 0 0-1 1v7c0 5 3.5 7.5 7.67 8.94a1 1 0 0 0 .67.01c2.35-.82 4.48-1.97 5.9-3.71",
             "M9.31 3.65a12.25 12.25 0 0 0 1.93-1.37a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1v7a9.8 9.8 0 0 1-.08 1.26")
     }
+    /** Favourite toggle: outline and filled star. */
+    val Star by lazy { strokeIcon("star", STAR) }
+    val StarFilled by lazy { strokeIcon("starFilled", STAR, filled = listOf(STAR)) }
+    /** Fast mode. */
+    val Bolt by lazy { strokeIcon("bolt", "M13 2L4 14h7l-1 8 9-12h-7z") }
     /** Model picker. */
     val Sparkle by lazy { strokeIcon("sparkle", "M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z") }
     val File by lazy { strokeIcon("file", "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z", "M14 3v5h5") }

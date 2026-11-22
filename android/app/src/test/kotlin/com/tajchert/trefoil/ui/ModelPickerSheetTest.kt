@@ -23,6 +23,12 @@ class ModelPickerSheetTest {
     @Test fun pillLabelWithoutModel() = assertEquals("Model", modelPillLabel(null, emptyMap()))
     @Test fun unknownValueFallsBackToId() = assertEquals("max", reasoningChoice(claude, mapOf("effort" to "max"))?.label)
     @Test fun noReasoningChoiceWithoutDescriptor() = assertNull(reasoningChoice(plain, emptyMap()))
+    @Test fun fastOnlyModelHasNoOptionsWhenFastHidden() {
+        val fastOnly = ModelOption("codex", "gpt-6", "GPT-6", descriptors = listOf(fast))
+        assertTrue(hasModelOptions(fastOnly))
+        assertFalse(hasModelOptions(fastOnly, showFast = false))
+        assertTrue(hasModelOptions(claude, showFast = false))
+    }
     @Test fun fastOffByDefault() = assertFalse(fastModeOn(claude, emptyMap()))
 
     @Test fun catalogModelPrefersCatalogEntry() {

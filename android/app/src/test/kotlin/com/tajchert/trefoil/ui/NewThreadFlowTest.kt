@@ -36,6 +36,7 @@ class NewThreadFlowTest {
         sheet(state) { draft, text -> started = draft; prompt = text }
         compose.onNodeWithText("Beta").performClick()
         compose.onNodeWithContentDescription("Model: Model A").performClick()
+        compose.onNodeWithContentDescription("claude").performClick()
         compose.onNodeWithText("Model B").performClick()
         compose.onNodeWithContentDescription("Access: Supervised").performClick()
         compose.onNodeWithText("Auto-accept edits").performClick()
@@ -185,6 +186,7 @@ class NewThreadFlowTest {
         compose.onNodeWithContentDescription("Runtime mode: Supervised").performClick()
         compose.onNodeWithText("Full access").performClick()
         compose.onNodeWithContentDescription("Model: Model A").performClick()
+        compose.onNodeWithContentDescription("claude").performClick()
         compose.onNodeWithText("Model B").performClick()
         compose.onNodeWithText("What should the agent do?").performTextInput("hello")
         compose.onNodeWithContentDescription("Send message").performClick()
@@ -224,6 +226,7 @@ class NewThreadFlowTest {
         compose.onNodeWithText("Full access").assertExists()
         compose.onNodeWithText("Full access").performClick()
         compose.onNodeWithContentDescription("Model: Model A").performClick()
+        compose.onNodeWithContentDescription("claude").performClick()
         compose.onNodeWithText("Model B").performClick()
         compose.onNodeWithContentDescription("Access: Auto-accept edits").assertExists()
         compose.onNodeWithContentDescription("Access: Auto-accept edits").performClick()
@@ -254,6 +257,7 @@ class NewThreadFlowTest {
         val unlocked = state.copy(selectedThreadId = "t", selectedModel = models[0], selectedRuntimeMode = RuntimeMode.Auto)
         compose.setContent { MaterialTheme { Conversation(unlocked, {}, {}, { _, _, _ -> }) } }
         compose.onNodeWithContentDescription("Model: Model A").performClick()
+        compose.onNodeWithContentDescription("claude").performClick()
         compose.onNodeWithText("Model B").assertExists()
     }
 
@@ -333,6 +337,7 @@ class NewThreadFlowTest {
         val configured = reasoningState.copy(projectDefaults = mapOf("p2" to NewThreadDefaults(ModelDefault("claude", "opus"))))
         sheet(configured.copy(defaultModelSelection = ModelDefault("codex", "gpt-a")))
         compose.onNodeWithContentDescription("Model: Plain").performClick()
+        compose.onNodeWithContentDescription("claude").performClick()
         compose.onNodeWithText("Opus").performClick()
         compose.onNodeWithText("Beta").performClick()
         compose.onNodeWithContentDescription("Project: Beta").performClick()
@@ -346,6 +351,7 @@ class NewThreadFlowTest {
         compose.onNodeWithContentDescription("Reasoning: High").performClick()
         compose.onNodeWithText("Low").performClick()
         compose.onNodeWithContentDescription("Model: Opus").performClick()
+        compose.onNodeWithContentDescription("codex").performClick()
         compose.onNodeWithText("Plain").performClick()
         compose.onAllNodes(hasContentDescription("Reasoning", substring = true)).assertCountEquals(0)
         compose.onNodeWithContentDescription("Start").performClick()

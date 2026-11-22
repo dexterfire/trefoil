@@ -57,7 +57,7 @@ internal fun Conversation(
     rawState: ClientState, send: (String) -> Unit, interrupt: () -> Unit, respond: (String, String, Map<String, List<String>>) -> Unit,
     onLoadActivity: (String) -> Unit = {}, fileDownloadUi: FileDownloadUi = FileDownloadUi(),
     draft: ThreadDraft? = null, onSetRuntimeMode: (RuntimeMode) -> Unit = {}, onSetModel: (ModelOption) -> Unit = {}, onSetModelOption: (String, Any) -> Unit = { _, _ -> },
-    sendFailed: Flow<Unit> = emptyFlow(),
+    onSetModelFavorite: (ModelKey, Boolean) -> Unit = { _, _ -> }, sendFailed: Flow<Unit> = emptyFlow(),
     /** Back affordance for the conversation header; null on wide layouts where the list stays visible. */
     onBack: (() -> Unit)? = null,
     /** Trailing header actions supplied by the shell (thread actions menu, etc.). */
@@ -338,7 +338,7 @@ internal fun Conversation(
             Column(Modifier.windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))) {
                 QuickReplies(state.requests, canSend, respond)
                 if (thread != null && thread.isProviderNativeSubagentThread()) ReadOnlySubagentBar(thread, clock, onOpenParent)
-                else ConversationComposer(state, draft, text, ::editText, submitted != null, stopPending, onSetRuntimeMode, onSetModel, onSetModelOption,
+                else ConversationComposer(state, draft, text, ::editText, submitted != null, stopPending, onSetRuntimeMode, onSetModel, onSetModelOption, onSetModelFavorite,
                     stop = interrupt, onSend = { mode -> submit(text, mode) }, canWriteNow = rawState.canWrite, queueBusy = stopKey(state.environment?.id, state.selectedThreadId) in queueOperationKeys, onCancelQueued = onCancelQueued, onSteerQueued = onSteerQueued, onResumeQueue = onResumeQueue)
             }
         }
@@ -383,7 +383,7 @@ private fun ConversationHeader(title: String, projectTitle: String?, branch: Str
 @Composable
 internal fun ConversationComposer(
     state: ClientState, draft: ThreadDraft?, text: String, onText: (String) -> Unit, waiting: Boolean, stopPending: Boolean,
-    onSetRuntimeMode: (RuntimeMode) -> Unit, onSetModel: (ModelOption) -> Unit, onSetModelOption: (String, Any) -> Unit,
+    onSetRuntimeMode: (RuntimeMode) -> Unit, onSetModel: (ModelOption) -> Unit, onSetModelOption: (String, Any) -> Unit, onSetModelFavorite: (ModelKey, Boolean) -> Unit = { _, _ -> },
     stop: () -> Unit, onSend: (FollowUpMode?) -> Unit, canWriteNow: Boolean = state.canWrite, queueBusy: Boolean = false,
     onCancelQueued: (String) -> Unit, onSteerQueued: (String) -> Unit, onResumeQueue: () -> Unit,
 ) {
@@ -408,7 +408,7 @@ internal fun ConversationComposer(
                     },
                 )
                 Row(Modifier.fillMaxWidth().padding(start = 10.dp, end = 6.dp, top = 4.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    ComposerPickers(state, draft, onSetRuntimeMode, onSetModel, onSetModelOption, Modifier.weight(1f))
+                    ComposerPickers(state, draft, onSetRuntimeMode, onSetModel, onSetModelOption, onSetModelFavorite, Modifier.weight(1f))
                     PrimaryComposerButton(button, state.canSteer, stop, onSend)
                 }
             }
@@ -504,7 +504,7 @@ internal fun ReadOnlySubagentBar(thread: ThreadSummary, now: Long, onOpenParent:
 }
 
 @Composable
-private fun ComposerPickers(state: ClientState, draft: ThreadDraft?, onSetRuntimeMode: (RuntimeMode) -> Unit, onSetModel: (ModelOption) -> Unit, onSetModelOption: (String, Any) -> Unit, modifier: Modifier = Modifier) {
+private fun ComposerPickers(state: ClientState, draft: ThreadDraft?, onSetRuntimeMode: (RuntimeMode) -> Unit, onSetModel: (ModelOption) -> Unit, onSetModelOption: (String, Any) -> Unit, onSetModelFavorite: (ModelKey, Boolean) -> Unit, modifier: Modifier = Modifier) {
     val c = Tf.colors
     val mode = if (draft != null) draft.runtimeMode else state.selectedRuntimeMode
     val model = if (draft != null) draft.model else state.selectedModel
@@ -521,6 +521,7 @@ private fun ComposerPickers(state: ClientState, draft: ThreadDraft?, onSetRuntim
                 models = pickerModels(state.models, model, state.selectedProviderLocked, draft != null), providers = state.providers,
                 current = shown, explicit = explicit, enabled = enabled, dismiss = { modelOpen = false },
                 onSetModel = onSetModel, onSetModelOption = onSetModelOption, threadSelection = draft == null,
+                preferences = state.modelPreferences, canWriteSettings = state.canWriteSettings, onToggleFavorite = onSetModelFavorite,
             )
         }
         val effortShown = catalogModel(model, state.models)

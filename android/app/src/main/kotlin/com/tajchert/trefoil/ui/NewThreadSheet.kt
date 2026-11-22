@@ -119,7 +119,7 @@ internal const val RECENT_PROJECT_LIMIT = 5
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun NewThreadSheet(state: ClientState, dismiss: () -> Unit, start: (ThreadDraft, String) -> Unit, composerDrafts: ComposerDraftUi = ComposerDraftUi(), openProjectId: String? = null) {
+internal fun NewThreadSheet(state: ClientState, dismiss: () -> Unit, start: (ThreadDraft, String) -> Unit, composerDrafts: ComposerDraftUi = ComposerDraftUi(), openProjectId: String? = null, onSetModelFavorite: (ModelKey, Boolean) -> Unit = { _, _ -> }) {
     val c = Tf.colors
     ModalBottomSheet(
         onDismissRequest = dismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -127,7 +127,7 @@ internal fun NewThreadSheet(state: ClientState, dismiss: () -> Unit, start: (Thr
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
         contentWindowInsets = { WindowInsets(0) },
         dragHandle = { Box(Modifier.padding(top = 12.dp, bottom = 8.dp).size(36.dp, 4.dp).background(c.s3, RoundedCornerShape(2.dp))) },
-    ) { NewThreadSheetContent(state, dismiss, start, Modifier.imePadding().navigationBarsPadding(), composerDrafts = composerDrafts, openProjectId = openProjectId) }
+    ) { NewThreadSheetContent(state, dismiss, start, Modifier.imePadding().navigationBarsPadding(), composerDrafts = composerDrafts, openProjectId = openProjectId, onSetModelFavorite = onSetModelFavorite) }
 }
 
 /** Sheet body, separate from the [ModalBottomSheet] chrome so it renders and tests standalone. */
@@ -135,7 +135,7 @@ internal fun NewThreadSheet(state: ClientState, dismiss: () -> Unit, start: (Thr
 @Composable
 internal fun NewThreadSheetContent(
     state: ClientState, dismiss: () -> Unit, start: (ThreadDraft, String) -> Unit, modifier: Modifier = Modifier, initiallyCollapsed: Boolean? = null,
-    composerDrafts: ComposerDraftUi = ComposerDraftUi(), openProjectId: String? = null,
+    composerDrafts: ComposerDraftUi = ComposerDraftUi(), openProjectId: String? = null, onSetModelFavorite: (ModelKey, Boolean) -> Unit = { _, _ -> },
 ) {
     val c = Tf.colors
     val environmentId = state.environment?.id
@@ -311,14 +311,16 @@ internal fun NewThreadSheetContent(
             var modeMenu by remember { mutableStateOf(false) }
             Box {
                 SheetPill(model?.label ?: "No models", TfIcons.Sparkle, "Model: ${model?.label ?: "not set"}", enabled = state.models.isNotEmpty()) { modelMenu = true }
-                DropdownMenu(modelMenu, { modelMenu = false }, containerColor = c.sheet, shape = RoundedCornerShape(16.dp)) {
-                    state.models.forEachIndexed { index, option ->
-                        DropdownMenuItem(
-                            text = { Column { Text(option.label); Text(option.instanceId, style = TrefoilType.mono, color = c.muted) } },
-                            trailingIcon = { if (option.sameModelAs(model)) Icon(TfIcons.Check, null, Modifier.size(18.dp), tint = c.accent) },
-                            onClick = { if (loaded) { modelIndex = index; touched = true; persist(index = index) }; modelMenu = false })
-                    }
-                }
+                // Fast mode has no new-thread state, so the picker offers reasoning only; an effort pick takes the chosenEffort path.
+                if (modelMenu) ModelPickerSheet(
+                    models = state.models, providers = state.providers, current = model, explicit = explicitOptions, enabled = loaded, dismiss = { modelMenu = false },
+                    onSetModel = { option -> state.models.indexOfFirst { it.sameModelAs(option) }.takeIf { it >= 0 && loaded }?.let { index -> modelIndex = index; touched = true; persist(index = index) } },
+                    onSetModelOption = { id, value ->
+                        val effortId = model?.reasoning?.id
+                        if (loaded && id == effortId && value is String) { chosenEffort = value; touched = true; persist(effort = value) }
+                    },
+                    preferences = state.modelPreferences, canWriteSettings = state.canWriteSettings, onToggleFavorite = onSetModelFavorite, showFast = false,
+                )
             }
             if (model != null && reasoning != null) {
                 val choices = reasoning.selectableChoices

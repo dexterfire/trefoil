@@ -52,7 +52,7 @@ fun TrefoilApp(
     sendOutcomes: Map<String, SendOutcome> = emptyMap(), onConsumeSendOutcome: (String) -> Unit = {}, stopPendingKeys: Set<String> = emptySet(),
     sendsInFlight: Set<String> = emptySet(), queueOperationKeys: Set<String> = emptySet(),
     onCancelQueued: (String) -> Unit = {}, onSteerQueued: (String) -> Unit = {}, onResumeQueue: () -> Unit = {},
-    keepConnected: Boolean = false, onSetModelOption: (String, Any) -> Unit = { _, _ -> },
+    keepConnected: Boolean = false, onSetModelOption: (String, Any) -> Unit = { _, _ -> }, onSetModelFavorite: (ModelKey, Boolean) -> Unit = { _, _ -> },
     onKeepConnectedChange: (Boolean) -> Unit = {},
     onSshConnect: (SshConnectionInput) -> Unit = {},
     sshHostKey: SshHostKey? = null,
@@ -307,7 +307,7 @@ fun TrefoilApp(
                                         Box(Modifier.weight(1f)) {
                                             conversationState.SaveableStateProvider("${state.environment?.id}:${if (draft != null) draftComposerKey(draft) else state.selectedThreadId}") {
                                                 Conversation(state, onSend, onStop, onRespond, submitMessage = onSubmitMessage, sendOutcomes = sendOutcomes, sendsInFlight = sendsInFlight, onConsumeSendOutcome = onConsumeSendOutcome, stopPendingKeys = stopPendingKeys, queueOperationKeys = queueOperationKeys, onCancelQueued = onCancelQueued, onSteerQueued = onSteerQueued, onResumeQueue = onResumeQueue, onLoadActivity = onLoadActivity, composerDrafts = composerDrafts, fileDownloadUi = fileDownloadUi,
-                                                    draft = draft, onSetRuntimeMode = onSetRuntimeMode, onSetModel = onSetModel, onSetModelOption = onSetModelOption, sendFailed = sendFailed,
+                                                    draft = draft, onSetRuntimeMode = onSetRuntimeMode, onSetModel = onSetModel, onSetModelOption = onSetModelOption, onSetModelFavorite = onSetModelFavorite, sendFailed = sendFailed,
                                                     onBack = if (backParent != null) ({ select(backParent.id) }) else if (twoPane) null else ({ cancelDraft(); showThread = false }),
                                                     onOpenParent = parentThread?.let { p -> { select(p.id) } },
                                                     onOpenAgents = if (roster != null) ({ showAgents = true }) else null,
@@ -364,7 +364,7 @@ fun TrefoilApp(
         if (creating) NewThreadSheet(state, { creating = false }, { newDraft, prompt ->
             seedPrompt = prompt.trim().takeIf { it.isNotEmpty() }
             onStartDraft(newDraft); creating = false; showThread = true
-        }, composerDrafts, creatingProject)
+        }, composerDrafts, creatingProject, onSetModelFavorite)
     }
 }
 

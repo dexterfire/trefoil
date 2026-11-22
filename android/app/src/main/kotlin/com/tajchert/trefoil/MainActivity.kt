@@ -216,6 +216,7 @@ class MainActivity : ComponentActivity() {
                 onSetRuntimeMode = model::setRuntimeMode,
                 onSetModel = model::setModel,
                 onSetModelOption = model::setModelOption,
+                onSetModelFavorite = model::setModelFavorite,
                 onReconnect = model::reconnect,
                 onDisconnect = model::disconnect,
                 onForget = model::forget,
