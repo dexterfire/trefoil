@@ -63,9 +63,9 @@ class ModelCatalogTest {
 
     @Test fun claudeFamiliesFollowTierAndKeepLegacyVersionsLast() {
         val families = catalog().section("claudeAgent").families
-        assertEquals(listOf("Claude Opus", "Claude Sonnet", "Claude Fable", "Claude Haiku"), families.map { it.name })
-        assertEquals(listOf("claude-opus-5-5", "claude-opus-4-6"), families[0].versions.map { it.model })
-        assertEquals("claude-opus-5-5", families[0].latest.model)
+        assertEquals(listOf("Claude Fable", "Claude Opus", "Claude Sonnet", "Claude Haiku"), families.map { it.name })
+        assertEquals(listOf("claude-opus-5-5", "claude-opus-4-6"), families.first { it.name == "Claude Opus" }.versions.map { it.model })
+        assertEquals("claude-opus-5-5", families[1].latest.model)
     }
 
     @Test fun legacyVersionNeverBeatsNonLegacyEvenWhenNumericallyHigher() {
@@ -132,7 +132,7 @@ class ModelCatalogTest {
         val c = catalog(prefs)
         assertEquals(listOf("GPT Sol", "GPT Luna"), c.section("codex").families.take(2).map { it.name })
         // Empty order list falls back to tiers.
-        assertEquals("Claude Opus", c.section("claudeAgent").families.first().name)
+        assertEquals("Claude Fable", c.section("claudeAgent").families.first().name)
         // No entry for antigravity: catalog order.
         assertEquals("Gemini Neon", c.section("antigravity").families.first().name)
     }

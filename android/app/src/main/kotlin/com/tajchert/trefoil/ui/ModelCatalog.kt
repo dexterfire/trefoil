@@ -18,7 +18,7 @@ private val separators = Regex("[\\s\\-_()]+")
 private val numeric = Regex("^\\d+(\\.\\d+)*$")
 private val driverRank = mapOf("claudeAgent" to 0, "codex" to 1, "antigravity" to 2, "grok" to 3)
 private val tierWords = mapOf(
-    "claudeAgent" to listOf("opus", "sonnet", "fable", "haiku"),
+    "claudeAgent" to listOf("fable", "opus", "sonnet", "haiku"),
     "codex" to listOf("sol", "astra", "terra", "luna"),
 )
 
