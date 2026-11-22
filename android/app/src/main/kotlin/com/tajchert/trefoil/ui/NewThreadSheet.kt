@@ -80,6 +80,38 @@ internal fun recentNewThreadDraft(drafts: Map<ComposerDraftKey, ComposerDraft>, 
     drafts.values.filter { it.key is ComposerDraftKey.NewThread && it.key.environmentId == environmentId && it.hasContent() && projects.any { p -> p.id == (it.key as ComposerDraftKey.NewThread).projectId } }
         .maxByOrNull { it.updatedAtMillis }
 
+private fun activityMillis(value: String?): Long? = value?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() }
+
+/** A thread's activity time, as T3's `updated_at` sidebar order reads it: latest user message, else updated or created. */
+private fun ThreadSummary.activityMillis(): Long? = activityMillis(latestUserMessageAt) ?: activityMillis(updatedAt) ?: activityMillis(createdAt)
+
+/** Each project's newest thread activity (epoch millis); projects without dated threads are absent. */
+internal fun projectActivity(threads: List<ThreadSummary>): Map<String, Long> =
+    threads.asSequence().filter { it.deletedAt == null }.mapNotNull { t -> t.activityMillis()?.let { t.projectId to it } }
+        .groupingBy { it.first }.fold(Long.MIN_VALUE) { latest, (_, time) -> maxOf(latest, time) }
+
+/** Most recently active first (T3 sidebar `updated_at`); projects without activity follow alphabetically. */
+internal fun projectsByRecentActivity(projects: List<Project>, activity: Map<String, Long>): List<Project> =
+    projects.sortedWith(compareByDescending<Project> { activity[it.id] ?: Long.MIN_VALUE }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.title })
+
+/**
+ * Projects matching every whitespace-separated term of [query] in their title or path, keeping [projects]' order within
+ * three ranks: title starts with the query, title contains every term, then the rest (path matches).
+ */
+internal fun searchProjects(projects: List<Project>, query: String): List<Project> {
+    val q = query.trim()
+    if (q.isEmpty()) return projects
+    val terms = q.split(Regex("\\s+"))
+    return projects.filter { p -> terms.all { p.title.contains(it, ignoreCase = true) || p.path.contains(it, ignoreCase = true) } }
+        .sortedBy { p -> when { p.title.startsWith(q, ignoreCase = true) -> 0; terms.all { p.title.contains(it, ignoreCase = true) } -> 1; else -> 2 } }
+}
+
+/** The last two segments of a workspace path (`priv/trefoil`), enough to tell same-named projects apart. */
+internal fun shortProjectPath(path: String): String = path.trimEnd('/', '\\').split('/', '\\').filter { it.isNotEmpty() }.takeLast(2).joinToString("/")
+
+/** Projects listed before "Show all"; search always lists every match. */
+internal const val RECENT_PROJECT_LIMIT = 5
+
 /**
  * New thread: pick project, model and mode, optionally type the first prompt.
  * [start] receives the draft and the prompt (blank when none); the shell starts the draft and
@@ -112,10 +144,11 @@ internal fun NewThreadSheetContent(
     var projectId by rememberSaveable {
         mutableStateOf(openProjectId?.takeIf { id -> state.projects.any { it.id == id } }
             ?: recentNewThreadDraft(composerDrafts.drafts, environmentId, state.projects)?.let { (it.key as ComposerDraftKey.NewThread).projectId }
-            ?: state.projects.firstOrNull()?.id.orEmpty())
+            ?: projectsByRecentActivity(state.projects, projectActivity(state.threads)).firstOrNull()?.id.orEmpty())
     }
-    var modelIndex by rememberSaveable { mutableIntStateOf(0) }
-    var chosenMode by rememberSaveable { mutableStateOf((state.defaultRuntimeMode ?: RuntimeMode.ApprovalRequired).wire) }
+    // Model and access stay unset (-1 / null) until the user or a stored draft picks one: the project's T3 defaults apply.
+    var modelIndex by rememberSaveable { mutableIntStateOf(-1) }
+    var chosenMode by rememberSaveable { mutableStateOf<String?>(null) }
     var prompt by rememberSaveable { mutableStateOf(composerDrafts.get(ComposerDraftKey.NewThread(environmentId.orEmpty(), projectId))?.text.orEmpty()) }
     // True once the user changed text, project or settings: a draft that loads later must not overwrite that.
     var touched by rememberSaveable { mutableStateOf(false) }
@@ -124,22 +157,25 @@ internal fun NewThreadSheetContent(
     // Nothing is editable before the stored drafts load, so no edit can replace a stored prompt or settings.
     val loaded = composerDrafts.loaded
     var query by rememberSaveable { mutableStateOf("") }
-    var searching by rememberSaveable { mutableStateOf(false) }
     var expanded by rememberSaveable { mutableStateOf(false) }
     var pickerCollapsed by rememberSaveable { mutableStateOf(initiallyCollapsed ?: (state.projects.size == 1)) }
     val selectedProject = state.projects.firstOrNull { it.id == projectId }
     val collapsed = pickerCollapsed && selectedProject != null
     var userExpanded by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(state.projects) {
-        if (state.projects.none { it.id == projectId }) { projectId = state.projects.firstOrNull()?.id.orEmpty(); pickerCollapsed = false }
+        if (state.projects.none { it.id == projectId }) { projectId = projectsByRecentActivity(state.projects, projectActivity(state.threads)).firstOrNull()?.id.orEmpty(); pickerCollapsed = false }
         if (state.projects.size == 1 && !userExpanded && initiallyCollapsed == null) pickerCollapsed = true
     }
-    fun collapsePicker() { pickerCollapsed = true; searching = false; query = "" }
+    fun collapsePicker() { pickerCollapsed = true; expanded = false; query = "" }
     var chosenEffort by rememberSaveable { mutableStateOf<String?>(null) }
-    val model = state.models.getOrNull(modelIndex)
+    val defaults = state.newThreadSettings(projectId.ifEmpty { null })
+    val model = state.models.getOrNull(modelIndex) ?: defaults.model
     val reasoning = model?.reasoning?.takeIf { it.selectableChoices.isNotEmpty() }
-    val explicitOptions: ModelOptionValues = if (reasoning != null && chosenEffort != null) model.validOptions(mapOf(reasoning.id to chosenEffort!!)) else emptyMap()
-    LaunchedEffect(model, reasoning) { if (chosenEffort != null && explicitOptions.isEmpty()) chosenEffort = null }
+    // The configured default's options (effort, Fast mode, ...) ride along while its model is used; an effort the user
+    // picked replaces the default's.
+    val baseOptions = if (model != null && model.sameModelAs(defaults.model)) defaults.options else emptyMap()
+    val explicitOptions: ModelOptionValues = model?.validOptions(baseOptions + listOfNotNull(reasoning?.id?.let { id -> chosenEffort?.let { id to it } })).orEmpty()
+    LaunchedEffect(model, reasoning) { if (chosenEffort != null && (reasoning == null || model.validOptions(mapOf(reasoning.id to chosenEffort!!)).isEmpty())) chosenEffort = null }
     // Seed from the stored draft: it may arrive after the sheet opens (the store loads asynchronously) and is applied
     // only while the user has not touched anything.
     LaunchedEffect(composerDrafts.drafts, loaded, state.models, state.projects, environmentId) {
@@ -155,13 +191,13 @@ internal fun NewThreadSheetContent(
         saved.effort?.let { chosenEffort = it }
     }
     val allowedModes = allowedRuntimeModes(model)
-    val mode = resolveRuntimeMode(RuntimeMode.fromWire(chosenMode), allowedModes)
+    val mode = resolveRuntimeMode(RuntimeMode.fromWire(chosenMode) ?: defaults.runtimeMode, allowedModes)
     // Write-through: every user change goes to the store (it debounces); initial composition never writes, so it cannot
     // overwrite a draft that has not loaded yet.
-    fun persist(text: String = prompt, index: Int = modelIndex, modeWire: String = chosenMode, effort: String? = chosenEffort, id: String = projectId) {
+    fun persist(text: String = prompt, index: Int = modelIndex, modeWire: String = chosenMode ?: mode.wire, effort: String? = chosenEffort, id: String = projectId) {
         val env = environmentId ?: return
         if (id.isEmpty() || !loaded) return
-        val chosen = state.models.getOrNull(index)
+        val chosen = state.models.getOrNull(index) ?: state.newThreadSettings(id).model
         if (composerDrafts.get(ComposerDraftKey.NewThread(env, id)) == null && id !in createdHere) createdHere = createdHere + id
         composerDrafts.update(ComposerDraftKey.NewThread(env, id), text, chosen?.instanceId, chosen?.model, modeWire.takeIf { chosen != null }, effort.takeIf { chosen != null })
     }
@@ -195,17 +231,21 @@ internal fun NewThreadSheetContent(
     }
     val canStart = state.canLaunchThreads && !state.busy && selectedProject != null && model != null
 
-    val filtered = state.projects.filter { query.isBlank() || it.title.contains(query.trim(), ignoreCase = true) }
-    val limit = 8
+    val activity = remember(state.threads) { projectActivity(state.threads) }
+    val ordered = remember(state.projects, activity) { projectsByRecentActivity(state.projects, activity) }
+    val searchable = state.projects.size > RECENT_PROJECT_LIMIT
+    val searching = query.isNotBlank()
+    val filtered = remember(ordered, query) { searchProjects(ordered, query) }
     val shown = when {
-        expanded || searching || filtered.size <= limit -> filtered
+        expanded || searching || filtered.size <= RECENT_PROJECT_LIMIT -> filtered
         else -> {
-            val head = filtered.take(limit)
+            val head = filtered.take(RECENT_PROJECT_LIMIT)
             val selected = filtered.firstOrNull { it.id == projectId }
-            if (selected == null || selected in head) head else filtered.take(limit - 1) + selected
+            if (selected == null || selected in head) head else filtered.take(RECENT_PROJECT_LIMIT - 1) + selected
         }
     }
     val hidden = filtered.size - shown.size
+    val now = remember { System.currentTimeMillis() }
 
     Column(modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, bottom = 20.dp)) {
         Row(Modifier.padding(start = 4.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -214,9 +254,6 @@ internal fun NewThreadSheetContent(
         }
         Row(Modifier.fillMaxWidth().padding(start = 4.dp).heightIn(min = 36.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("PROJECT", style = TrefoilType.section, color = c.muted, modifier = Modifier.weight(1f))
-            if (state.projects.size > 1 && !collapsed) IconButton(onClick = { searching = !searching; if (!searching) query = "" }, Modifier.size(40.dp)) {
-                Icon(TfIcons.Search, "Search projects", Modifier.size(18.dp), tint = if (searching) c.accent else c.text)
-            }
         }
         AnimatedContent(
             selectedProject.takeIf { collapsed }, label = "projectPicker",
@@ -224,18 +261,26 @@ internal fun NewThreadSheetContent(
         ) { target ->
             if (target != null) SelectedProjectPill(target) { pickerCollapsed = false; userExpanded = true }
             else Column {
-                if (searching) OutlinedTextField(query, { query = it }, singleLine = true, placeholder = { Text("Search projects") }, shape = TfFieldShape, colors = tfFieldColors(),
+                if (searchable) OutlinedTextField(query, { query = it }, singleLine = true, placeholder = { Text("Search projects") }, shape = TfFieldShape, colors = tfFieldColors(),
+                    leadingIcon = { Icon(TfIcons.Search, null, Modifier.size(18.dp), tint = c.muted) },
+                    trailingIcon = { if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(TfIcons.Close, "Clear search", Modifier.size(18.dp), tint = c.muted) } },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(onSearch = { filtered.singleOrNull()?.let { pickProject(it.id); collapsePicker() } }), modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp))
+                    keyboardActions = KeyboardActions(onSearch = { filtered.firstOrNull()?.takeIf { searching }?.let { pickProject(it.id); collapsePicker() } }),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp).semantics { contentDescription = "Search projects" })
                 if (state.projects.isEmpty()) Text("No projects reported by this environment.", style = TrefoilType.preview, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = 6.dp))
-                FlowRow(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    shown.forEach { project -> ProjectChip(project, project.id == projectId) { pickProject(project.id); collapsePicker() } }
-                    if (hidden > 0) Box(
-                        Modifier.height(40.dp).clip(RoundedCornerShape(14.dp)).border(1.dp, c.line, RoundedCornerShape(14.dp))
-                            .clickable(role = Role.Button, onClick = { expanded = true }).padding(horizontal = 14.dp)
-                            .semantics { contentDescription = "Show $hidden more projects" },
-                        contentAlignment = Alignment.Center,
-                    ) { Text("+$hidden", style = TrefoilType.meta.copy(fontSize = 14.sp), color = c.muted) }
+                else if (filtered.isEmpty()) Text("No projects match \"${query.trim()}\".", style = TrefoilType.preview, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = 6.dp))
+                Column(Modifier.padding(top = 2.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    shown.forEach { project ->
+                        ProjectRow(project, project.id == projectId, activity[project.id]?.let { relativeThreadTime(java.time.Instant.ofEpochMilli(it).toString(), now) }) { pickProject(project.id); collapsePicker() }
+                    }
+                    if (hidden > 0) Row(
+                        Modifier.fillMaxWidth().height(44.dp).clip(RoundedCornerShape(12.dp)).clickable(role = Role.Button, onClickLabel = "Show all projects", onClick = { expanded = true })
+                            .semantics(mergeDescendants = true) { contentDescription = "Show all ${filtered.size} projects" }.padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text("Show all ${filtered.size} projects", style = TrefoilType.meta.copy(fontSize = 14.sp), color = c.accent, modifier = Modifier.weight(1f))
+                        Icon(TfIcons.ChevronDown, null, Modifier.size(16.dp), tint = c.accent)
+                    }
                 }
             }
         }
@@ -270,7 +315,7 @@ internal fun NewThreadSheetContent(
                     state.models.forEachIndexed { index, option ->
                         DropdownMenuItem(
                             text = { Column { Text(option.label); Text(option.instanceId, style = TrefoilType.mono, color = c.muted) } },
-                            trailingIcon = { if (index == modelIndex) Icon(TfIcons.Check, null, Modifier.size(18.dp), tint = c.accent) },
+                            trailingIcon = { if (option.sameModelAs(model)) Icon(TfIcons.Check, null, Modifier.size(18.dp), tint = c.accent) },
                             onClick = { if (loaded) { modelIndex = index; touched = true; persist(index = index) }; modelMenu = false })
                     }
                 }
@@ -327,19 +372,24 @@ private fun SelectedProjectPill(project: Project, onClick: () -> Unit) {
     }
 }
 
+/** One project in the picker: tile, title, and when it was last active plus where it lives. */
 @Composable
-private fun ProjectChip(project: Project, selected: Boolean, onClick: () -> Unit) {
+private fun ProjectRow(project: Project, selected: Boolean, lastActive: String?, onClick: () -> Unit) {
     val c = Tf.colors
-    val shape = RoundedCornerShape(14.dp)
+    val shape = RoundedCornerShape(12.dp)
+    val detail = listOfNotNull(lastActive?.takeIf { it.isNotEmpty() }, shortProjectPath(project.path).takeIf { it.isNotEmpty() && it != project.title }).joinToString(" · ")
     Row(
-        Modifier.height(40.dp).widthIn(max = 280.dp).clip(shape).background(if (selected) c.accentSoft else Color.Transparent)
-            .border(if (selected) 2.dp else 1.dp, if (selected) c.accent else c.line, shape)
-            .clickable(role = Role.RadioButton, onClick = onClick).semantics { this.selected = selected }
-            .padding(start = 8.dp, end = 14.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+        Modifier.fillMaxWidth().heightIn(min = 52.dp).clip(shape).background(if (selected) c.accentSoft else Color.Transparent)
+            .clickable(role = Role.RadioButton, onClick = onClick).semantics(mergeDescendants = true) { this.selected = selected }
+            .padding(start = 8.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        ProjectTile(project.title, size = 24.dp, key = project.id)
-        Text(project.title, style = TrefoilType.meta.copy(fontSize = 14.sp), color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        ProjectTile(project.title, size = 32.dp, key = project.id)
+        Column(Modifier.weight(1f)) {
+            Text(project.title, style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp), color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (detail.isNotEmpty()) Text(detail, style = TrefoilType.meta, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        if (selected) Icon(TfIcons.Check, null, Modifier.size(18.dp), tint = c.accent)
     }
 }
 

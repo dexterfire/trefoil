@@ -1,9 +1,12 @@
 package com.tajchert.trefoil.core.session
 
+import com.tajchert.trefoil.core.model.ModelDefault
 import com.tajchert.trefoil.core.model.ModelOptionChoice
 import com.tajchert.trefoil.core.model.ModelOptionDescriptor
 import com.tajchert.trefoil.core.model.ModelOptionValues
+import com.tajchert.trefoil.core.model.NewThreadDefaults
 import com.tajchert.trefoil.core.model.REASONING_OPTION_IDS
+import com.tajchert.trefoil.core.model.RuntimeMode
 import com.tajchert.trefoil.core.protocol.objects
 import com.tajchert.trefoil.core.protocol.string
 import kotlinx.serialization.json.JsonArray
@@ -73,3 +76,23 @@ internal fun modelOptionsJson(values: ModelOptionValues): JsonArray = JsonArray(
         }
     }
 })
+
+/** A T3 `ModelSelection` object (`{instanceId, model, options?}`); null when absent, null or missing either id. */
+internal fun modelDefault(element: JsonElement?): ModelDefault? {
+    val selection = element as? JsonObject ?: return null
+    return ModelDefault(selection.text("instanceId") ?: return null, selection.text("model") ?: return null, modelOptionValues(selection["options"]))
+}
+
+/**
+ * New-thread defaults from `server.getConfig` `settings`: the environment's `defaultModelSelection` and each project's
+ * `projectSettingsOverrides` entry (the server already folds legacy project-row defaults into it). Unknown runtime
+ * modes and malformed selections are skipped, so the wider scope applies.
+ */
+internal fun newThreadDefaults(settings: JsonObject?): Pair<ModelDefault?, Map<String, NewThreadDefaults>> {
+    val overrides = (settings?.get("projectSettingsOverrides") as? JsonObject).orEmpty().mapNotNull { (projectId, value) ->
+        val entry = value as? JsonObject ?: return@mapNotNull null
+        NewThreadDefaults(modelDefault(entry["defaultModelSelection"]), RuntimeMode.fromWire((entry["defaultRuntimeMode"] as? JsonPrimitive)?.takeIf { it.isString }?.content))
+            .takeIf { it.model != null || it.runtimeMode != null }?.let { projectId to it }
+    }.toMap()
+    return modelDefault(settings?.get("defaultModelSelection")) to overrides
+}

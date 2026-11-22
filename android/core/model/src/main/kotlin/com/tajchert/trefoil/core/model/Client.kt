@@ -164,6 +164,25 @@ enum class RuntimeMode(val wire: String, val label: String, val description: Str
     FullAccess("full-access", "Full access", "Allow commands and edits without prompts.");
     companion object { fun fromWire(value: String?): RuntimeMode? = entries.firstOrNull { it.wire == value } }
 }
+/** A configured T3 `ModelSelection` (settings `defaultModelSelection`): instance, model slug and explicit options. */
+data class ModelDefault(val instanceId: String, val model: String, val options: ModelOptionValues = emptyMap())
+/** New-thread defaults one scope sets; null means the scope does not set it (the wider scope applies). */
+data class NewThreadDefaults(val model: ModelDefault? = null, val runtimeMode: RuntimeMode? = null)
+
+/**
+ * T3 `resolveProjectSettings` for new threads: a project override wins over the environment setting. A configured
+ * model the catalog does not offer (provider disabled, model gone) is skipped, so the next scope applies; with neither,
+ * [NewThreadSettings.model] is the catalog's first model. Options keep only values the model still offers.
+ */
+fun ClientState.newThreadSettings(projectId: String?): NewThreadSettings {
+    val project = projectId?.let { projectDefaults[it] }
+    fun offered(selection: ModelDefault?) = selection?.let { s -> models.firstOrNull { it.instanceId == s.instanceId && it.model == s.model }?.let { it to s } }
+    val (model, selection) = offered(project?.model) ?: offered(defaultModelSelection) ?: (models.firstOrNull() to null)
+    return NewThreadSettings(model, selection?.let { model?.validOptions(it.options) }.orEmpty(), project?.runtimeMode ?: defaultRuntimeMode ?: RuntimeMode.ApprovalRequired)
+}
+/** Resolved defaults a new thread starts with; see [newThreadSettings]. */
+data class NewThreadSettings(val model: ModelOption?, val options: ModelOptionValues, val runtimeMode: RuntimeMode)
+
 /** A local, unsent conversation. The server thread is created by the first message. */
 /**
  * [threadId] and [commandId] are allocated once per draft and sent with `launchThread`, so an
@@ -210,6 +229,10 @@ data class ClientState(
     val selectedProviderLocked: Boolean = false,
     /** Server `settings.defaultRuntimeMode`; null when not reported. */
     val defaultRuntimeMode: RuntimeMode? = null,
+    /** Server `settings.defaultModelSelection`; null when unset or not reported. */
+    val defaultModelSelection: ModelDefault? = null,
+    /** Server `settings.projectSettingsOverrides`, by project id: only the new-thread defaults a project overrides. */
+    val projectDefaults: Map<String, NewThreadDefaults> = emptyMap(),
     /** Selected thread's projection `subagents[]`, in wire order. */
     val subagents: List<Subagent> = emptyList(),
     /** Selected thread's pending background work (T3 `derivePendingBackgroundWork`); empty while a run is live. */

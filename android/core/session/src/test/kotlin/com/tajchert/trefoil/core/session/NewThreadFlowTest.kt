@@ -16,7 +16,7 @@ import java.util.concurrent.ConcurrentHashMap
 class NewThreadFlowTest {
   private val descriptor = """{"environmentId":"env-1","label":"Test","orchestrationProtocolVersion":2,"capabilities":{}}"""
   private fun json(body: String) = MockResponse().setHeader("Content-Type", "application/json").setBody(body)
-  private val config = """{"settings":{"defaultRuntimeMode":"auto-accept-edits"},"providers":[{"instanceId":"codex","driver":"codex","enabled":true,"supportedRuntimeModes":["approval-required","full-access","future-mode"],"models":[{"slug":"gpt-5","name":"GPT-5","capabilities":{"optionDescriptors":[{"id":"reasoningEffort","label":"Reasoning","type":"select","options":[{"id":"low","label":"Low"},{"id":"medium","label":"Medium","isDefault":true},{"id":"high","label":"High"}]},{"id":"fastMode","label":"Fast mode","type":"boolean"},{"id":"future","label":"Future","type":"dial"}]}},{"slug":"gpt-5-mini","name":"Mini","capabilities":null}]},{"instanceId":"claude","driver":"claudeAgent","enabled":true,"models":[{"slug":"sonnet","name":"Sonnet"}]}]}"""
+  private val config = """{"settings":{"defaultRuntimeMode":"auto-accept-edits","defaultModelSelection":{"instanceId":"codex","model":"gpt-5","options":[{"id":"reasoningEffort","value":"high"},{"id":"future","value":"x"}]},"projectSettingsOverrides":{"p":{"defaultModelSelection":{"instanceId":"claude","model":"sonnet"},"defaultRuntimeMode":"full-access"},"gone":{"defaultModelSelection":{"instanceId":"cursor","model":"x"}},"modeOnly":{"defaultRuntimeMode":"future-mode","enableAgentDeviceAccess":true}}},"providers":[{"instanceId":"codex","driver":"codex","enabled":true,"supportedRuntimeModes":["approval-required","full-access","future-mode"],"models":[{"slug":"gpt-5","name":"GPT-5","capabilities":{"optionDescriptors":[{"id":"reasoningEffort","label":"Reasoning","type":"select","options":[{"id":"low","label":"Low"},{"id":"medium","label":"Medium","isDefault":true},{"id":"high","label":"High"}]},{"id":"fastMode","label":"Fast mode","type":"boolean"},{"id":"future","label":"Future","type":"dial"}]}},{"slug":"gpt-5-mini","name":"Mini","capabilities":null}]},{"instanceId":"claude","driver":"claudeAgent","enabled":true,"models":[{"slug":"sonnet","name":"Sonnet"}]}]}"""
   private val existingThread = """{"thread":{"id":"t","runtimeMode":"full-access","modelSelection":{"instanceId":"codex","model":"gpt-5-mini","options":{"reasoningEffort":"high"}},"futureField":1},"messages":[],"runs":[],"turnItems":[],"runtimeRequests":[]}"""
 
   /** Effect RPC decode failure as T3 v0.1.x sends it for a payload missing a required key. */
@@ -285,6 +285,20 @@ class NewThreadFlowTest {
     assertEquals(listOf(RuntimeMode.ApprovalRequired, RuntimeMode.FullAccess), state.models.first { it.model == "gpt-5" }.supportedRuntimeModes)
     assertEquals(listOf(RuntimeMode.ApprovalRequired, RuntimeMode.FullAccess), state.models.first { it.model == "gpt-5-mini" }.supportedRuntimeModes)
     assertTrue(state.models.first { it.model == "sonnet" }.supportedRuntimeModes.isEmpty())
+  }
+
+  @Test fun configReportsNewThreadDefaultsWithProjectOverrides() = withServer { f ->
+    val state = f.client.state.value
+    assertEquals(ModelDefault("codex", "gpt-5", mapOf("reasoningEffort" to "high", "future" to "x")), state.defaultModelSelection)
+    assertEquals(setOf("p", "gone"), state.projectDefaults.keys)
+    val environment = state.newThreadSettings("other")
+    assertEquals(Triple("gpt-5", mapOf<String, Any>("reasoningEffort" to "high"), RuntimeMode.AutoAcceptEdits), Triple(environment.model?.model, environment.options, environment.runtimeMode))
+    val project = state.newThreadSettings("p")
+    assertEquals(Triple("sonnet", emptyMap<String, Any>(), RuntimeMode.FullAccess), Triple(project.model?.model, project.options, project.runtimeMode))
+    // A project default the catalog does not offer falls back to the environment default.
+    assertEquals("gpt-5", state.newThreadSettings("gone").model?.model)
+    // Without any configured default the catalog's first model is used.
+    assertEquals("gpt-5", state.copy(defaultModelSelection = null, projectDefaults = emptyMap()).newThreadSettings("p").model?.model)
   }
 
   @Test fun setModelKeepsOptionsForTheSameModelAndDropsThemOtherwise() = withServer { f ->

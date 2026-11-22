@@ -47,25 +47,56 @@ class NewThreadFlowTest {
         }
     }
 
-    @Test fun manyProjectsCollapseBehindCountChipAndSearchFilters() {
-        val many = state.copy(projects = (1..12).map { Project("p$it", "Project $it") })
+    private val many = state.copy(projects = (1..12).map { Project("p$it", "Project %02d".format(it), "/work/team/project-$it") })
+
+    @Test fun manyProjectsShowRecentFiveThenAllAndSearchFiltersTitleAndPath() {
         sheet(many)
-        compose.onNodeWithText("Project 9").assertDoesNotExist()
-        compose.onNodeWithText("+4").performClick()
+        compose.onNodeWithText("Project 05").assertExists()
+        compose.onNodeWithText("Project 06").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Show all 12 projects").performScrollTo().performClick()
         compose.onNodeWithText("Project 12").assertExists()
-        compose.onNodeWithContentDescription("Search projects").performClick()
-        compose.onNodeWithText("Search projects").performTextInput("Project 11")
+        compose.onNodeWithText("Search projects").performTextInput("project-11")
         compose.onNodeWithText("Project 12").assertDoesNotExist()
         compose.onNode(hasText("Project 11") and hasClickAction() and !isEditable()).assertExists()
     }
 
-    @Test fun tappingChipCollapsesPickerToSelectedPill() {
+    @Test fun fewProjectsHaveNoSearchField() {
         sheet(state)
-        compose.onNodeWithContentDescription("Search projects").assertExists()
+        compose.onNodeWithContentDescription("Search projects").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Show all", substring = true).assertDoesNotExist()
+    }
+
+    @Test fun projectsSortByRecentThreadActivityAndTheMostRecentIsPreselected() {
+        var started: ThreadDraft? = null
+        val threads = listOf(
+            ThreadSummary("t1", "p3", "old", latestUserMessageAt = "2026-01-01T00:00:00Z"),
+            ThreadSummary("t2", "p9", "newest", updatedAt = "2026-03-01T00:00:00Z"),
+            ThreadSummary("t3", "p3", "newer", latestUserMessageAt = "2026-02-01T00:00:00Z", updatedAt = "2026-01-01T00:00:00Z"),
+            ThreadSummary("t4", "p1", "gone", latestUserMessageAt = "2026-09-01T00:00:00Z", deletedAt = "2026-09-02T00:00:00Z"),
+        )
+        sheet(many.copy(threads = threads)) { draft, _ -> started = draft }
+        compose.onNode(hasText("Project 09") and hasClickAction()).assertIsSelected()
+        // The two active projects lead, so Project 03 is listed even though alphabetical order would hide it behind 01, 02, 04...
+        compose.onNodeWithText("Project 03").assertExists()
+        compose.onNodeWithText("Project 05").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Start").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals("p9", started?.projectId) }
+    }
+
+    @Test fun recencyOrderAndSearchRanking() {
+        val projects = listOf(Project("a", "Zeta"), Project("b", "alpha"), Project("c", "Beta", "/src/alpha-tools"), Project("d", "Gamma"))
+        val ordered = projectsByRecentActivity(projects, mapOf("d" to 20L, "a" to 10L))
+        assertEquals(listOf("Gamma", "Zeta", "alpha", "Beta"), ordered.map { it.title })
+        assertEquals(listOf("alpha", "Beta"), searchProjects(ordered, "alp").map { it.title })
+        assertEquals(listOf("Beta"), searchProjects(ordered, "be tools").map { it.title })
+        assertEquals("work/trefoil", shortProjectPath("/Users/me/work/trefoil/"))
+    }
+
+    @Test fun tappingProjectCollapsesPickerToSelectedPill() {
+        sheet(state)
         compose.onNodeWithText("Beta").performClick()
         compose.onNodeWithContentDescription("Project: Beta").assertExists()
         compose.onNodeWithText("Alpha").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Search projects").assertDoesNotExist()
     }
 
     @Test fun focusingPromptCollapsesPickerAndPillReExpandsKeepingSelection() {
@@ -100,28 +131,24 @@ class NewThreadFlowTest {
         compose.onNodeWithContentDescription("Search projects").assertDoesNotExist()
     }
 
-    @Test fun searchImeActionSelectsSingleResultAndCollapses() {
-        val many = state.copy(projects = listOf(Project("p1", "Alpha"), Project("p2", "Beta"), Project("p3", "Alps")))
-        sheet(many)
-        compose.onNodeWithContentDescription("Search projects").performClick()
-        compose.onNodeWithText("Search projects").performTextInput("Al")
+    @Test fun searchImeActionSelectsTopResultAndCollapses() {
+        val projects = state.copy(projects = listOf("Alpha", "Beta", "Alps", "Delta", "Echo", "Foxtrot").mapIndexed { i, t -> Project("p$i", t) })
+        sheet(projects)
         compose.onNode(hasImeAction(ImeAction.Search)).performImeAction()
         compose.onNodeWithContentDescription("Project: Alpha").assertDoesNotExist()
-        compose.onNode(hasImeAction(ImeAction.Search)).assertExists()
-        compose.onNode(hasImeAction(ImeAction.Search)).performTextReplacement("Bet")
+        compose.onNode(hasImeAction(ImeAction.Search)).performTextInput("Al")
         compose.onNode(hasImeAction(ImeAction.Search)).performImeAction()
-        compose.onNodeWithContentDescription("Project: Beta").assertExists()
+        compose.onNodeWithContentDescription("Project: Alpha").assertExists()
         compose.onNodeWithContentDescription("Search projects").assertDoesNotExist()
     }
 
     @Test fun collapsingClearsSearchQuery() {
-        sheet(state)
-        compose.onNodeWithContentDescription("Search projects").performClick()
-        compose.onNodeWithText("Search projects").performTextInput("Bet")
-        compose.onNode(hasText("Beta") and hasClickAction() and !isEditable()).performClick()
-        compose.onNodeWithContentDescription("Project: Beta").performClick()
-        compose.onNodeWithText("Alpha").assertExists()
-        compose.onNodeWithText("Bet").assertDoesNotExist()
+        sheet(many)
+        compose.onNodeWithText("Search projects").performTextInput("Project 07")
+        compose.onNode(hasText("Project 07") and hasClickAction() and !isEditable()).performClick()
+        compose.onNodeWithContentDescription("Project: Project 07").performClick()
+        compose.onNodeWithText("Project 01").assertExists()
+        compose.onNode(hasText("Project 07") and isEditable()).assertDoesNotExist()
     }
 
     @Test fun lateArrivingProjectSelectsAndCollapses() {
@@ -282,6 +309,35 @@ class NewThreadFlowTest {
         compose.onNodeWithContentDescription("Reasoning: Low").assertExists()
         compose.onNodeWithContentDescription("Start").performClick()
         compose.runOnIdle { assertEquals(mapOf("effort" to "low"), started!!.modelOptions) }
+    }
+
+    @Test fun t3DefaultModelAndEffortSeedTheSheetAndProjectOverridesWin() {
+        var started: ThreadDraft? = null
+        val configured = reasoningState.copy(
+            defaultModelSelection = ModelDefault("claude", "opus", mapOf("effort" to "low", "gone" to "x")),
+            projectDefaults = mapOf("p2" to NewThreadDefaults(ModelDefault("codex", "gpt-a"), RuntimeMode.FullAccess)),
+        )
+        sheet(configured) { draft, _ -> started = draft }
+        compose.onNodeWithContentDescription("Model: Opus").assertExists()
+        compose.onNodeWithContentDescription("Reasoning: Low").assertExists()
+        compose.onNodeWithContentDescription("Start").performClick()
+        compose.runOnIdle { assertEquals("opus" to mapOf<String, Any>("effort" to "low"), started!!.model.model to started!!.modelOptions) }
+        compose.onNodeWithText("Beta").performClick()
+        compose.onNodeWithContentDescription("Model: Plain").assertExists()
+        compose.onNodeWithContentDescription("Access: Full access").assertExists()
+        compose.onNodeWithContentDescription("Start").performClick()
+        compose.runOnIdle { assertEquals(Triple("gpt-a", RuntimeMode.FullAccess, emptyMap<String, Any>()), Triple(started!!.model.model, started!!.runtimeMode, started!!.modelOptions)) }
+    }
+
+    @Test fun anExplicitModelPickSurvivesProjectSwitch() {
+        val configured = reasoningState.copy(projectDefaults = mapOf("p2" to NewThreadDefaults(ModelDefault("claude", "opus"))))
+        sheet(configured.copy(defaultModelSelection = ModelDefault("codex", "gpt-a")))
+        compose.onNodeWithContentDescription("Model: Plain").performClick()
+        compose.onNodeWithText("Opus").performClick()
+        compose.onNodeWithText("Beta").performClick()
+        compose.onNodeWithContentDescription("Project: Beta").performClick()
+        compose.onNodeWithText("Alpha").performClick()
+        compose.onNodeWithContentDescription("Model: Opus").assertExists()
     }
 
     @Test fun switchingToModelWithoutEffortDropsOption() {

@@ -24,6 +24,8 @@ import com.tajchert.trefoil.core.model.ConnectionAttempt
 import com.tajchert.trefoil.core.model.ConnectionKind
 import com.tajchert.trefoil.core.model.ConnectionPhase
 import com.tajchert.trefoil.core.model.ConnectionStatus
+import com.tajchert.trefoil.core.model.ModelDefault
+import com.tajchert.trefoil.core.model.Project
 import com.tajchert.trefoil.core.model.SavedEnvironment
 import com.tajchert.trefoil.ui.ConnectionBanner
 import com.tajchert.trefoil.ui.MachineRail
@@ -125,6 +127,18 @@ private fun Machines(saved: List<SavedEnvironment>, state: ClientState, dark: Bo
 
 @PreviewTest @Preview(showBackground = true, widthDp = 400, heightDp = 800)
 @Composable fun NewThreadSheet_Collapsed_Light() = Phone { Column(Modifier.fillMaxWidth()) { NewThreadSheetContent(ScreenshotFixtures.connectedState().copy(models = ScreenshotFixtures.reasoningModels), dismiss = {}, start = { _, _ -> }, initiallyCollapsed = true) } }
+
+private val manyProjects = listOf("api-gateway", "trefoil", "website", "infra", "docs", "mobile-ios", "billing", "design-system", "analytics")
+    .map { Project(id = "p-$it", title = it, path = "/home/dev/work/$it") }
+
+@PreviewTest @Preview(showBackground = true, widthDp = 400, heightDp = 800)
+@Composable fun NewThreadSheet_ManyProjects_Light() = Phone { Column(Modifier.fillMaxWidth()) {
+    val threads = listOf("trefoil" to 3L, "billing" to 50L, "docs" to 60L * 30, "website" to 60L * 24 * 3).map { (name, minutes) ->
+        ScreenshotFixtures.thread("t-$name", "Work in $name", project = manyProjects.first { it.title == name }, updatedMinutesAgo = minutes)
+    }
+    NewThreadSheetContent(ScreenshotFixtures.connectedState(threads).copy(projects = manyProjects, models = ScreenshotFixtures.reasoningModels,
+        defaultModelSelection = ModelDefault("claudeAgent", "claude-opus", mapOf("effort" to "max"))), dismiss = {}, start = { _, _ -> })
+} }
 
 @PreviewTest @Preview(showBackground = true, widthDp = 1280, heightDp = 800)
 @Composable fun Tablet_RailAndList_Light() = Phone {
