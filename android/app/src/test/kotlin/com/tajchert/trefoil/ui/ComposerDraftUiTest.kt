@@ -52,7 +52,7 @@ class ComposerDraftUiTest {
         val state = ClientState(environment = SavedEnvironment("e", "E", "https://e.test", "t"), projects = listOf(alpha, beta), models = listOf(ModelOption("codex", "gpt-5")))
         val written = mutableListOf<Pair<ComposerDraftKey, String>>()
         val drafts = byKey(newThread("e", "p2", "resume me", 1))
-        val ui = ComposerDraftUi(drafts, update = { key, text, _, _, _, _ -> written += key to text })
+        val ui = ComposerDraftUi(drafts, update = { key, text, _, _, _, _, _ -> written += key to text })
         compose.setContent { TrefoilTheme { NewThreadSheetContent(state, {}, { _, _ -> }, composerDrafts = ui, openProjectId = "p2") } }
         compose.onNodeWithText("resume me").assertExists()
         assertTrue(written.isEmpty())
@@ -64,7 +64,7 @@ class ComposerDraftUiTest {
     @Test fun sheetWritesNothingBeforeTheDraftsLoad() {
         val state = ClientState(environment = SavedEnvironment("e", "E", "https://e.test", "t"), projects = listOf(alpha, beta), models = listOf(ModelOption("codex", "gpt-5")))
         val written = mutableListOf<ComposerDraftKey>()
-        val ui = ComposerDraftUi(emptyMap(), update = { key, _, _, _, _, _ -> written += key }, move = { _, _, _ -> written += ComposerDraftKey.NewThread("moved", ""); true }, loaded = false)
+        val ui = ComposerDraftUi(emptyMap(), update = { key, _, _, _, _, _, _ -> written += key }, move = { _, _, _ -> written += ComposerDraftKey.NewThread("moved", ""); true }, loaded = false)
         compose.setContent { TrefoilTheme { NewThreadSheetContent(state, {}, { _, _ -> }, composerDrafts = ui, initiallyCollapsed = false) } }
         compose.onNodeWithText("What should the agent do?").assertIsNotEnabled()
         compose.onNodeWithText("beta").performClick()

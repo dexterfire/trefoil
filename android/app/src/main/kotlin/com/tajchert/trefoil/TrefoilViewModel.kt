@@ -845,8 +845,8 @@ class TrefoilViewModel internal constructor(
     /** The composer draft for [key], including a NewThread draft that holds only sheet settings. */
     fun composerDraft(key: ComposerDraftKey): ComposerDraft? = composerDraftStore.get(key)
     /** Writes through the composer state (debounced); blank text without settings removes it. Allowed while disconnected. */
-    fun updateComposerDraft(key: ComposerDraftKey, text: String, modelInstanceId: String? = null, model: String? = null, runtimeMode: String? = null, effort: String? = null) =
-        composerDraftStore.update(key, text, modelInstanceId, model, runtimeMode, effort)
+    fun updateComposerDraft(key: ComposerDraftKey, text: String, modelInstanceId: String? = null, model: String? = null, runtimeMode: String? = null, effort: String? = null, fastMode: Boolean? = null) =
+        composerDraftStore.update(key, text, modelInstanceId, model, runtimeMode, effort, fastMode)
     /** Writes text only, keeping a NewThread draft's settings (the conversation composer). */
     fun updateComposerDraftText(key: ComposerDraftKey, text: String) = composerDraftStore.updateText(key, text)
     fun clearComposerDraft(key: ComposerDraftKey) = composerDraftStore.clear(key)

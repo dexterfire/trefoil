@@ -357,4 +357,55 @@ class NewThreadFlowTest {
         compose.onNodeWithContentDescription("Start").performClick()
         compose.runOnIdle { assertTrue(started!!.modelOptions.isEmpty()) }
     }
+    private val fast = ModelOptionDescriptor.Toggle("fastMode", "Fast mode")
+    private val fastModels = listOf(ModelOption("claude", "opus", "Opus", descriptors = listOf(effort, fast)), ModelOption("codex", "gpt-a", "Plain"))
+    private val fastState = state.copy(models = fastModels)
+
+    @Test fun pickingFastInThePickerLabelsThePillAndStartEmitsIt() {
+        var started: ThreadDraft? = null
+        val written = mutableListOf<Boolean?>()
+        val drafts = ComposerDraftUi(update = { _, _, _, _, _, _, fastMode -> written += fastMode })
+        compose.setContent { TrefoilTheme { NewThreadSheetContent(fastState.copy(environment = SavedEnvironment("env", "Env", "https://fixture.invalid", "env")), {}, { draft, _ -> started = draft }, composerDrafts = drafts) } }
+        compose.onNodeWithContentDescription("Model: Opus").performClick()
+        compose.onNodeWithContentDescription("Fast mode").performClick()
+        compose.onNodeWithContentDescription("Model: Opus · Fast").assertExists()
+        compose.onNodeWithContentDescription("Start").performClick()
+        compose.runOnIdle {
+            assertEquals(mapOf<String, Any>("fastMode" to true), started!!.modelOptions)
+            assertEquals("the pick is persisted with the draft", true, written.last())
+        }
+    }
+
+    @Test fun switchingToModelWithoutFastDropsIt() {
+        var started: ThreadDraft? = null
+        sheet(fastState) { draft, _ -> started = draft }
+        compose.onNodeWithContentDescription("Model: Opus").performClick()
+        compose.onNodeWithContentDescription("Fast mode").performClick()
+        compose.onNodeWithContentDescription("codex").performClick()
+        compose.onNodeWithText("Plain").performClick()
+        compose.onNodeWithContentDescription("Model: Plain").assertExists()
+        compose.onNodeWithContentDescription("Start").performClick()
+        compose.runOnIdle { assertTrue(started!!.modelOptions.isEmpty()) }
+    }
+
+    @Test fun theDefaultsFastModeCanBeTurnedOff() {
+        var started: ThreadDraft? = null
+        sheet(fastState.copy(defaultModelSelection = ModelDefault("claude", "opus", mapOf("fastMode" to true)))) { draft, _ -> started = draft }
+        compose.onNodeWithContentDescription("Model: Opus · Fast").performClick()
+        compose.onNodeWithContentDescription("Fast mode").performClick()
+        compose.onNodeWithContentDescription("Model: Opus").assertExists()
+        compose.onNodeWithContentDescription("Start").performClick()
+        compose.runOnIdle { assertEquals(mapOf<String, Any>("fastMode" to false), started!!.modelOptions) }
+    }
+
+    @Test fun aStoredDraftSeedsFastMode() {
+        var started: ThreadDraft? = null
+        val key = com.tajchert.trefoil.core.session.ComposerDraftKey.NewThread("env", "p1")
+        val stored = com.tajchert.trefoil.core.session.ComposerDraft(key, "", "claude", "opus", updatedAtMillis = 1, fastMode = true)
+        val drafts = ComposerDraftUi(drafts = mapOf(key to stored))
+        compose.setContent { TrefoilTheme { NewThreadSheetContent(fastState.copy(environment = SavedEnvironment("env", "Env", "https://fixture.invalid", "env")), {}, { draft, _ -> started = draft }, composerDrafts = drafts, openProjectId = "p1") } }
+        compose.onNodeWithContentDescription("Model: Opus · Fast").assertExists()
+        compose.onNodeWithContentDescription("Start").performClick()
+        compose.runOnIdle { assertEquals(mapOf<String, Any>("fastMode" to true), started!!.modelOptions) }
+    }
 }

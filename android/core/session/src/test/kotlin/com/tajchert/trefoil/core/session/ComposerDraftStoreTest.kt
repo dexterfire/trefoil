@@ -146,6 +146,29 @@ class ComposerDraftStoreTest {
         assertNull("empty store clears the blob", p.stored)
     }
 
+    @Test fun fastModeRoundTripsAndCountsAsSettings() = runTest {
+        val p = FakePersistence(); val s = store(p)
+        s.update(newA, "", "claude", "opus", "approval-required", "high", fastMode = false)
+        assertEquals("a settings-only draft with Fast mode is kept", false, s.get(newA)?.fastMode)
+        s.update(newA, "", fastMode = true)
+        assertEquals("Fast mode alone counts as a setting", true, s.get(newA)?.fastMode)
+        s.updateText(newA, "typed")
+        assertEquals("text edits keep Fast mode", true, s.get(newA)?.fastMode)
+        s.flush()
+        assertEquals(true, store(p).also { it.awaitLoaded() }.get(newA)?.fastMode)
+        s.update(newA, "typed", "claude", "opus")
+        s.flush()
+        assertFalse("an unset Fast mode is not stored", p.stored!!.contains("fastMode"))
+    }
+
+    @Test fun legacyDraftWithoutFastModeLoadsUnchanged() = runTest {
+        val legacy = """{"v":1,"drafts":[{"kind":"newThread","environmentId":"env","projectId":"pA","text":"old prompt","modelInstanceId":"codex","model":"gpt","runtimeMode":"auto","effort":"low","updatedAtMillis":5}]}"""
+        assertEquals(ComposerDraft(newA, "old prompt", "codex", "gpt", "auto", "low", updatedAtMillis = 5), ComposerDraftStore.decode(legacy)[newA])
+        val s = store(FakePersistence(legacy)); s.awaitLoaded()
+        assertNull(s.get(newA)!!.fastMode)
+        assertEquals("old prompt", s.get(newA)!!.text)
+    }
+
     @Test fun textIsCappedAt100k() = runTest {
         val p = FakePersistence(); val s = store(p)
         s.update(reply, "x".repeat(150_000))

@@ -29,7 +29,7 @@ data class PendingLaunch(val threadId: String, val commandId: String, val text: 
 /**
  * Unsent composer text. The settings apply to [ComposerDraftKey.NewThread] only and use the sheet's
  * identifiers: [modelInstanceId] and [model] of the `ModelOption`, [runtimeMode] as `RuntimeMode.wire`,
- * [effort] as the reasoning choice id.
+ * [effort] as the reasoning choice id, [fastMode] as the Fast mode switch the user picked (null: the model's default).
  */
 data class ComposerDraft(
     val key: ComposerDraftKey,
@@ -40,12 +40,13 @@ data class ComposerDraft(
     val effort: String? = null,
     val pendingLaunch: PendingLaunch? = null,
     val updatedAtMillis: Long,
+    val fastMode: Boolean? = null,
 )
 
 /** Shown as a draft (row, preview) only when there is text to resume. */
 fun ComposerDraft.hasContent(): Boolean = text.isNotBlank()
 
-private fun ComposerDraft.hasSettings(): Boolean = modelInstanceId != null || model != null || runtimeMode != null || effort != null
+private fun ComposerDraft.hasSettings(): Boolean = modelInstanceId != null || model != null || runtimeMode != null || effort != null || fastMode != null
 
 /**
  * Opaque storage for the serialized drafts; null clears it. Implementations encrypt and must not log the content.
@@ -118,10 +119,10 @@ class ComposerDraftStore(
      * Writes the composer state for [key]. Blank text without settings removes the draft. Text is capped at
      * [MAX_TEXT]. A pending launch identity is kept.
      */
-    fun update(key: ComposerDraftKey, text: String, modelInstanceId: String? = null, model: String? = null, runtimeMode: String? = null, effort: String? = null): Unit = synchronized(lock) {
+    fun update(key: ComposerDraftKey, text: String, modelInstanceId: String? = null, model: String? = null, runtimeMode: String? = null, effort: String? = null, fastMode: Boolean? = null): Unit = synchronized(lock) {
         val current = all[key]
         val next = if (key is ComposerDraftKey.Reply) ComposerDraft(key, text.take(MAX_TEXT), updatedAtMillis = clock())
-        else ComposerDraft(key, text.take(MAX_TEXT), modelInstanceId, model, runtimeMode, effort, current?.pendingLaunch, clock())
+        else ComposerDraft(key, text.take(MAX_TEXT), modelInstanceId, model, runtimeMode, effort, current?.pendingLaunch, clock(), fastMode)
         if (current != null && current.copy(updatedAtMillis = next.updatedAtMillis) == next) return
         if (!next.hasContent() && !next.hasSettings()) return clear(key)
         mutate(key) { it + (key to next) }
@@ -130,7 +131,7 @@ class ComposerDraftStore(
     /** Writes [text] keeping the draft's settings and pending launch (the conversation composer edits text only). */
     fun updateText(key: ComposerDraftKey, text: String): Unit = synchronized(lock) {
         val current = all[key]
-        if (key is ComposerDraftKey.NewThread && current != null) update(key, text, current.modelInstanceId, current.model, current.runtimeMode, current.effort)
+        if (key is ComposerDraftKey.NewThread && current != null) update(key, text, current.modelInstanceId, current.model, current.runtimeMode, current.effort, current.fastMode)
         else update(key, text)
     }
 
@@ -334,6 +335,8 @@ private data class StoredDraft(
     val kind: String, val environmentId: String, val threadId: String? = null, val projectId: String? = null,
     val text: String, val modelInstanceId: String? = null, val model: String? = null, val runtimeMode: String? = null,
     val effort: String? = null, val launch: StoredLaunch? = null, val updatedAtMillis: Long,
+    /** Added later: absent in older blobs and omitted when null (`explicitNulls = false`). */
+    val fastMode: Boolean? = null,
 )
 
 @Serializable
@@ -343,7 +346,7 @@ private fun ComposerDraft.toStored(): StoredDraft = when (val k = key) {
     is ComposerDraftKey.Reply -> StoredDraft(REPLY, k.environmentId, threadId = k.threadId, text = text, updatedAtMillis = updatedAtMillis)
     is ComposerDraftKey.NewThread -> StoredDraft(NEW_THREAD, k.environmentId, projectId = k.projectId, text = text,
         modelInstanceId = modelInstanceId, model = model, runtimeMode = runtimeMode, effort = effort,
-        launch = pendingLaunch?.let { StoredLaunch(it.threadId, it.commandId, it.text) }, updatedAtMillis = updatedAtMillis)
+        launch = pendingLaunch?.let { StoredLaunch(it.threadId, it.commandId, it.text) }, updatedAtMillis = updatedAtMillis, fastMode = fastMode)
 }
 
 private fun StoredDraft.toDraft(): ComposerDraft? {
@@ -354,7 +357,7 @@ private fun StoredDraft.toDraft(): ComposerDraft? {
     }
     val draft = if (key is ComposerDraftKey.Reply) ComposerDraft(key, text.take(ComposerDraftStore.MAX_TEXT), updatedAtMillis = updatedAtMillis)
     else ComposerDraft(key, text.take(ComposerDraftStore.MAX_TEXT), modelInstanceId, model, runtimeMode, effort,
-        launch?.let { PendingLaunch(it.threadId, it.commandId, it.text) }, updatedAtMillis)
+        launch?.let { PendingLaunch(it.threadId, it.commandId, it.text) }, updatedAtMillis, fastMode)
     return draft.takeIf { it.hasContent() || it.hasSettings() }
 }
 

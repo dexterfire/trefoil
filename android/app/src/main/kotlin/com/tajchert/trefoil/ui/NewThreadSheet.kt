@@ -65,7 +65,7 @@ internal fun resolveRuntimeMode(preferred: RuntimeMode?, allowed: List<RuntimeMo
 class ComposerDraftUi(
     val drafts: Map<ComposerDraftKey, ComposerDraft> = emptyMap(),
     val get: (ComposerDraftKey) -> ComposerDraft? = { drafts[it] },
-    val update: (key: ComposerDraftKey, text: String, modelInstanceId: String?, model: String?, runtimeMode: String?, effort: String?) -> Unit = { _, _, _, _, _, _ -> },
+    val update: (key: ComposerDraftKey, text: String, modelInstanceId: String?, model: String?, runtimeMode: String?, effort: String?, fastMode: Boolean?) -> Unit = { _, _, _, _, _, _, _ -> },
     val clear: (ComposerDraftKey) -> Unit = {},
     val discard: (ComposerDraftKey) -> ComposerDraftDiscard? = { null },
     val restore: (ComposerDraftDiscard) -> Unit = {},
@@ -168,14 +168,19 @@ internal fun NewThreadSheetContent(
     }
     fun collapsePicker() { pickerCollapsed = true; expanded = false; query = "" }
     var chosenEffort by rememberSaveable { mutableStateOf<String?>(null) }
+    var chosenFast by rememberSaveable { mutableStateOf<Boolean?>(null) }
     val defaults = state.newThreadSettings(projectId.ifEmpty { null })
     val model = state.models.getOrNull(modelIndex) ?: defaults.model
     val reasoning = model?.reasoning?.takeIf { it.selectableChoices.isNotEmpty() }
-    // The configured default's options (effort, Fast mode, ...) ride along while its model is used; an effort the user
-    // picked replaces the default's.
+    // The configured default's options (effort, Fast mode, ...) ride along while its model is used; an effort or Fast
+    // mode the user picked replaces the default's.
     val baseOptions = if (model != null && model.sameModelAs(defaults.model)) defaults.options else emptyMap()
-    val explicitOptions: ModelOptionValues = model?.validOptions(baseOptions + listOfNotNull(reasoning?.id?.let { id -> chosenEffort?.let { id to it } })).orEmpty()
+    val explicitOptions: ModelOptionValues = model?.validOptions(baseOptions + listOfNotNull(
+        reasoning?.id?.let { id -> chosenEffort?.let { id to it } },
+        chosenFast?.let { FAST_MODE_OPTION_ID to it },
+    )).orEmpty()
     LaunchedEffect(model, reasoning) { if (chosenEffort != null && (reasoning == null || model.validOptions(mapOf(reasoning.id to chosenEffort!!)).isEmpty())) chosenEffort = null }
+    LaunchedEffect(model) { if (chosenFast != null && (model == null || model.validOptions(mapOf(FAST_MODE_OPTION_ID to chosenFast!!)).isEmpty())) chosenFast = null }
     // Seed from the stored draft: it may arrive after the sheet opens (the store loads asynchronously) and is applied
     // only while the user has not touched anything.
     LaunchedEffect(composerDrafts.drafts, loaded, state.models, state.projects, environmentId) {
@@ -189,17 +194,18 @@ internal fun NewThreadSheetContent(
         state.models.indexOfFirst { it.instanceId == saved.modelInstanceId && it.model == saved.model }.takeIf { it >= 0 }?.let { modelIndex = it }
         saved.runtimeMode?.let { chosenMode = it }
         saved.effort?.let { chosenEffort = it }
+        saved.fastMode?.let { chosenFast = it }
     }
     val allowedModes = allowedRuntimeModes(model)
     val mode = resolveRuntimeMode(RuntimeMode.fromWire(chosenMode) ?: defaults.runtimeMode, allowedModes)
     // Write-through: every user change goes to the store (it debounces); initial composition never writes, so it cannot
     // overwrite a draft that has not loaded yet.
-    fun persist(text: String = prompt, index: Int = modelIndex, modeWire: String = chosenMode ?: mode.wire, effort: String? = chosenEffort, id: String = projectId) {
+    fun persist(text: String = prompt, index: Int = modelIndex, modeWire: String = chosenMode ?: mode.wire, effort: String? = chosenEffort, fast: Boolean? = chosenFast, id: String = projectId) {
         val env = environmentId ?: return
         if (id.isEmpty() || !loaded) return
         val chosen = state.models.getOrNull(index) ?: state.newThreadSettings(id).model
         if (composerDrafts.get(ComposerDraftKey.NewThread(env, id)) == null && id !in createdHere) createdHere = createdHere + id
-        composerDrafts.update(ComposerDraftKey.NewThread(env, id), text, chosen?.instanceId, chosen?.model, modeWire.takeIf { chosen != null }, effort.takeIf { chosen != null })
+        composerDrafts.update(ComposerDraftKey.NewThread(env, id), text, chosen?.instanceId, chosen?.model, modeWire.takeIf { chosen != null }, effort.takeIf { chosen != null }, fast.takeIf { chosen != null })
     }
     /**
      * Switching project keeps the typed prompt. A draft already stored for the target is never overwritten: one with
@@ -219,6 +225,7 @@ internal fun NewThreadSheetContent(
             state.models.indexOfFirst { it.instanceId == target.modelInstanceId && it.model == target.model }.takeIf { it >= 0 }?.let { modelIndex = it }
             target.runtimeMode?.let { chosenMode = it }
             chosenEffort = target.effort
+            chosenFast = target.fastMode
             if (!target.hasContent() && prompt.isNotBlank()) {
                 persist()
                 val source = composerDrafts.get(from)
@@ -310,16 +317,17 @@ internal fun NewThreadSheetContent(
             var effortMenu by remember { mutableStateOf(false) }
             var modeMenu by remember { mutableStateOf(false) }
             Box {
-                SheetPill(model?.label ?: "No models", TfIcons.Sparkle, "Model: ${model?.label ?: "not set"}", enabled = state.models.isNotEmpty()) { modelMenu = true }
-                // Fast mode has no new-thread state, so the picker offers reasoning only; an effort pick takes the chosenEffort path.
+                SheetPill(model?.let { modelPillLabel(it, explicitOptions) } ?: "No models", TfIcons.Sparkle, "Model: ${model?.let { modelPillLabel(it, explicitOptions) } ?: "not set"}", enabled = state.models.isNotEmpty()) { modelMenu = true }
+                // An effort pick takes the chosenEffort path, the Fast switch the chosenFast one; both persist with the draft.
                 if (modelMenu) ModelPickerSheet(
                     models = state.models, providers = state.providers, current = model, explicit = explicitOptions, enabled = loaded, dismiss = { modelMenu = false },
                     onSetModel = { option -> state.models.indexOfFirst { it.sameModelAs(option) }.takeIf { it >= 0 && loaded }?.let { index -> modelIndex = index; touched = true; persist(index = index) } },
                     onSetModelOption = { id, value ->
                         val effortId = model?.reasoning?.id
                         if (loaded && id == effortId && value is String) { chosenEffort = value; touched = true; persist(effort = value) }
+                        else if (loaded && id == FAST_MODE_OPTION_ID && value is Boolean && model?.fastMode != null) { chosenFast = value; touched = true; persist(fast = value) }
                     },
-                    preferences = state.modelPreferences, canWriteSettings = state.canWriteSettings, onToggleFavorite = onSetModelFavorite, showFast = false,
+                    preferences = state.modelPreferences, canWriteSettings = state.canWriteSettings, onToggleFavorite = onSetModelFavorite, showFast = true,
                 )
             }
             if (model != null && reasoning != null) {
