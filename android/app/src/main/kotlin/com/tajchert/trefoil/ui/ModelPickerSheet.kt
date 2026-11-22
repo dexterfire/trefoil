@@ -118,7 +118,7 @@ internal fun modelPickerLoading(models: List<ModelOption>, connection: Connectio
 // ---------- Sheet ----------
 
 /** Provider tab key of the favourites tab; instance ids key the others. */
-private const val FAVOURITES_TAB = "★favourites"
+internal const val FAVOURITES_TAB = "★favourites"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -132,6 +132,7 @@ internal fun ModelPickerSheet(
     ModalBottomSheet(
         onDismissRequest = dismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = c.sheet, contentColor = c.text, scrimColor = c.scrim, tonalElevation = 0.dp,
+        sheetMaxWidth = 680.dp,
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
         contentWindowInsets = { WindowInsets(0) },
         dragHandle = { Box(Modifier.padding(top = 12.dp, bottom = 8.dp).size(36.dp, 4.dp).background(c.s3, RoundedCornerShape(2.dp))) },
@@ -191,95 +192,62 @@ internal fun ModelPickerContent(
         onSetModel(option)
         if (!hasModelOptions(option, showFast)) closeSheet()
     }
+
+    val ui = PickerUi(
+        models, providers, preferences, catalog, results, query, { query = it }, activeTab, highlighted, applied, values, enabled, optionsEnabled, canStar, starsEnabled,
+        showFast, threadSelection, expandedFamilies, ::pick, onToggleFavorite, onSetModelOption,
+    )
+    // Two panes once the window is 600 dp wide (the sheet is at most 680 dp); the phone layout below that. Read from the configuration, like the
+    // height cap, rather than BoxWithConstraints: a subcompose layout would change how the phone body is measured.
+    if (LocalConfiguration.current.screenWidthDp >= TABLET_MIN_WIDTH.value) TabletPickerBody(ui, closeSheet, loading, modifier) { tab = it; query = "" }
+    else PhonePickerBody(ui, closeSheet, loading, modifier) { tab = it }
+}
+
+/** Width from which the picker lays out as rail + list + options panes. */
+internal val TABLET_MIN_WIDTH = 600.dp
+
+/** State resolved once by [ModelPickerContent] and shared by the phone and tablet bodies, so both apply the same pick, star, search and enablement rules. */
+internal class PickerUi(
+    val models: List<ModelOption>, val providers: List<ProviderInstance>, val preferences: ModelPreferences, val catalog: ModelCatalog, val results: List<ModelOption>,
+    val query: String, val setQuery: (String) -> Unit, val activeTab: String, val highlighted: ModelOption?, val applied: Boolean, val values: ModelOptionValues,
+    val enabled: Boolean, val optionsEnabled: Boolean, val canStar: Boolean, val starsEnabled: Boolean, val showFast: Boolean, val threadSelection: Boolean,
+    val expandedFamilies: MutableMap<String, Boolean>, val pick: (ModelOption) -> Unit, val onToggleFavorite: (ModelKey, Boolean) -> Unit,
+    val onSetModelOption: (String, Any) -> Unit,
+) {
+    val searching: Boolean get() = query.isNotBlank()
+    val multiProvider: Boolean get() = catalog.sections.size > 1
+    val singleSection: ProviderSection? get() = catalog.sections.firstOrNull()
+    val hasOptions: Boolean get() = highlighted != null && hasModelOptions(highlighted, showFast)
+
     fun favouriteRow(option: ModelOption, label: String = option.label): StarSpec {
         val starred = preferences.isFavorite(option)
         return StarSpec(starred, starsEnabled, label) { onToggleFavorite(ModelKey.of(option), !starred) }
     }
+}
 
+@Composable
+private fun PhonePickerBody(ui: PickerUi, closeSheet: () -> Unit, loading: Boolean, modifier: Modifier, onTab: (String) -> Unit) {
     val maxHeight = (LocalConfiguration.current.screenHeightDp * 0.88f).dp
     Column(modifier.fillMaxWidth().heightIn(max = maxHeight)) {
-        Row(Modifier.padding(start = 20.dp, end = 8.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Model", Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall, color = c.text)
-            IconButton(onClick = closeSheet, Modifier.size(48.dp)) { Icon(TfIcons.Close, "Close", tint = c.text) }
-        }
-        Crossfade(loading && models.isEmpty(), label = "modelPickerBody") { skeleton ->
+        PickerTitleRow(closeSheet)
+        Crossfade(loading && ui.models.isEmpty(), label = "modelPickerBody") { skeleton ->
             if (skeleton) {
                 ModelPickerSkeleton()
                 return@Crossfade
             }
             Column(Modifier.fillMaxWidth()) {
-                if (models.isEmpty()) {
+                if (ui.models.isEmpty()) {
                     EmptyState(TfIcons.Sparkle, "No models available", "Reconnect to refresh configuration.", Modifier.padding(bottom = 24.dp))
                     Spacer(Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
                     return@Column
                 }
-                if (models.size >= 5 || query.isNotEmpty()) {
-                    val focus = LocalFocusManager.current
-                    OutlinedTextField(
-                        query, { query = it }, singleLine = true, placeholder = { Text("Search models…") }, shape = TfFieldShape, colors = tfFieldColors(),
-                        leadingIcon = { Icon(TfIcons.Search, null, Modifier.size(18.dp), tint = c.muted) },
-                        trailingIcon = { if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(TfIcons.Close, "Clear search", Modifier.size(18.dp), tint = c.muted) } },
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { focus.clearFocus() }),
-                        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp).semantics { contentDescription = "Search models" },
-                    )
-                }
-                if (multiProvider && !searching) ProviderTabs(catalog, activeTab) { tab = it }
-                val singleSection = catalog.sections.firstOrNull()
-                if (!multiProvider && !searching && singleSection != null) {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ProviderMark(singleSection.driver, null, Modifier.size(16.dp))
-                        Text(singleSection.title, style = TrefoilType.meta.copy(fontWeight = FontWeight.SemiBold), color = c.text)
-                        if (threadSelection) Text("· Locked to this thread", style = TrefoilType.meta, color = c.muted)
-                    }
-                    HorizontalDivider(color = c.line)
-                }
-
-                Box(Modifier.weight(1f, fill = false)) {
-                    // No top content padding: sticky headers pin at the padding edge, so the 6 dp gap above the first row is a leading item instead.
-                        LazyColumn(contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            item(key = "top-gap") { Spacer(Modifier.height(4.dp)) }
-                        when {
-                            searching -> {
-                                if (results.isEmpty()) item {
-                                    Column(Modifier.fillMaxWidth().padding(vertical = 32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Text("No models match \"${query.trim()}\"", style = MaterialTheme.typography.bodyLarge, color = c.muted, textAlign = TextAlign.Center)
-                                        TextButton(onClick = { query = "" }) { Text("Clear search", color = c.accent) }
-                                    }
-                                }
-                                itemsIndexed(results, key = { _, m -> "s:${m.instanceId}:${m.model}" }) { _, option ->
-                                    val driver = providerDriver(option.instanceId, providers)
-                                    ModelRow(option.label, instanceHeader(option.instanceId, providers).takeIf { multiProvider }, driver, option.badge, option.sameModelAs(highlighted), enabled,
-                                        "Model ${option.label}", null, favouriteRow(option), onClick = { pick(option) })
-                                }
-                            }
-                            !multiProvider -> {
-                                val section = singleSection
-                                if (catalog.favorites.isNotEmpty()) {
-                                    stickyHeader(key = "h:favourites") { PickerHeader("Favourites", top = 8.dp) }
-                                    itemsIndexed(catalog.favorites, key = { _, m -> "f:${m.instanceId}:${m.model}" }) { _, option ->
-                                        ModelRow(option.label, null, null, option.badge, option.sameModelAs(highlighted), enabled, "Model ${option.label}", null, favouriteRow(option), onClick = { pick(option) })
-                                    }
-                                    stickyHeader(key = "h:all") { PickerHeader("All models", top = 12.dp) }
-                                }
-                                if (section != null) familyItems(section, highlighted, enabled, expandedFamilies, ::pick, ::favouriteRow)
-                            }
-                            activeTab == FAVOURITES_TAB -> {
-                                if (catalog.favorites.isEmpty()) item {
-                                    EmptyState(TfIcons.Star, "No favourites yet",
-                                        if (canStar) "Star models in any provider tab to pin them here and sync with desktop." else "Connect with settings write access to edit favourites.",
-                                        Modifier.padding(bottom = 16.dp))
-                                }
-                                itemsIndexed(catalog.favorites, key = { _, m -> "f:${m.instanceId}:${m.model}" }) { _, option ->
-                                    ModelRow(option.label, instanceHeader(option.instanceId, providers), providerDriver(option.instanceId, providers), option.badge, option.sameModelAs(highlighted),
-                                        enabled, "Model ${option.label}", null, favouriteRow(option), onClick = { pick(option) })
-                                }
-                            }
-                            else -> catalog.sections.firstOrNull { it.instanceId == activeTab }?.let { familyItems(it, highlighted, enabled, expandedFamilies, ::pick, ::favouriteRow) }
-                        }
-                    }
-                }
-                if (highlighted != null && hasModelOptions(highlighted, showFast)) {
-                    ControlsDock(highlighted, providerDriver(highlighted.instanceId, providers), values, applied, optionsEnabled, threadSelection, showFast, onSetModelOption)
+                PickerSearchField(ui)
+                if (ui.multiProvider && !ui.searching) ProviderTabs(ui.catalog, ui.activeTab, onTab)
+                ui.singleSection?.takeIf { !ui.multiProvider && !ui.searching }?.let { SingleProviderBanner(it, ui.threadSelection) }
+                Box(Modifier.weight(1f, fill = false)) { PickerLazyList(ui) }
+                val highlighted = ui.highlighted
+                if (highlighted != null && ui.hasOptions) {
+                    ControlsDock(highlighted, providerDriver(highlighted.instanceId, ui.providers), ui.values, ui.applied, ui.optionsEnabled, ui.threadSelection, ui.showFast, ui.onSetModelOption)
                 } else {
                     Spacer(Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
                 }
@@ -288,8 +256,94 @@ internal fun ModelPickerContent(
     }
 }
 
+@Composable
+internal fun PickerTitleRow(closeSheet: () -> Unit) {
+    val c = Tf.colors
+    Row(Modifier.padding(start = 20.dp, end = 8.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("Model", Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall, color = c.text)
+        IconButton(onClick = closeSheet, Modifier.size(48.dp)) { Icon(TfIcons.Close, "Close", tint = c.text) }
+    }
+}
+
+/** The search field, shown once the catalog is big enough (or a query is active). */
+@Composable
+internal fun PickerSearchField(ui: PickerUi) {
+    if (!(ui.models.size >= 5 || ui.query.isNotEmpty())) return
+    val c = Tf.colors
+    val focus = LocalFocusManager.current
+    OutlinedTextField(
+        ui.query, ui.setQuery, singleLine = true, placeholder = { Text("Search models…") }, shape = TfFieldShape, colors = tfFieldColors(),
+        leadingIcon = { Icon(TfIcons.Search, null, Modifier.size(18.dp), tint = c.muted) },
+        trailingIcon = { if (ui.query.isNotEmpty()) IconButton(onClick = { ui.setQuery("") }) { Icon(TfIcons.Close, "Clear search", Modifier.size(18.dp), tint = c.muted) } },
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { focus.clearFocus() }),
+        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp).semantics { contentDescription = "Search models" },
+    )
+}
+
+/** Provider banner above the list when only one provider is offered (e.g. a thread locked to it). */
+@Composable
+internal fun SingleProviderBanner(section: ProviderSection, threadSelection: Boolean) {
+    val c = Tf.colors
+    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        ProviderMark(section.driver, null, Modifier.size(16.dp))
+        Text(section.title, style = TrefoilType.meta.copy(fontWeight = FontWeight.SemiBold), color = c.text)
+        if (threadSelection) Text("· Locked to this thread", style = TrefoilType.meta, color = c.muted)
+    }
+    HorizontalDivider(color = c.line)
+}
+
+/** The scrolling list: search results, the favourites tab, or one provider's families, per [PickerUi.activeTab]. */
+@Composable
+internal fun PickerLazyList(ui: PickerUi) {
+    val pick = ui.pick
+    val highlighted = ui.highlighted
+    val enabled = ui.enabled
+    // No top content padding: sticky headers pin at the padding edge, so the 6 dp gap above the first row is a leading item instead.
+    LazyColumn(contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        item(key = "top-gap") { Spacer(Modifier.height(4.dp)) }
+        when {
+            ui.searching -> {
+                if (ui.results.isEmpty()) item {
+                    Column(Modifier.fillMaxWidth().padding(vertical = 32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("No models match \"${ui.query.trim()}\"", style = MaterialTheme.typography.bodyLarge, color = Tf.colors.muted, textAlign = TextAlign.Center)
+                        TextButton(onClick = { ui.setQuery("") }) { Text("Clear search", color = Tf.colors.accent) }
+                    }
+                }
+                itemsIndexed(ui.results, key = { _, m -> "s:${m.instanceId}:${m.model}" }) { _, option ->
+                    val driver = providerDriver(option.instanceId, ui.providers)
+                    ModelRow(option.label, instanceHeader(option.instanceId, ui.providers).takeIf { ui.multiProvider }, driver, option.badge, option.sameModelAs(highlighted), enabled,
+                        "Model ${option.label}", null, ui.favouriteRow(option), onClick = { pick(option) })
+                }
+            }
+            !ui.multiProvider -> {
+                val section = ui.singleSection
+                if (ui.catalog.favorites.isNotEmpty()) {
+                    stickyHeader(key = "h:favourites") { PickerHeader("Favourites", top = 8.dp) }
+                    itemsIndexed(ui.catalog.favorites, key = { _, m -> "f:${m.instanceId}:${m.model}" }) { _, option ->
+                        ModelRow(option.label, null, null, option.badge, option.sameModelAs(highlighted), enabled, "Model ${option.label}", null, ui.favouriteRow(option), onClick = { pick(option) })
+                    }
+                    stickyHeader(key = "h:all") { PickerHeader("All models", top = 12.dp) }
+                }
+                if (section != null) familyItems(section, highlighted, enabled, ui.expandedFamilies, pick, ui::favouriteRow)
+            }
+            ui.activeTab == FAVOURITES_TAB -> {
+                if (ui.catalog.favorites.isEmpty()) item {
+                    EmptyState(TfIcons.Star, "No favourites yet",
+                        if (ui.canStar) "Star models in any provider tab to pin them here and sync with desktop." else "Connect with settings write access to edit favourites.",
+                        Modifier.padding(bottom = 16.dp))
+                }
+                itemsIndexed(ui.catalog.favorites, key = { _, m -> "f:${m.instanceId}:${m.model}" }) { _, option ->
+                    ModelRow(option.label, instanceHeader(option.instanceId, ui.providers), providerDriver(option.instanceId, ui.providers), option.badge, option.sameModelAs(highlighted),
+                        enabled, "Model ${option.label}", null, ui.favouriteRow(option), onClick = { pick(option) })
+                }
+            }
+            else -> ui.catalog.sections.firstOrNull { it.instanceId == ui.activeTab }?.let { familyItems(it, highlighted, enabled, ui.expandedFamilies, pick, ui::favouriteRow) }
+        }
+    }
+}
+
 /** The driver of [instanceId], or the id itself when the instance is not listed (as [buildModelCatalog] does). */
-private fun providerDriver(instanceId: String, providers: List<ProviderInstance>): String = providers.firstOrNull { it.instanceId == instanceId }?.driver ?: instanceId
+internal fun providerDriver(instanceId: String, providers: List<ProviderInstance>): String = providers.firstOrNull { it.instanceId == instanceId }?.driver ?: instanceId
 
 /** In-list section label; opaque so rows scrolling underneath a pinned header don't show through. */
 @Composable
@@ -299,20 +353,26 @@ private fun PickerHeader(text: String, top: Dp) {
 
 /** True when the system animator duration scale is 0 (animations off). */
 @Composable
-private fun rememberAnimationsOff(): Boolean {
+internal fun rememberAnimationsOff(): Boolean {
     val context = LocalContext.current
     return remember(context) {
         runCatching { Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }.getOrDefault(false)
     }
 }
 
+/** Pulsing alpha for placeholder bars (0.4..0.75), read lazily from a graphics layer; static when animations are off. */
+@Composable
+internal fun rememberSkeletonAlpha(): () -> Float {
+    val pulse = if (rememberAnimationsOff()) null else rememberInfiniteTransition(label = "modelSkeleton")
+        .animateFloat(.4f, .75f, infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "modelSkeletonAlpha")
+    return { pulse?.value ?: .55f }
+}
+
 /** Loading state: disabled search and tabs plus four pulsing placeholder rows (static when animations are off). */
 @Composable
 private fun ModelPickerSkeleton() {
     val c = Tf.colors
-    val pulse = if (rememberAnimationsOff()) null else rememberInfiniteTransition(label = "modelSkeleton")
-        .animateFloat(.4f, .75f, infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "modelSkeletonAlpha")
-    val alpha = { pulse?.value ?: .55f }
+    val alpha = rememberSkeletonAlpha()
     val barShape = RoundedCornerShape(12.dp)
     Column(Modifier.fillMaxWidth().testTag("model-picker-loading").semantics(mergeDescendants = true) { contentDescription = "Loading models" }) {
         OutlinedTextField(
@@ -331,7 +391,7 @@ private fun ModelPickerSkeleton() {
     }
 }
 
-private class StarSpec(val starred: Boolean, val enabled: Boolean, val label: String, val toggle: () -> Unit)
+internal class StarSpec(val starred: Boolean, val enabled: Boolean, val label: String, val toggle: () -> Unit)
 
 private class VersionPillSpec(val label: String, val expanded: Boolean, val description: String, val toggle: () -> Unit)
 
@@ -526,7 +586,7 @@ private fun StarButton(star: StarSpec) {
 }
 
 @Composable
-private fun EmptyState(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, detail: String, modifier: Modifier = Modifier) {
+internal fun EmptyState(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, detail: String, modifier: Modifier = Modifier) {
     val c = Tf.colors
     Column(modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Icon(icon, null, Modifier.size(28.dp), tint = c.muted)

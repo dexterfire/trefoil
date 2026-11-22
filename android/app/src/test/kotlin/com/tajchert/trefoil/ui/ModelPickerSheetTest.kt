@@ -9,6 +9,12 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.hasContentDescription
 import com.tajchert.trefoil.core.model.ConnectionStatus
 import com.tajchert.trefoil.core.model.ModelOption
 import com.tajchert.trefoil.core.model.ModelOptionChoice
@@ -115,5 +121,68 @@ class ModelPickerLoadingTest {
         compose.setContent { TrefoilTheme { ModelPickerContent(emptyList(), providers, null, emptyMap(), true, {}, {}, { _, _ -> }) } }
         compose.onAllNodesWithTag("model-picker-loading").assertCountEquals(0)
         compose.onNodeWithText("No models available").assertIsDisplayed()
+    }
+}
+
+/** Wide window (>= 600 dp): provider rail, list and the options pane. */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35], qualifiers = "w800dp-h900dp")
+class ModelPickerTabletTest {
+    @get:Rule val compose = createComposeRule()
+    private val effort = ModelOptionDescriptor.Select(
+        "effort", "Reasoning", choices = listOf(ModelOptionChoice("low", "Low"), ModelOptionChoice("high", "High", isDefault = true)), isReasoning = true,
+    )
+    private val fast = ModelOptionDescriptor.Toggle("fastMode", "Fast mode")
+    private val opus = ModelOption("claude", "opus", "Opus", descriptors = listOf(effort, fast))
+    private val sonnet = ModelOption("claude", "sonnet", "Sonnet", descriptors = listOf(effort))
+    private val gpt = ModelOption("codex", "gpt-5", "GPT-5")
+    private val providers = listOf(ProviderInstance("claude", "claudeAgent", displayName = "Claude"), ProviderInstance("codex", "codex", displayName = "Codex"))
+    private val isTab = SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Tab)
+
+    private fun show(models: List<ModelOption>, current: ModelOption?, onOption: (String, Any) -> Unit = { _, _ -> }) = compose.setContent {
+        TrefoilTheme { ModelPickerContent(models, providers, current, emptyMap(), true, {}, {}, onOption) }
+    }
+
+    @Test fun wideLayoutShowsRailAndOptionsPane() {
+        show(listOf(opus, sonnet, gpt), opus)
+        compose.onNode(hasContentDescription("Favourites") and isTab).assertIsDisplayed()
+        compose.onNode(hasContentDescription("Claude") and isTab).assertIsSelected()
+        compose.onNode(hasContentDescription("Codex") and isTab).assertIsDisplayed()
+        compose.onNodeWithContentDescription("Reasoning High").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Fast mode").assertIsDisplayed()
+    }
+
+    @Test fun optionsPaneIsHiddenForModelsWithoutOptions() {
+        show(listOf(opus, gpt), gpt)
+        compose.onNode(hasContentDescription("Codex") and isTab).assertIsSelected()
+        compose.onAllNodesWithContentDescription("Reasoning ", substring = true).assertCountEquals(0)
+        compose.onAllNodesWithContentDescription("Fast mode").assertCountEquals(0)
+    }
+
+    @Test fun railProviderShowsThatProvidersFamilies() {
+        show(listOf(opus, sonnet, gpt), opus)
+        compose.onNodeWithContentDescription("Model GPT-5").assertDoesNotExist()
+        compose.onNode(hasContentDescription("Codex") and isTab).performClick()
+        compose.onNode(hasContentDescription("Codex") and isTab).assertIsSelected()
+        compose.onNodeWithContentDescription("Model GPT-5").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Model Opus").assertDoesNotExist()
+    }
+
+    @Test fun fastSegmentedControlSetsFastMode() {
+        val calls = mutableListOf<Pair<String, Any>>()
+        show(listOf(opus, sonnet), opus) { id, value -> calls += id to value }
+        compose.onNodeWithText("Fast").performClick()
+        assertEquals(listOf<Pair<String, Any>>("fastMode" to true), calls)
+    }
+
+    @Test fun singleProviderOmitsRail() {
+        show(listOf(opus, sonnet), opus)
+        compose.onAllNodes(isTab).assertCountEquals(0)
+        compose.onNodeWithContentDescription("Model Opus").assertIsDisplayed()
+    }
+
+    @Test fun loadingShowsTabletSkeleton() {
+        compose.setContent { TrefoilTheme { ModelPickerContent(emptyList(), providers, null, emptyMap(), true, {}, {}, { _, _ -> }, loading = true) } }
+        compose.onNodeWithTag("model-picker-loading").assertIsDisplayed()
     }
 }

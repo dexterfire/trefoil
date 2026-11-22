@@ -136,3 +136,20 @@ fun ModelPicker_Loading_Light() = Picker(ModelPickerFixtures.luna, models = empt
 @Preview(showBackground = true, widthDp = 400, heightDp = 480, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun ModelPicker_Loading_Dark() = Picker(ModelPickerFixtures.luna, models = emptyList(), dark = true, loading = true)
+
+/** Two-pane tablet layout (>= 600 dp): provider rail, list and the Reasoning + Standard/Fast pane. */
+@PreviewTest
+@Preview(showBackground = true, widthDp = 700, heightDp = 640, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun ModelPicker_Tablet_Dark() = Picker(ModelPickerFixtures.opus, mapOf("effort" to "high"), dark = true, prefs = ModelPickerFixtures.favourites)
+
+/** Tablet, Codex rail item with GPT Sol expanded on 6.1 and Fast on. */
+@PreviewTest
+@Preview(showBackground = true, widthDp = 700, heightDp = 640)
+@Composable
+fun ModelPicker_Tablet_Light() = Picker(ModelPickerFixtures.solOld, mapOf("effort" to "medium", "fastMode" to true))
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 700, heightDp = 640)
+@Composable
+fun ModelPicker_Tablet_Loading_Light() = Picker(ModelPickerFixtures.luna, models = emptyList(), loading = true)
