@@ -32,14 +32,16 @@ private fun fingerprint(key: PublicKey) = "SHA256:" + Base64.getEncoder().withou
 
 /**
  * Script for one exec: print ONE snapshot of the runtime file, then (only when exactly one `"pid": <digits>` is found in
- * that snapshot, newlines folded) run `kill -0` on it and append a trailer naming the pid it checked. The client parses the
- * snapshot's top-level pid itself and accepts the verdict only when both agree; otherwise it runs its own `kill -0`.
+ * that snapshot, newlines folded) run `kill -0` on it and, only when that probe succeeds, append a trailer naming the pid it
+ * checked. The pattern is a guess (an escaped key such as `"\u0070id"` is missed), so a failed probe never fails the exec:
+ * the snapshot is still returned. The client parses the snapshot's top-level pid itself and accepts the verdict only when
+ * both agree; otherwise it runs its own `kill -0`.
  */
 internal fun runtimeReadScript(quotedFile: String, nonce: String): String =
     "s=\$(cat -- $quotedFile) || exit 1; printf '%s\\n' \"\$s\"; " +
     "m=\$(printf '%s' \"\$s\" | tr -d '\\r\\n' | grep -o '\"pid\"[[:space:]]*:[[:space:]]*[0-9][0-9]*'); " +
     "if [ -n \"\$m\" ] && [ \"\$(printf '%s\\n' \"\$m\" | wc -l | tr -d ' ')\" = 1 ]; then " +
-    "p=\$(printf '%s' \"\$m\" | tr -dc '0-9'); kill -0 \"\$p\" || exit 1; printf 'trefoil-live-$nonce:%s\\n' \"\$p\"; fi"
+    "p=\$(printf '%s' \"\$m\" | tr -dc '0-9'); if kill -0 \"\$p\" 2>/dev/null; then printf 'trefoil-live-$nonce:%s\\n' \"\$p\"; fi; fi; exit 0"
 
 internal class RuntimeRead(val runtime: JsonObject, val checkedPid: Long?)
 internal fun parseRuntimeRead(output: String, nonce: String): RuntimeRead {

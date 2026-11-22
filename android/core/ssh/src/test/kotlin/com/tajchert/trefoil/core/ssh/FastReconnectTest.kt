@@ -152,7 +152,7 @@ class FastReconnectTest {
         }
     }
 
-    @Test fun runtimeReadScriptVerifiesTheSnapshotPidInRealShell() {
+    @Test(timeout = 30_000) fun runtimeReadScriptVerifiesTheSnapshotPidInRealShell() {
         val live = ProcessHandle.current().pid()
         val dir = kotlin.io.path.createTempDirectory("runtime-read").toFile()
         try {
@@ -176,7 +176,15 @@ class FastReconnectTest {
             assertEquals(live, checked(nestedOnly.second)) // client then sees no top-level pid and rejects the metadata
             assertNull(parseRuntimeRead(nestedOnly.second, "n0nce").runtime["pid"])
             val dead = ProcessBuilder("true").start().also { it.waitFor() }.pid()
-            assertEquals(1, run("""{"version":1,"pid":$dead,"port":1}""").first)
+            // A failed probe is no verdict: the snapshot still comes back and the client runs its own kill -0.
+            val deadOnly = run("""{"version":1,"pid":$dead,"port":1}""")
+            assertEquals(0, deadOnly.first); assertNull(checked(deadOnly.second))
+            assertEquals(dead, parseRuntimeRead(deadOnly.second, "n0nce").runtime["pid"]!!.toString().toLong())
+            // The top-level key is escaped, so the shell pattern only sees the dead nested pid. The exec must still return
+            // the snapshot so the client can verify the live top-level pid itself.
+            val escaped = run("""{"meta":{"pid":$dead},"version":1,"\u0070id":$live,"port":1}""")
+            assertEquals(0, escaped.first); assertNull(checked(escaped.second))
+            assertEquals(live, parseRuntimeRead(escaped.second, "n0nce").runtime["pid"]!!.toString().toLong())
             File(dir, "server-runtime.json").delete()
             val missing = ProcessBuilder("sh", "-c", runtimeReadScript(remoteQuote(File(dir, "server-runtime.json").path), "n0nce")).start()
             missing.inputStream.readBytes(); assertEquals(1, missing.waitFor())
