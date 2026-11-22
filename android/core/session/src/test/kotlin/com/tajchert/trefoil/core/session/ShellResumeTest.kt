@@ -269,6 +269,62 @@ class ShellResumeTest {
         }
     }
 
+    @Test fun streamFailureWhileTheConfigIsAppliedNeverLeavesAFalseConnected() = runBlocking {
+        Fixture().use { f ->
+            f.answerConfigs = false
+            val connecting = async { runCatching { f.client.connect(f.environment()) } }
+            val shell = f.nextShell()
+            val config = withTimeout(5000) { f.heldConfigs.receive() }
+            // The early shell stream ends after the config answered, before the connection is published.
+            f.client.beforeConnectPublished = {
+                shell.first.send("""{"_tag":"Exit","requestId":"${shell.second}","exit":{"_tag":"Success","value":null}}""")
+                val until = System.currentTimeMillis() + 5_000
+                while (f.client.state.value.connection != ConnectionStatus.Error && System.currentTimeMillis() < until) Thread.sleep(5)
+            }
+            f.answerConfig(config)
+            assertTrue("The connect reports the failure", withTimeout(5000) { connecting.await() }.isFailure)
+            val state = f.client.state.value
+            assertEquals(ConnectionStatus.Error, state.connection)
+            assertFalse(state.canWrite || state.canWriteThreads || state.threadActionsConfigured)
+        }
+    }
+
+    @Test fun pullDuringTheReconnectReplayUpgradesItToAFullSnapshot() = runBlocking {
+        Fixture().use { f ->
+            val first = f.connect()
+            f.chunk(first, """${Fixture.shell(10, Fixture.project, Fixture.thread("a"))}, {"kind":"synchronized"}""")
+            f.client.disconnect()
+            val replay = f.connect()
+            assertEquals(10L, replay.afterSequence)
+            val pull = async { f.client.refreshThreads() }
+            assertEquals("The replay is interrupted", replay.second, withTimeout(5000) { f.interrupts.receive() })
+            val full = f.nextShell()
+            assertNull("A pull corrects the rows: full snapshot", full.afterSequence)
+            f.chunk(full, """${Fixture.shell(20, Fixture.project, Fixture.thread("b"))}, {"kind":"synchronized"}""")
+            withTimeout(5000) { pull.await() }
+            assertEquals(listOf("b"), f.client.state.value.threads.map { it.id })
+            assertTrue(f.client.state.value.canWriteThreads)
+        }
+    }
+
+    @Test fun pullJoinsAResyncThatHadNoCursorToResumeFrom() = runBlocking {
+        Fixture().use { f ->
+            val first = f.connect()
+            // No snapshot sequence: no cursor, so the resync below is a full snapshot already.
+            f.chunk(first, """{"kind":"snapshot","snapshot":{"projects":[${Fixture.project}],"threads":[${Fixture.thread("a")}],"archivedThreads":[]}}, {"kind":"synchronized"}""")
+            val resync = async { f.client.resyncThreads() }
+            val full = f.nextShell()
+            assertNull(full.afterSequence)
+            val pull = async { f.client.refreshThreads() }
+            delay(300)
+            assertTrue("The pull joins it instead of restarting it", f.shells.tryReceive().isFailure)
+            assertEquals(listOf(first.second), generateSequence { f.interrupts.tryReceive().getOrNull() }.toList())
+            f.chunk(full, """${Fixture.shell(20, Fixture.project, Fixture.thread("b"))}, {"kind":"synchronized"}""")
+            withTimeout(5000) { resync.await(); pull.await() }
+            assertEquals(listOf("b"), f.client.state.value.threads.map { it.id })
+        }
+    }
+
     @Test fun coldConnectAsksForTheShellWithoutWaitingForTheConfig() = runBlocking {
         Fixture().use { f ->
             f.answerConfigs = false

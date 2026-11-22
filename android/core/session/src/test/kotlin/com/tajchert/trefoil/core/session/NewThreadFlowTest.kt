@@ -26,7 +26,7 @@ class NewThreadFlowTest {
     """{"_tag":"Exit","requestId":"$id","exit":{"_tag":"Failure","cause":[{"_tag":"Fail","error":{"_tag":"OrchestrationDispatchCommandError","message":"Command rejected"}}]}}"""
   private fun success(id: String, value: String) = """{"_tag":"Exit","requestId":"$id","exit":{"_tag":"Success","value":$value}}"""
 
-  private class Fixture(val client: T3Client, val requests: MutableList<JsonObject>, private val enqueueConnect: () -> Unit) {
+  private class Fixture(val client: T3Client, val requests: MutableList<JsonObject>, val enqueueConnect: () -> Unit) {
     fun payloads(tag: String) = synchronized(requests) { requests.filter { it.string("tag") == tag }.map { it.obj("payload") } }
     suspend fun reconnect() { enqueueConnect(); client.reconnect(); withTimeout(5_000) { client.state.first { it.canWrite } } }
   }
@@ -219,6 +219,26 @@ class NewThreadFlowTest {
     try { f.client.launchThread(ThreadDraft("p", ModelOption("codex", "gpt-5"), threadId = "mine"), "hello"); fail("A result for another thread must fail") }
     catch (_: UncertainOutcomeException) { }
     assertFalse(f.client.state.value.canWrite)
+  }
+
+  @Test fun launchWaitsForTheReconnectedShellToSynchronize() {
+    val held = kotlinx.coroutines.channels.Channel<Pair<WebSocket, String>>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+    val shells = java.util.concurrent.atomic.AtomicInteger()
+    withServer(custom = { ws, id, tag, _ -> tag == "orchestration.subscribeShell" && shells.getAndIncrement() > 0 && held.trySend(ws to id).isSuccess }) { f ->
+      assertTrue(f.client.state.value.canWriteThreads)
+      f.client.disconnect()
+      assertFalse("Disconnected: no thread writes", f.client.state.value.canWriteThreads)
+      f.enqueueConnect(); f.client.reconnect()
+      val (ws, id) = withTimeout(5_000) { held.receive() }
+      val replaying = withTimeout(5_000) { f.client.state.first { it.connection == ConnectionStatus.Connected } }
+      assertFalse("Retained rows never carry the old connection's write gate", replaying.canWriteThreads)
+      val draft = ThreadDraft("p", ModelOption("codex", "gpt-5"))
+      try { f.client.launchThread(draft, "hello"); fail("The shell is still replaying") } catch (_: IllegalStateException) { }
+      assertTrue(f.payloads("orchestration.launchThread").isEmpty())
+      ws.send("""{"_tag":"Chunk","requestId":"$id","values":[{"kind":"snapshot","snapshot":{"projects":[{"id":"p","title":"Project","workspaceRoot":"/fixture/p"}],"threads":[],"archivedThreads":[]}},{"kind":"synchronized"}]}""")
+      withTimeout(5_000) { f.client.state.first { it.canWriteThreads } }
+      assertEquals(draft.threadId, f.client.launchThread(draft, "hello"))
+    }
   }
 
   /** After an uncertain launch, an explicit resend of the same draft is deduplicated by the server. */

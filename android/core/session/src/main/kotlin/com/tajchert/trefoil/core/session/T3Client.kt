@@ -16,6 +16,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 private const val FRESH_THREAD_WAIT_MS = 3_000L
 /** After a route verifies, how long better-ranked routes still in flight may take to answer before it is chosen. */
@@ -87,8 +89,12 @@ class T3Client(
     private var shellSubscription: String? = null
     /** Completes when the current shell stream's snapshot is synchronized; shared by concurrent [refreshThreads] calls. */
     private var shellRefresh: CompletableDeferred<Unit>? = null
-    /** The pending [shellRefresh] resubscribed from the cursor ([resyncThreads]); a full refresh then upgrades it. */
-    private var shellRefreshResumed = false
+    /** The live shell subscription sent `afterSequence` and is still replaying deltas; a full refresh upgrades it. */
+    private var shellReplaying = false
+    /** A full refresh asked for before the connect subscribed the shell: that subscription is then a full snapshot. */
+    private var shellFullWanted = false
+    /** Test seam: runs once the config is parsed, just before the connection is published. */
+    @Volatile internal var beforeConnectPublished: (() -> Unit)? = null
     /** Shell origin of the live connection from its `server.getConfig`; what [resyncThreads] resumes against. */
     private var liveShellOrigin: ShellOrigin? = null
     private var threadReady = false
@@ -163,7 +169,7 @@ class T3Client(
         val current = state.value
         current.environment?.id?.let { id ->
             environmentStates.remove(id)
-            environmentStates[id] = current.copy(canWrite = false, canRead = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = null, screens = ScreenCatalog(), localServers = LocalServerCatalog(), portForwards = emptyList())
+            environmentStates[id] = current.copy(canWrite = false, canWriteThreads = false, canRead = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = null, screens = ScreenCatalog(), localServers = LocalServerCatalog(), portForwards = emptyList())
             while (environmentStates.size > 4) {
                 val evicted = environmentStates.keys.first()
                 environmentStates.remove(evicted)
@@ -174,16 +180,33 @@ class T3Client(
     }
     private fun update(block: (ClientState) -> ClientState) = mutable.update(block)
     private fun url(value: String, allowInsecureHttp: Boolean = false): HttpUrl = validatedEnvironmentUrl(value, allowInsecureHttp)
-    private suspend fun fetch(request: Request, timeoutMillis: Long? = null): JsonObject = withContext(Dispatchers.IO) {
+    /**
+     * [enqueued] runs the call on OkHttp's dispatcher and only suspends for it, so a cancelled caller returns at once
+     * even while the call is stuck where cancelling it does not reach (a DNS lookup); route preflights use it so a
+     * losing route never holds up the winner.
+     */
+    private suspend fun fetch(request: Request, timeoutMillis: Long? = null, enqueued: Boolean = false): JsonObject {
         val call = http.newCall(request)
         timeoutMillis?.let { call.timeout().timeout(it, java.util.concurrent.TimeUnit.MILLISECONDS) }
+        if (!enqueued) return execute(call)
+        val response = suspendCancellableCoroutine { continuation ->
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onResponse(call: Call, response: Response) { if (continuation.isActive) continuation.resume(response) else response.close() }
+                override fun onFailure(call: Call, e: java.io.IOException) { if (continuation.isActive) continuation.resumeWithException(e) }
+            })
+        }
+        return withContext(Dispatchers.IO) { response.use(::parseFetched) }
+    }
+    private fun parseFetched(response: Response): JsonObject {
+        if (!response.isSuccessful) throw HttpFailure(response.code, authorizer.shouldRetry(response))
+        return EffectRpc.json.parseToJsonElement(response.body?.string() ?: error("Empty server response")).jsonObject
+    }
+    private suspend fun execute(call: Call): JsonObject = withContext(Dispatchers.IO) {
         // A cancelled caller (superseded connect, abandoned preflight) cancels the blocking call instead of waiting it out.
         val cancellation = launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) { try { awaitCancellation() } finally { call.cancel() } }
         try {
-            call.execute().use { response ->
-                if (!response.isSuccessful) throw HttpFailure(response.code, authorizer.shouldRetry(response))
-                EffectRpc.json.parseToJsonElement(response.body?.string() ?: error("Empty server response")).jsonObject
-            }
+            call.execute().use(::parseFetched)
         } finally { cancellation.cancel() }
     }
     /**
@@ -266,7 +289,7 @@ class T3Client(
     /** No reply in time. Deliberately not a CancellationException, so callers cannot swallow it as cancellation. */
     internal class RequestTimedOut : IllegalStateException("Server did not answer in time; the outcome is uncertain")
     /** Credential-free: the public descriptor never receives a token. */
-    private suspend fun descriptor(base: HttpUrl, timeoutMillis: Long? = null): JsonObject = fetch(Request.Builder().url(base.resolve("/.well-known/t3/environment")!!).build(), timeoutMillis).also {
+    private suspend fun descriptor(base: HttpUrl, timeoutMillis: Long? = null, enqueued: Boolean = false): JsonObject = fetch(Request.Builder().url(base.resolve("/.well-known/t3/environment")!!).build(), timeoutMillis, enqueued).also {
         if (it["orchestrationProtocolVersion"]?.jsonPrimitive?.intOrNull != 2) throw PairingException("This environment does not support orchestration protocol 2")
     }
     override suspend fun pair(pairingUrl: String, name: String, allowInsecureHttp: Boolean): SavedEnvironment = try {
@@ -335,9 +358,12 @@ class T3Client(
         val settled = MutableStateFlow(0)
         routes.forEachIndexed { index, route ->
             launch {
+                val timeout = routeTimeoutMillis(route.kind)
                 val outcome: Any = try {
                     val base = url(route.baseUrl, environment.allowInsecureHttp)
-                    if (descriptor(base, routeTimeoutMillis(route.kind)).string("environmentId") != environment.id) throw PairingException("Environment identity changed; pair again")
+                    // OkHttp's call timeout cannot interrupt a DNS lookup; the coroutine timeout ends the wait regardless.
+                    val answer = withTimeoutOrNull(timeout) { descriptor(base, timeout, enqueued = true) } ?: throw java.io.InterruptedIOException("timeout")
+                    if (answer.string("environmentId") != environment.id) throw PairingException("Environment identity changed; pair again")
                     base
                 } catch (error: CancellationException) { throw error } catch (error: Exception) { error }
                 preflights.set(index, outcome)
@@ -401,7 +427,7 @@ class T3Client(
             if (state.value.environment?.id != environment.id) usageCache.clear()
             val retained = environmentStates[environment.id] ?: ClientState()
             projection = JsonObject(emptyMap())
-            update { retained.copy(environment = environment, connection = ConnectionStatus.Connecting, canWrite = false, canRead = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = null, settlementUndo = null, threadActionsConfigured = false, activeRoute = null,
+            update { retained.copy(environment = environment, connection = ConnectionStatus.Connecting, canWrite = false, canWriteThreads = false, canRead = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = null, settlementUndo = null, threadActionsConfigured = false, activeRoute = null,
                 localServers = LocalServerCatalog(), previewTunnelSetting = null, previewTunnelDisabled = false, portForwards = emptyList()) }
         }
         try {
@@ -457,11 +483,10 @@ class T3Client(
                 if (early) subscribeShellBeforeOrigin(epoch, environment.id)
                 reply.await()
             }
-            check(epoch == generation) { "Connection was cancelled" }
-            authorized = mayOperate
-            update { it.copy(threadActionsConfigured = true) }
-            previewAuthorized = permissions?.any { it.jsonPrimitive.content == "preview:operate" } == true
-            serverBrowser = config.obj("environment").obj("capabilities")["serverBrowser"]?.jsonPrimitive?.booleanOrNull == true
+            // Parsed outside the lock; the epoch check and everything this connection publishes then happen in one locked
+            // block, so a stream failure in between can never be overwritten by a stale Connected.
+            val mayPreview = permissions?.any { it.jsonPrimitive.content == "preview:operate" } == true
+            val browserCapable = config.obj("environment").obj("capabilities")["serverBrowser"]?.jsonPrimitive?.booleanOrNull == true
             val threadStop = (config.obj("environment").obj("capabilities")["threadStop"] as? JsonPrimitive)?.booleanOrNull == true
             // The capability only says the server honors `enablePreviewTunnel` (absent where the tunnel cannot be switched off);
             // whether the tunnel is off comes from the config's effective value.
@@ -472,12 +497,19 @@ class T3Client(
             }
             val defaultMode = RuntimeMode.fromWire(config.obj("settings").string("defaultRuntimeMode"))
             val origin = shellOrigin(environment.id, config)
-            synchronized(lifecycleLock) { check(epoch == generation) { "Connection was cancelled" }; directEndpoints = directEndpointHints(config); tunnelConfig = tunnel; liveShellOrigin = origin; shellResume.originKnown(origin) }
-            update { it.copy(connection = ConnectionStatus.Connected, activeRoute = route, canReadUsage = mayReadUsage, models = models, providers = providerInstances(config), defaultRuntimeMode = defaultMode, threadStopSupported = threadStop, previewTunnelSetting = tunnel.capability, previewTunnelDisabled = tunnel.disabled,
-                selectedModel = it.selectedModel?.let { selected -> models.firstOrNull { m -> m.instanceId == selected.instanceId && m.model == selected.model } ?: selected }) }
-            // Route hints (a second config snapshot and the link-state read) would compete with the snapshot on a slow
-            // link; they wait for the shell's synchronized marker.
-            synchronized(lifecycleLock) { check(epoch == generation) { "Connection was cancelled" }; pendingRouteHints = { startRouteHints(epoch, environment, base) } }
+            val providers = providerInstances(config)
+            val endpoints = directEndpointHints(config)
+            beforeConnectPublished?.invoke()
+            synchronized(lifecycleLock) {
+                check(epoch == generation) { "Connection was cancelled" }
+                authorized = mayOperate; previewAuthorized = mayPreview; serverBrowser = browserCapable
+                directEndpoints = endpoints; tunnelConfig = tunnel; liveShellOrigin = origin; shellResume.originKnown(origin)
+                update { it.copy(connection = ConnectionStatus.Connected, threadActionsConfigured = true, activeRoute = route, canReadUsage = mayReadUsage, models = models, providers = providers, defaultRuntimeMode = defaultMode, threadStopSupported = threadStop, previewTunnelSetting = tunnel.capability, previewTunnelDisabled = tunnel.disabled,
+                    selectedModel = it.selectedModel?.let { selected -> models.firstOrNull { m -> m.instanceId == selected.instanceId && m.model == selected.model } ?: selected }) }
+                // Route hints (a second config snapshot and the link-state read) would compete with the snapshot on a slow
+                // link; they wait for the shell's synchronized marker.
+                pendingRouteHints = { startRouteHints(epoch, environment, base) }
+            }
             if (!early) subscribeShell(epoch, environment.id, origin)
             // An early shell may already be synchronized; writes still needed Connected, so re-evaluate them now.
             synchronized(lifecycleLock) { if (epoch == generation) { writable(); shellLive() } }
@@ -650,7 +682,7 @@ class T3Client(
         resetScreens()
         stopPortForwards()
         undoPlan = null; pendingModelSelections = null
-        update { it.copy(connection =ConnectionStatus.Error, canWrite = false, canRead = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = message, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
+        update { it.copy(connection =ConnectionStatus.Error, canWrite = false, canWriteThreads = false, canRead = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = message, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
         pending.values.forEach { it.completeExceptionally(IllegalStateException(message)) }; pending.clear()
         streams.clear(); heartbeat?.cancel(); socket?.cancel(); socket = null
     }
@@ -670,7 +702,7 @@ class T3Client(
         resetScreens()
         stopPortForwards()
         undoPlan = null; pendingModelSelections = null
-        update { it.copy(connection =ConnectionStatus.Disconnected, canWrite = false, canRead = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = reason ?: it.error, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
+        update { it.copy(connection =ConnectionStatus.Disconnected, canWrite = false, canWriteThreads = false, canRead = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = reason ?: it.error, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
     }
 
     private fun usageEnvironment(): SavedEnvironment {
@@ -817,6 +849,7 @@ class T3Client(
     private fun subscribeFullShell() {
         shellResume.invalidate()
         shellSubscription = subscribe("orchestration.subscribeShell", shellSubscribeInput(null), ::shellItem)
+        shellReplaying = false
     }
     /**
      * A silent catch-up resumes from the cursor when it still describes the rows (same origin, same lists, recent);
@@ -826,31 +859,38 @@ class T3Client(
         val environmentId = state.value.environment?.id ?: error("Connect before refreshing threads")
         val afterSequence = shellResume.begin(environmentId, liveShellOrigin, ShellRows(state.value.projects, state.value.threads), environmentStates.keys.toSet())
         shellSubscription = subscribe("orchestration.subscribeShell", shellSubscribeInput(afterSequence), ::shellItem)
+        shellReplaying = afterSequence != null
     }
     private fun endShellStream(message: String) {
         shellSubscription = null
-        shellRefresh?.completeExceptionally(IllegalStateException(message)); shellRefresh = null; shellRefreshResumed = false
+        shellRefresh?.completeExceptionally(IllegalStateException(message)); shellRefresh = null; shellReplaying = false; shellFullWanted = false
     }
     override suspend fun refreshThreads() = refreshShell(resume = false)
     override suspend fun resyncThreads() = refreshShell(resume = true)
     /**
      * [refreshThreads] (full snapshot, cursor dropped) and [resyncThreads] (resume from the cursor) share one pending
-     * refresh: a second call joins it rather than stacking a stream, except that a full refresh asked for while a
-     * resync is pending upgrades it to a full snapshot on the same completion.
+     * refresh: a second call joins the unsynchronized stream already in flight (a refresh, or the connection's first
+     * one) rather than stacking a stream, except that a full refresh upgrades a stream that is replaying deltas from a
+     * cursor to a full snapshot on the same completion. Whether a stream replays is what it actually sent, not what
+     * was asked for: a resync without a usable cursor is already a full snapshot.
      */
     private suspend fun refreshShell(resume: Boolean) {
         val (epoch, done) = synchronized(lifecycleLock) {
             check(state.value.connection == ConnectionStatus.Connected && socket != null) { "Connect before refreshing threads" }
             val pending = shellRefresh
-            if (pending != null && (resume || !shellRefreshResumed)) return@synchronized generation to pending
             val done = pending ?: CompletableDeferred()
+            // The first shell snapshot of this connection is still on its way (or not yet asked for).
+            val unsynchronized = pending != null || !shellReady || shellSubscription == null
+            if (unsynchronized && (resume || !shellReplaying)) {
+                if (!resume && shellSubscription == null) shellFullWanted = true
+                shellRefresh = done
+                return@synchronized generation to done
+            }
             shellRefresh = done
-            // The first shell snapshot of this connection is still on its way: wait for it instead of restarting it.
-            if (pending == null && (!shellReady || shellSubscription == null)) return@synchronized generation to done
             // Stop the old stream first: its late frames are dropped, and the new answer is what the rows follow.
             shellSubscription?.let { old -> streams.remove(old); runCatching { send(EffectRpc.signal("Interrupt", old)) } }
-            try { if (resume) subscribeResumedShell() else subscribeFullShell(); shellRefreshResumed = resume } catch (error: Exception) {
-                shellRefresh = null; shellRefreshResumed = false
+            try { if (resume) subscribeResumedShell() else subscribeFullShell() } catch (error: Exception) {
+                shellRefresh = null; shellReplaying = false
                 fail(generation, "Thread list refresh failed; reconnect to refresh")
                 throw error
             }
@@ -881,8 +921,12 @@ class T3Client(
      */
     private fun subscribeShell(epoch: Long, environmentId: String, origin: ShellOrigin?) = synchronized(lifecycleLock) {
         check(epoch == generation && state.value.environment?.id == environmentId) { "Connection was cancelled" }
-        val afterSequence = shellResume.begin(environmentId, origin, ShellRows(state.value.projects, state.value.threads), environmentStates.keys.toSet())
+        val resumable = shellResume.begin(environmentId, origin, ShellRows(state.value.projects, state.value.threads), environmentStates.keys.toSet())
+        // A pull made while the config was on its way wants the stale rows corrected, not caught up.
+        val afterSequence = if (shellFullWanted) { shellResume.invalidate(); null } else resumable
+        shellFullWanted = false
         shellSubscription = subscribe("orchestration.subscribeShell", shellSubscribeInput(afterSequence), ::shellItem)
+        shellReplaying = afterSequence != null
     }
     /**
      * The snapshot subscription of a connect with no resumable cursor, sent alongside `server.getConfig`; its cursor
@@ -892,6 +936,7 @@ class T3Client(
         check(epoch == generation && state.value.environment?.id == environmentId) { "Connection was cancelled" }
         shellResume.beginBeforeOrigin(environmentId, environmentStates.keys.toSet())
         shellSubscription = subscribe("orchestration.subscribeShell", shellSubscribeInput(null), ::shellItem)
+        shellReplaying = false; shellFullWanted = false
     }
     /** Starts what waits for both a configured connection and a synchronized shell. Caller holds [lifecycleLock]. */
     private fun shellLive() {
@@ -904,7 +949,7 @@ class T3Client(
             // Only sent for `httpSnapshotFallback`, which Trefoil never asks for: drop the cursor and load a socket snapshot.
             shellResume.invalidate()
             shellSubscription?.let { streams.remove(it); runCatching { send(EffectRpc.signal("Interrupt", it)) } }
-            shellReady = false; shellRefreshResumed = false; writable()
+            shellReady = false; shellReplaying = false; writable()
             shellSubscription = subscribe("orchestration.subscribeShell", shellSubscribeInput(null), ::shellItem)
             return
         }
@@ -931,7 +976,7 @@ class T3Client(
             }
             "synchronized" -> {
                 shellReady = true; writable()
-                shellRefresh?.complete(Unit); shellRefresh = null; shellRefreshResumed = false
+                shellRefresh?.complete(Unit); shellRefresh = null; shellReplaying = false
                 shellLive()
             }
         }
@@ -1408,7 +1453,7 @@ class T3Client(
         require(draft.threadId.isNotBlank() && draft.commandId.isNotBlank()) { "Invalid draft identity" }
         val (epoch, payload) = synchronized(lifecycleLock) {
             // A new thread depends on the shell (projects, models), not on whichever thread is open.
-            check(state.value.canWriteThreads && state.value.connection == ConnectionStatus.Connected) { "Wait for a fresh connection before writing" }
+            requireThreadWrite()
             check(state.value.projects.any { it.id == draft.projectId }) { "Choose a project from this environment" }
             val model = state.value.models.firstOrNull { it.instanceId == draft.model.instanceId && it.model == draft.model.model } ?: error("Choose a server-provided model")
             check(model.supportedRuntimeModes.isEmpty() || draft.runtimeMode in model.supportedRuntimeModes) { "${model.label} does not support ${draft.runtimeMode.label}" }

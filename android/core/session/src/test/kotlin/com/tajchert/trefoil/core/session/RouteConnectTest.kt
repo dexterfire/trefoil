@@ -136,6 +136,49 @@ class RouteConnectTest {
         assertFalse("The cancelled loser never gets the token", lan.tokenSent())
     }
 
+    @Test fun losingRouteStuckInDnsNeverHoldsUpTheWinnerAndItsTimeoutEndsTheWait() = runBlocking {
+        val release = java.util.concurrent.CountDownLatch(1)
+        // Cancelling an OkHttp call does not reach a lookup in progress: this one only returns when released.
+        val dns = object : Dns {
+            override fun lookup(hostname: String): List<java.net.InetAddress> {
+                if (hostname == "stuck.test") { release.await(); throw java.net.UnknownHostException(hostname) }
+                return Dns.SYSTEM.lookup(hostname)
+            }
+        }
+        val http = OkHttpClient.Builder().dns(dns).build()
+        try {
+            val tunnel = Host()
+            val stuck = EnvironmentRoute(RouteKind.Lan, "https://stuck.test/", RouteSource.Paired)
+            val client = T3Client(scope, routeTimeoutMillis = { 10_000 }, http = http).also { clients += it }
+            val connecting = async(Dispatchers.Default) { client.connect(environment(stuck.baseUrl), listOf(stuck, tunnel.route(RouteKind.Tunnel))) }
+            assertNotNull("The verified route connects without waiting for the stuck lookup", withTimeoutOrNull(3_000) { connecting.await() })
+            assertEquals(RouteKind.Tunnel, client.state.value.activeRoute?.kind)
+
+            val alone = T3Client(scope, routeTimeoutMillis = { 300 }, http = http).also { clients += it }
+            val failing = async(Dispatchers.Default) { runCatching { alone.connect(environment(stuck.baseUrl), listOf(stuck)) } }
+            val outcome = withTimeoutOrNull(3_000) { failing.await() }
+            assertNotNull("The route timeout ends a stuck lookup", outcome)
+            assertTrue(outcome!!.exceptionOrNull() is PairingException)
+            assertTrue(outcome.exceptionOrNull()!!.message.orEmpty().contains("timed out"))
+        } finally { release.countDown() }
+    }
+
+    @Test fun dpopLosingRoutesSeeOnlyTheCredentialFreeDescriptor() = runBlocking {
+        val keyPair = java.security.KeyPairGenerator.getInstance("EC").apply { initialize(java.security.spec.ECGenParameterSpec("secp256r1")) }.generateKeyPair()
+        val key = JcaDpopKey(keyPair.private, keyPair.public as java.security.interfaces.ECPublicKey)
+        val lan = Host(); val tailnet = Host(); val tunnel = Host()
+        val client = T3Client(scope, routeTimeoutMillis = { 2_000 }, dpopKey = { key }).also { clients += it }
+        val environment = SavedEnvironment("env-1", "Test", lan.url, "fixture-token", tokenType = AccessTokenType.DPoP,
+            accessTokenExpiresAtMillis = System.currentTimeMillis() + 3_600_000)
+        client.connect(environment, listOf(lan.route(RouteKind.Lan, RouteSource.Paired), tailnet.route(RouteKind.Tailnet), tunnel.route(RouteKind.Tunnel)))
+        assertEquals(RouteKind.Lan, client.state.value.activeRoute?.kind)
+        assertTrue(lan.requests.any { it.path == "/api/auth/session" && it.getHeader("Authorization") == "DPoP fixture-token" && it.getHeader("DPoP") != null })
+        for (loser in listOf(tailnet, tunnel)) {
+            assertTrue("Only the descriptor", loser.requests.all { it.path == "/.well-known/t3/environment" })
+            assertTrue("No credential or proof", loser.requests.none { it.getHeader("Authorization") != null || it.getHeader("DPoP") != null })
+        }
+    }
+
     @Test fun failedSessionReadFallsBackToTheNextVerifiedRoute() = runBlocking {
         val lan = Host(session = json("{}", 503)); val tunnel = Host()
         val client = client()
