@@ -8,7 +8,10 @@ import com.tajchert.trefoil.core.model.RouteKind
 import com.tajchert.trefoil.core.model.SavedEnvironment
 import com.tajchert.trefoil.core.protocol.EffectRpc
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -16,6 +19,7 @@ import kotlinx.serialization.json.*
 import okhttp3.*
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -114,11 +118,25 @@ class EnvironmentProbe(
         } ?: MachineProbe.Unreachable
     }
 
-    /** Parsed JSON object body (null if absent or not an object), status and whether a DPoP retry may help; null on network failure. */
+    /**
+     * Parsed JSON object body (null if absent or not an object), status and whether a DPoP retry may help; null on network
+     * failure. Headers can arrive before the body, so the body is read and closed on [Dispatchers.IO], never on the caller's
+     * dispatcher (Main for the cold-start probe). Until it is consumed, a cancelled caller cancels the call, which also
+     * aborts a body read in progress.
+     */
     private suspend fun get(request: Request): Triple<JsonObject?, Int, Boolean>? = try {
-        http.newCall(request).await().use { response ->
-            val body = runCatching { EffectRpc.json.parseToJsonElement(response.peekBody(MAX_BODY).string()) as? JsonObject }.getOrNull()
-            Triple(body, response.code, authorizer.shouldRetry(response))
+        val call = http.newCall(request)
+        withContext(Dispatchers.IO) {
+            val consumed = AtomicBoolean(false)
+            val cancelOnAbandon = launch(start = CoroutineStart.UNDISPATCHED) {
+                try { awaitCancellation() } finally { if (!consumed.get()) call.cancel() }
+            }
+            try {
+                call.await().use { response ->
+                    val body = runCatching { EffectRpc.json.parseToJsonElement(response.peekBody(MAX_BODY).string()) as? JsonObject }.getOrNull()
+                    Triple(body, response.code, authorizer.shouldRetry(response))
+                }
+            } finally { consumed.set(true); cancelOnAbandon.cancel() }
         }
     } catch (_: IOException) { null }
 

@@ -5,7 +5,21 @@ import com.tajchert.trefoil.core.model.MachineProbe
 import com.tajchert.trefoil.core.model.RouteKind
 import com.tajchert.trefoil.core.model.RouteSource
 import com.tajchert.trefoil.core.model.SavedEnvironment
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import okhttp3.Interceptor
+import okhttp3.OkHttpClient
+import okhttp3.Response
+import okhttp3.ResponseBody
+import okio.Buffer
+import okio.BufferedSource
+import okio.ForwardingSource
+import okio.buffer
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.SocketPolicy
@@ -13,6 +27,7 @@ import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 class EnvironmentProbeTest {
@@ -99,5 +114,50 @@ class EnvironmentProbeTest {
             assertEquals(EnvironmentProbe.RouteProbe(MachineProbe.Unreachable, null), EnvironmentProbe().probe(environment(), listOf(far)))
             assertEquals(EnvironmentProbe.RouteProbe(MachineProbe.Unknown, null), EnvironmentProbe().probe(environment(), listOf(EnvironmentRoute(RouteKind.Ssh, "", RouteSource.Paired))))
         } finally { tunnel.shutdown() }
+    }
+
+    /** Records the thread of every body read, as a dispatcher check that holds for any OkHttp version. */
+    private class ReadThreads : Interceptor {
+        val readers: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+        override fun intercept(chain: Interceptor.Chain): Response {
+            val response = chain.proceed(chain.request())
+            val body = response.body!!
+            val source = object : ForwardingSource(body.source()) {
+                override fun read(sink: Buffer, byteCount: Long): Long { readers += Thread.currentThread().name; return super.read(sink, byteCount) }
+            }.buffer()
+            return response.newBuilder().body(object : ResponseBody() {
+                override fun contentType() = body.contentType()
+                override fun contentLength() = body.contentLength()
+                override fun source(): BufferedSource = source
+            }).build()
+        }
+    }
+
+    @Test(timeout = 30_000) fun bodiesAreReadOffTheCallersThread() {
+        val main = Executors.newSingleThreadExecutor { Thread(it, "fake-main") }
+        try {
+            // Headers first, then the body in slow chunks: a read on the caller's thread would block it.
+            server.enqueue(json(descriptor).throttleBody(16, 20, TimeUnit.MILLISECONDS))
+            server.enqueue(json("""{"authenticated":true}""").throttleBody(8, 20, TimeUnit.MILLISECONDS))
+            val reads = ReadThreads()
+            val result = runBlocking(main.asCoroutineDispatcher()) {
+                EnvironmentProbe(http = OkHttpClient.Builder().addInterceptor(reads).build()).probe(environment())
+            }
+            assertEquals(MachineProbe.Online, result)
+            assertTrue("Bodies were read", reads.readers.isNotEmpty())
+            assertTrue("No body read on the caller's thread: ${reads.readers}", reads.readers.none { it.startsWith("fake-main") })
+        } finally { main.shutdownNow() }
+    }
+
+    @Test(timeout = 30_000) fun cancellingTheCallerAbortsABodyReadInProgress() = runBlocking {
+        // The descriptor's headers arrive, its body stalls; the probe's own budget is far longer than the test waits.
+        server.enqueue(json(descriptor + " ".repeat(4_096)).throttleBody(1, 10, TimeUnit.SECONDS))
+        val probe = EnvironmentProbe(timeoutMillis = 20_000)
+        val attempt = launch(Dispatchers.Default) { probe.probe(environment()) }
+        server.takeRequest(5, TimeUnit.SECONDS)!!
+        delay(300)
+        val started = System.nanoTime()
+        withTimeout(5_000) { attempt.cancelAndJoin() }
+        assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 3_000)
     }
 }
