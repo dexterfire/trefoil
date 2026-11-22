@@ -8,6 +8,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -235,8 +238,12 @@ fun TrefoilApp(
             }
         }
         val c = Tf.colors
+        // The host wraps the snackbar unscaled; its bounds count only while a message is current, so floating actions start back down as it fades.
+        var snackbarHostBounds by remember { mutableStateOf<Rect?>(null) }
+        val snackbarBounds = remember { derivedStateOf { snackbarHostBounds?.takeIf { snackbar.currentSnackbarData != null } } }
+        CompositionLocalProvider(LocalSnackbarBounds provides snackbarBounds) {
         Scaffold(containerColor = c.bg, contentColor = c.text, contentWindowInsets = WindowInsets(0),
-            snackbarHost = { SnackbarHost(snackbar, Modifier.navigationBarsPadding().imePadding()) }) { padding ->
+            snackbarHost = { SnackbarHost(snackbar, Modifier.navigationBarsPadding().imePadding().onGloballyPositioned { snackbarHostBounds = it.boundsInRoot() }) }) { padding ->
             BoxWithConstraints(Modifier.padding(padding).fillMaxSize().windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal))) {
                 val layout = shellLayout(maxWidth.value)
                 val twoPane = layout != ShellLayout.Phone
@@ -333,6 +340,7 @@ fun TrefoilApp(
                     }
                 }
             }
+        }
         }
         if (adding) AlertDialog(onDismissRequest = { adding = false }, title = { Text("Add environment") }, text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {

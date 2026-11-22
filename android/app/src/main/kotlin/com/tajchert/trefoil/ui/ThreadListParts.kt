@@ -8,6 +8,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -329,13 +330,10 @@ private fun RowTime(thread: ThreadSummary, indicator: ThreadIndicator, mark: Row
 @Composable
 internal fun NewThreadFab(enabled: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val c = Tf.colors
-    val shape = RoundedCornerShape(18.dp)
+    val shape = CircleShape
     Surface(onClick = onClick, enabled = enabled, shape = shape, color = if (enabled) c.accent else c.s2, contentColor = if (enabled) c.onAccent else c.muted,
         modifier = modifier.shadow(if (enabled) 8.dp else 0.dp, shape).semantics { contentDescription = "New thread"; role = Role.Button }) {
-        Row(Modifier.height(56.dp).padding(start = 18.dp, end = 22.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Icon(TfIcons.Plus, null, Modifier.size(22.dp))
-            Text("New", fontFamily = InterFamily, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-        }
+        Box(Modifier.size(56.dp), contentAlignment = Alignment.Center) { Icon(TfIcons.Plus, null, Modifier.size(24.dp)) }
     }
 }
 

@@ -307,7 +307,7 @@ internal fun ThreadList(
                     }
                 }
             }
-            if (!railLayout) NewThreadFab(canCreate, create, Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(end = 16.dp, bottom = 16.dp))
+            if (!railLayout) NewThreadFab(canCreate, create, Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(end = 16.dp, bottom = 16.dp).avoidSnackbar())
         }
     }
 }

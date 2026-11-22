@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -56,6 +57,20 @@ class ThreadListUiTest {
         compose.onNodeWithText("Search threads").performTextInput("T3 Code")
         compose.onNodeWithText("Keep activity in the right order").assertExists()
         compose.onNodeWithText("Review the connection flow").assertDoesNotExist()
+    }
+    @Test fun newThreadFabSlidesAboveASnackbarAndBackDown() {
+        val bounds = mutableStateOf<androidx.compose.ui.geometry.Rect?>(null)
+        compose.setContent { TrefoilTheme { CompositionLocalProvider(LocalSnackbarBounds provides bounds) { ThreadList(fixture, {}, {}) } } }
+        val fab = compose.onNodeWithContentDescription("New thread")
+        val rest = fab.getBoundsInRoot()
+        val root = compose.onRoot().getBoundsInRoot()
+        compose.runOnIdle { bounds.value = with(compose.density) { androidx.compose.ui.geometry.Rect(0f, (root.bottom - 72.dp).toPx(), root.right.toPx(), root.bottom.toPx()) } }
+        compose.waitForIdle()
+        // The snackbar's top edge sits 72 dp above the bottom; the FAB clears it by 8 dp.
+        assertEquals((root.bottom - 80.dp).value, fab.getBoundsInRoot().bottom.value, 1f)
+        compose.runOnIdle { bounds.value = null }
+        compose.waitForIdle()
+        assertEquals(rest.top.value, fab.getBoundsInRoot().top.value, 0.5f)
     }
     @Test fun pullingDownTheListRequestsARefresh() {
         var refreshes = 0
