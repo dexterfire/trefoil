@@ -1,6 +1,7 @@
 package com.tajchert.trefoil.security
 
 import com.tajchert.trefoil.core.model.SavedEnvironment
+import com.tajchert.trefoil.core.session.withTokenOf
 
 /**
  * The view model's reads and writes of the saved machines. Every write is a read-modify-write of what the vault holds
@@ -25,4 +26,16 @@ internal class EnvironmentWrites(private val store: EnvironmentStore) {
             if (next != current) store.write(next)
             next
         }
+}
+
+/**
+ * Stores [renewed]'s token over the same session's token (one of [replaces]) only, atomically against every other
+ * machine write; a forgotten or re-paired machine is left alone. Returns whether [store] holds the renewed token
+ * afterwards, so a renewer keeps its chain when it does not. A failed read or write throws and nothing is confirmed.
+ */
+internal fun storeRenewedToken(store: EnvironmentStore, renewed: SavedEnvironment, replaces: Set<String>): Boolean = store.locked {
+    val current = store.read()
+    val next = current.map { if (it.id == renewed.id && it.accessToken in replaces) it.withTokenOf(renewed) else it }
+    if (next != current) store.write(next)
+    next.any { it.id == renewed.id && it.accessToken == renewed.accessToken }
 }

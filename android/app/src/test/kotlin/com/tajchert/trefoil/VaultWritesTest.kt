@@ -14,6 +14,11 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import com.tajchert.trefoil.security.storeRenewedToken
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -212,5 +217,29 @@ class VaultWritesTest {
         assertEquals("alpha-new", merged.accessToken)
         // Forgotten while the reconnect was in flight: the row is not re-created.
         assertEquals(listOf(beta), listOf(beta).withReconnected(configured))
+    }
+
+    @Test fun aRenewalIsConfirmedOnlyWhenTheVaultHoldsItsToken() {
+        start()
+        val renewed = alpha.copy(accessToken = "alpha-r1", accessTokenExpiresAtMillis = 5_000)
+        assertTrue(runBlocking { withTimeout(10_000) { model.saveRenewedToken(renewed, setOf("alpha-old")) } })
+        assertEquals("alpha-r1", store.read().first { it.id == "alpha" }.accessToken)
+        // Already stored (a repeated store of the same token) is confirmed too.
+        assertTrue(runBlocking { withTimeout(10_000) { model.saveRenewedToken(renewed, setOf("alpha-old")) } })
+        // The machine was paired again meanwhile: its token is not one the renewal replaces, so nothing is confirmed.
+        val other = alpha.copy(accessToken = "alpha-r2")
+        assertFalse(runBlocking { withTimeout(10_000) { model.saveRenewedToken(other, setOf("unrelated")) } })
+        assertEquals("alpha-r1", store.read().first { it.id == "alpha" }.accessToken)
+    }
+
+    @Test fun theWidgetsRenewalStoreReportsWhatTheVaultHolds() {
+        val renewed = alpha.copy(accessToken = "alpha-r1")
+        assertTrue(storeRenewedToken(store, renewed, setOf("alpha-old")))
+        assertEquals("alpha-r1", store.saved.first { it.id == "alpha" }.accessToken)
+        assertFalse("A forgotten machine is not re-created", storeRenewedToken(store, beta.copy(id = "gone"), setOf("beta-token")))
+        assertEquals(listOf("alpha", "beta"), store.saved.map { it.id })
+        store.failingReads = 1
+        assertThrows(IllegalStateException::class.java) { storeRenewedToken(store, alpha.copy(accessToken = "alpha-r2"), setOf("alpha-r1")) }
+        assertEquals("alpha-r1", store.saved.first { it.id == "alpha" }.accessToken)
     }
 }

@@ -57,7 +57,7 @@ class TrefoilViewModel internal constructor(
 ) : AndroidViewModel(application) {
     constructor(application: Application) : this(application, EnvironmentVault(application))
     /** One renewer for the client and the probe, so DPoP renewals of a machine are serialized and land in the vault. */
-    private val tokens = EnvironmentTokenRenewer(DeviceDpopKey::loadOrCreate, http = http, onRenewed = { renewed, replaces -> saveRenewedToken(renewed, replaces) })
+    private val tokens = EnvironmentTokenRenewer(DeviceDpopKey::loadOrCreate, http = http, storeRenewed = { renewed, replaces -> saveRenewedToken(renewed, replaces) })
     private val client = T3Client(viewModelScope, tokens = tokens, http = http)
     /** Shell re-reads (pull-to-refresh, resume catch-up) go through this; replaced only by tests. */
     internal var shellReads: TrefoilClient = client
@@ -430,11 +430,15 @@ class TrefoilViewModel internal constructor(
         _environments.value = stored
     }
 
-    /** Stores a renewed DPoP token over the same session's older token only; a newer pairing's token is never replaced. */
-    private suspend fun saveRenewedToken(renewed: SavedEnvironment, replaces: Set<String>) {
+    /**
+     * Stores a renewed DPoP token over the same session's older token only; a newer pairing's token is never replaced.
+     * Returns whether the vault holds [renewed]'s token afterwards (false keeps the renewer's chain for the next store).
+     */
+    internal suspend fun saveRenewedToken(renewed: SavedEnvironment, replaces: Set<String>): Boolean {
         initialized.await()
-        vaultMutex.withLock {
+        return vaultMutex.withLock {
             save { saved -> saved.map { if (it.id == renewed.id && it.accessToken in replaces) it.withTokenOf(renewed) else it } }
+            _environments.value.any { it.id == renewed.id && it.accessToken == renewed.accessToken }
         }
     }
 

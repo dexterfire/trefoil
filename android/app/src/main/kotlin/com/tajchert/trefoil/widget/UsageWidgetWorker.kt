@@ -7,11 +7,11 @@ import com.tajchert.trefoil.AppHttp
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.core.session.EnvironmentTokenRenewer
 import com.tajchert.trefoil.core.session.T3Client
-import com.tajchert.trefoil.core.session.withTokenOf
 import com.tajchert.trefoil.core.ssh.SshTunnel
 import com.tajchert.trefoil.core.ssh.SshTunnelConnector
 import com.tajchert.trefoil.security.DeviceDpopKey
 import com.tajchert.trefoil.security.EnvironmentVault
+import com.tajchert.trefoil.security.storeRenewedToken
 import java.time.ZoneId
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
@@ -75,9 +75,10 @@ class UsageWidgetWorker(context: Context, parameters: WorkerParameters) : Corout
         val connectionScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         // A renewal made here goes straight to the vault, over the same session's token only.
         val vault = EnvironmentVault(applicationContext)
-        val tokens = EnvironmentTokenRenewer(DeviceDpopKey::loadOrCreate, http = AppHttp.client, onRenewed = { renewed, replaces -> withContext(Dispatchers.IO) {
-            // Atomic against the view model's writes: a forgotten or re-paired machine is left alone.
-            vault.update { saved -> saved.map { if (it.id == renewed.id && it.accessToken in replaces) it.withTokenOf(renewed) else it } }
+        val tokens = EnvironmentTokenRenewer(DeviceDpopKey::loadOrCreate, http = AppHttp.client, storeRenewed = { renewed, replaces -> withContext(Dispatchers.IO) {
+            // Atomic against the view model's writes: a forgotten or re-paired machine is left alone. True only when the
+            // vault holds the renewed token afterwards; anything else keeps the renewer's chain back to the stored token.
+            storeRenewedToken(vault, renewed, replaces)
         } })
         val client = T3Client(connectionScope, tokens = tokens, http = AppHttp.client)
         var tunnel: SshTunnel? = null
