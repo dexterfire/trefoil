@@ -1,8 +1,8 @@
 package com.tajchert.trefoil.widget
 
 import androidx.annotation.DrawableRes
-import com.tajchert.trefoil.R
 import com.tajchert.trefoil.ui.formatUsageDuration
+import com.tajchert.trefoil.ui.providerMonoIcon
 
 // Pure helpers shared by all usage widgets. Formatting of money, tokens, pace and reset text
 // lives in ui/UsagePresentation.kt (formatUsageUsd, formatUsageTokens, usagePace, formatUsageReset); reuse those.
@@ -29,13 +29,6 @@ fun widgetAlert(snapshot: UsageWidgetSnapshot, updatedAtMillis: Long, now: Long)
 
 fun isWidgetStale(updatedAtMillis: Long, now: Long): Boolean = now - updatedAtMillis > WIDGET_STALE_AFTER_MS
 
-/** Monochrome provider mark (tint it), or null for unknown drivers. Same mapping as ui/ProviderIconUi.kt. */
+/** Monochrome provider mark (tint it), or null for unknown drivers. */
 @DrawableRes
-fun widgetProviderIcon(driver: String): Int? = when (driver) {
-    "codex" -> R.drawable.ic_provider_codex
-    "claudeAgent" -> R.drawable.ic_provider_claude
-    "cursor" -> R.drawable.ic_provider_cursor
-    "grok" -> R.drawable.ic_provider_grok
-    "opencode" -> R.drawable.ic_provider_opencode
-    else -> null
-}
+fun widgetProviderIcon(driver: String): Int? = providerMonoIcon(driver)

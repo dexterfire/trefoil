@@ -3,6 +3,8 @@
  */
 package com.tajchert.trefoil.ui
 
+import androidx.annotation.DrawableRes
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -23,19 +25,42 @@ import androidx.compose.ui.unit.sp
 import com.tajchert.trefoil.R
 import com.tajchert.trefoil.core.model.ProviderInstance
 
+/** Single-color provider mark meant to be tinted, or null for unknown drivers. Widgets use this too. */
+@DrawableRes
+internal fun providerMonoIcon(driver: String): Int? = when (driver) {
+    "codex" -> R.drawable.ic_provider_codex
+    "claudeAgent" -> R.drawable.ic_provider_claude
+    "cursor" -> R.drawable.ic_provider_cursor
+    "grok" -> R.drawable.ic_provider_grok
+    "opencode" -> R.drawable.ic_provider_opencode
+    "antigravity" -> R.drawable.ic_provider_antigravity
+    "fx" -> R.drawable.ic_provider_fx
+    "kiro" -> R.drawable.ic_provider_kiro
+    "muse" -> R.drawable.ic_provider_muse
+    "pi" -> R.drawable.ic_provider_pi
+    "acpRegistry" -> R.drawable.ic_provider_acp_registry
+    else -> null
+}
+
+/** Marks drawn in their own brand colors (as T3 Code does), never tinted. */
+@DrawableRes
+private fun providerColorIcon(driver: String): Int? = when (driver) {
+    "antigravity" -> R.drawable.ic_provider_antigravity
+    "kiro" -> R.drawable.ic_provider_kiro_color
+    "muse" -> R.drawable.ic_provider_muse_color
+    else -> null
+}
+
 @Composable
 internal fun ProviderMark(driver: String, description: String?, modifier: Modifier = Modifier) {
-    val resource = when (driver) {
-        "codex" -> R.drawable.ic_provider_codex
-        "claudeAgent" -> R.drawable.ic_provider_claude
-        "cursor" -> R.drawable.ic_provider_cursor
-        "grok" -> R.drawable.ic_provider_grok
-        "opencode" -> R.drawable.ic_provider_opencode
-        else -> null
+    val color = providerColorIcon(driver)
+    val mono = providerMonoIcon(driver)
+    when {
+        color != null -> Image(painterResource(color), description, modifier)
+        mono != null -> Icon(painterResource(mono), description, modifier,
+            tint = if (driver == "claudeAgent") Color(0xFFD97757) else MaterialTheme.colorScheme.onSurface)
+        else -> Icon(Icons.Default.SmartToy, description, modifier, tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
-    val tint = if (driver == "claudeAgent") Color(0xFFD97757) else MaterialTheme.colorScheme.onSurface
-    if (resource != null) Icon(painterResource(resource), description, modifier, tint = tint)
-    else Icon(Icons.Default.SmartToy, description, modifier, tint = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 @Composable
