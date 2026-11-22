@@ -48,8 +48,10 @@ fun SavedEnvironment.withTokenOf(renewed: SavedEnvironment): SavedEnvironment =
  * renewing again. [onRenewed] persists a renewal (encrypted vault); `replaces` holds the earlier tokens of the same
  * session, so a store only overwrites a token of that session, never one from a newer pairing. Persisting happens after
  * the renewal lock is released, so a slow store never holds up the next renewal, and stores of one environment are
- * serialized newest-wins: a slower store of an older token never lands after a newer one. Bearer environments are
- * returned unchanged.
+ * serialized newest-wins: a slower store of an older token never lands after a newer one. `replaces` reaches back to
+ * the last token confirmed stored, however many renewals happened meanwhile, so the stored token is always among them.
+ * [storeRenewed], when given, says whether the store holds the token afterwards (written, or already there); a store
+ * that is not confirmed keeps the whole chain for the next one. Bearer environments are returned unchanged.
  */
 class EnvironmentTokenRenewer(
     dpopKey: (() -> DpopKey)? = null,
@@ -57,13 +59,21 @@ class EnvironmentTokenRenewer(
     private val clockMillis: () -> Long = System::currentTimeMillis,
     private val onRenewed: suspend (renewed: SavedEnvironment, replaces: Set<String>) -> Unit = { _, _ -> },
     timeoutMillis: Long = 15_000,
+    /** Like [onRenewed], returning whether the store now holds the renewed token; replaces [onRenewed] when given. */
+    storeRenewed: (suspend (renewed: SavedEnvironment, replaces: Set<String>) -> Boolean)? = null,
 ) {
+    private val storeRenewed: suspend (SavedEnvironment, Set<String>) -> Boolean = storeRenewed ?: { renewed, replaces -> onRenewed(renewed, replaces); true }
     /** Proof and header builder; shared with the clients so a learned server clock offset serves every request. */
     val authorizer = EnvironmentAuthorizer(dpopKey, clockMillis)
     private val http = http.newBuilder().followRedirects(false).followSslRedirects(false)
         .callTimeout(timeoutMillis, TimeUnit.MILLISECONDS).build()
-    /** [serial] orders renewals across the process; [replaces] holds the session's earlier tokens plus this one. */
-    private class Latest(val environment: SavedEnvironment, val replaces: Set<String>, val serial: Long)
+    /**
+     * [serial] orders renewals across the process; [replaces] holds the session's recent earlier tokens plus this one;
+     * [sinceStored] every token of the session from the last one confirmed stored up to this one, in order.
+     */
+    private class Latest(val environment: SavedEnvironment, val replaces: Set<String>, val serial: Long, val sinceStored: List<String>) {
+        fun holds(token: String) = token in replaces || token in sinceStored
+    }
     private val locks = ConcurrentHashMap<String, Mutex>()
     private val latest = ConcurrentHashMap<String, Latest>()
     private val serials = AtomicLong()
@@ -76,7 +86,7 @@ class EnvironmentTokenRenewer(
 
     /** The newest token known for [environment]'s session: a renewal made through any caller, or [environment] itself. */
     fun current(environment: SavedEnvironment): SavedEnvironment =
-        latest[environment.id]?.takeIf { environment.accessToken in it.replaces }?.let { environment.withTokenOf(it.environment) } ?: environment
+        latest[environment.id]?.takeIf { it.holds(environment.accessToken) }?.let { environment.withTokenOf(it.environment) } ?: environment
 
     /** True for a DPoP token within [RENEW_BEFORE_EXPIRY_MS] of its expiry (or past it). An unknown expiry renews only on rejection. */
     fun renewalDue(environment: SavedEnvironment, now: Long = clockMillis()): Boolean =
@@ -107,10 +117,11 @@ class EnvironmentTokenRenewer(
                 failedAt[environment.id] = clockMillis(); throw error
             }
             failedAt.remove(environment.id)
-            val chain = (latest[environment.id]?.takeIf { environment.accessToken in it.replaces }?.replaces.orEmpty() +
-                environment.accessToken + current.accessToken).toList().takeLast(MAX_CHAIN).toSet()
+            val previous = latest[environment.id]?.takeIf { it.holds(environment.accessToken) }
+            val chain = (previous?.replaces.orEmpty() + environment.accessToken + current.accessToken).toList().takeLast(MAX_CHAIN).toSet()
+            val sinceStored = (previous?.sinceStored.orEmpty() + environment.accessToken + current.accessToken + renewed.accessToken).distinct()
             // Adopted before the lock is released: every later caller sees this token, whether or not it is stored yet.
-            adopted = Latest(renewed, chain + renewed.accessToken, serials.incrementAndGet()).also { latest[environment.id] = it }
+            adopted = Latest(renewed, chain + renewed.accessToken, serials.incrementAndGet(), sinceStored).also { latest[environment.id] = it }
             renewed
         }
         // No suspension point since the lock was released, so a cancelled caller still gets here and stores the token.
@@ -124,13 +135,18 @@ class EnvironmentTokenRenewer(
      */
     private suspend fun store(environmentId: String, renewal: Latest) = withContext(NonCancellable) {
         storeLocks.getOrPut(environmentId) { Mutex() }.withLock {
-            val newest = latest[environmentId]?.takeIf { it.serial > renewal.serial && renewal.environment.accessToken in it.replaces } ?: renewal
+            val newest = latest[environmentId]?.takeIf { it.serial > renewal.serial && it.holds(renewal.environment.accessToken) } ?: renewal
             if (newest.serial <= (stored[environmentId] ?: 0L)) return@withLock
-            try {
-                onRenewed(newest.environment, newest.replaces - newest.environment.accessToken)
-                stored[environmentId] = newest.serial
-            } catch (error: CancellationException) { throw error } catch (_: Exception) {
-                // Not persisted: the in-memory token still works, and the stored one still renews the same session.
+            val token = newest.environment.accessToken
+            val confirmed = try { storeRenewed(newest.environment, newest.replaces + newest.sinceStored - token) }
+            catch (error: CancellationException) { throw error } catch (_: Exception) { false }
+            // Not confirmed: the in-memory token still works, the stored one still renews the same session, and the next
+            // store still replaces it because the chain keeps reaching back to it.
+            if (!confirmed) return@withLock
+            stored[environmentId] = newest.serial
+            latest.computeIfPresent(environmentId) { _, it ->
+                val from = it.sinceStored.indexOf(token)
+                if (from > 0) Latest(it.environment, it.replaces, it.serial, it.sinceStored.drop(from)) else it
             }
         }
     }

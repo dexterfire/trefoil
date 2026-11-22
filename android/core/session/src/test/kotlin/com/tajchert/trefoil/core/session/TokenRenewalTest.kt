@@ -176,6 +176,49 @@ class TokenRenewalTest {
         } finally { release.complete(Unit); server.shutdown() } // a failed assertion must not leave the store parked
     }
 
+    @Test fun storeHeldUpAcrossManyRenewalsStillReplacesTheStoredToken() = runBlocking {
+        val server = MockWebServer(); server.start()
+        val vault = java.util.concurrent.atomic.AtomicReference("old-secret")
+        val storing = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        // Like the app's vault: a renewal replaces the stored token only when that token is one of `replaces`.
+        val tokens = EnvironmentTokenRenewer({ key }, onRenewed = { renewed, replaces ->
+            if (renewed.accessToken == "t1") { storing.complete(Unit); release.await() }
+            vault.updateAndGet { if (it in replaces) renewed.accessToken else it }
+        })
+        try {
+            (1..10).forEach { server.enqueue(renewal("t$it")) }
+            val expired = environment(server.url("/").toString(), System.currentTimeMillis() - 1)
+            val calls = mutableListOf(async(Dispatchers.Default) { tokens.fresh(expired, server.url("/")) })
+            withTimeout(5_000) { storing.await() }
+            // The host refuses each newest token in turn while the first store is still held up.
+            for (n in 2..10) {
+                val previous = expired.copy(accessToken = "t${n - 1}")
+                calls += async(Dispatchers.Default) { tokens.fresh(previous, server.url("/"), rejectedToken = previous.accessToken) }
+                withTimeout(5_000) { while (tokens.current(previous).accessToken != "t$n") delay(5) }
+            }
+            release.complete(Unit)
+            withTimeout(5_000) { calls.awaitAll() }
+            assertEquals("The newest token reaches the vault", "t10", vault.get())
+        } finally { release.complete(Unit); server.shutdown() }
+    }
+
+    @Test fun unconfirmedStoresKeepTheChainBackToTheStoredToken() = runBlocking {
+        val server = MockWebServer(); server.start()
+        val sent = CopyOnWriteArrayList<Saved>()
+        // The store holds nothing new until t10 (e.g. its writes failed): each store says so.
+        val tokens = EnvironmentTokenRenewer({ key }, storeRenewed = { renewed, replaces -> sent += Saved(renewed, replaces); renewed.accessToken == "t10" })
+        try {
+            (1..11).forEach { server.enqueue(renewal("t$it")) }
+            val expired = environment(server.url("/").toString(), System.currentTimeMillis() - 1)
+            tokens.fresh(expired, server.url("/"))
+            for (n in 2..10) tokens.fresh(expired.copy(accessToken = "t${n - 1}"), server.url("/"), rejectedToken = "t${n - 1}")
+            assertEquals((1..10).map { "t$it" }, sent.map { it.renewed.accessToken })
+            assertTrue("Still replaces the token actually stored", "old-secret" in sent.last().replaces)
+            tokens.fresh(expired.copy(accessToken = "t10"), server.url("/"), rejectedToken = "t10")
+            assertTrue("Confirmed: the chain starts again from t10", "t10" in sent.last().replaces)
+        } finally { server.shutdown() }
+    }
+
     @Test fun cancelledRenewalAbortsTheCallAndReleasesTheLock() = runBlocking {
         val server = MockWebServer(); server.start()
         val saved = CopyOnWriteArrayList<Saved>()
