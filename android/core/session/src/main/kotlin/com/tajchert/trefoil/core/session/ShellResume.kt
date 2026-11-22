@@ -129,6 +129,16 @@ internal class ShellResume(private val clockMillis: () -> Long = System::current
         return cursor!!.sequence
     }
 
+    /**
+     * Installs a cursor read back from the local cache for rows restored as [cursor]'s [ShellCursor.rows]. It resumes
+     * only under the same rules as any other ([begin]: same origin, same row lists, younger than
+     * [SHELL_RESUME_MAX_AGE_MS]); a cursor without an origin or with a negative sequence is ignored.
+     */
+    fun restore(environmentId: String, cursor: ShellCursor) {
+        if (cursor.origin == null || cursor.origin.environmentId != environmentId || cursor.sequence < 0) return
+        cursors[environmentId] = cursor
+    }
+
     /** Drops the active environment's cursor; the next subscription loads a snapshot. */
     fun invalidate() { activeEnvironmentId?.let(cursors::remove) }
 

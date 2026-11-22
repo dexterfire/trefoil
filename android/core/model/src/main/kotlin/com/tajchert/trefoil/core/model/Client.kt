@@ -4,6 +4,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 
 @Serializable
 data class SavedEnvironment(val id: String, val name: String, val baseUrl: String, val accessToken: String, val ssh: SshProfile? = null, val allowInsecureHttp: Boolean = false,
@@ -17,10 +18,14 @@ data class SavedEnvironment(val id: String, val name: String, val baseUrl: Strin
 }
 /** Authorization scheme of a saved access token: `Authorization: Bearer`, or `Authorization: DPoP` plus a per-request proof (RFC 9449). */
 @Serializable enum class AccessTokenType { Bearer, DPoP }
+/** [Serializable] for the encrypted on-device shell cache only; the wire format is parsed by the client, not by this. */
+@Serializable
 data class Project(val id: String, val title: String, val path: String = "")
 data class ThreadTarget(val environmentId: String, val threadId: String)
 enum class ThreadAction { Settle, Unsettle, Pin, Unpin, Rename, Snooze, Wake }
 data class SettlementUndo(val token: String, val target: ThreadTarget)
+/** [Serializable] for the encrypted on-device shell cache only (see [Project]); new fields need defaults. */
+@Serializable
 data class ThreadSummary(
     val id: String, val projectId: String, val title: String, val status: String = "idle",
     val createdAt: String? = null, val updatedAt: String? = null,
@@ -47,8 +52,8 @@ data class ThreadSummary(
     val interactionMode: String? = null, val hasActionableProposedPlan: Boolean = false,
     val latestUserAuthoredMessageAtPresent: Boolean = false,
     val completionHeldBackgroundWork: Boolean = false,
-    /** Derived from child shells for presentation; never supplied by a shell row. */
-    val pendingChildRequestKind: String? = null,
+    /** Derived from child shells for presentation; never supplied by a shell row, so never cached. */
+    @Transient val pendingChildRequestKind: String? = null,
 )
 data class ConversationMessage(
     val id: String, val role: String, val text: String, val streaming: Boolean = false,
@@ -229,6 +234,11 @@ data class ClientState(
      * not "no threads". It says nothing about freshness; see [canRead] and [canWrite].
      */
     val shellLoaded: Boolean = false,
+    /**
+     * The live connection's shell stream is synchronized, so [projects] and [threads] follow the server. False while
+     * rows retained or restored from the local cache wait for their catch-up, and whenever not connected.
+     */
+    val shellLive: Boolean = false,
     /** Dev servers T3 discovered on the environment host; see PortModels.kt. */
     val localServers: LocalServerCatalog = LocalServerCatalog(),
     /**

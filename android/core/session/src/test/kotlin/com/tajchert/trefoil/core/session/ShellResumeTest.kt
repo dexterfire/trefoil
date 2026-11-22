@@ -129,7 +129,8 @@ class ShellResumeTest {
 
     private class Fixture : AutoCloseable {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val client = T3Client(scope)
+        var client = T3Client(scope)
+            private set
         val server = MockWebServer()
         val shells = Channel<Triple<WebSocket, String, JsonObject>>(Channel.UNLIMITED)
         val acks = Channel<String>(Channel.UNLIMITED)
@@ -184,6 +185,8 @@ class ShellResumeTest {
             withTimeout(5000) { while (acks.receive() != stream.second) {} }
         }
         fun rows() = client.state.value.threads.sortedBy { it.id } to client.state.value.projects.sortedBy { it.id }
+        /** An app restart: a new client on the same server, with nothing in memory. */
+        fun restart() { client.close(); client = T3Client(scope) }
         override fun close() { client.close(); scope.cancel(); server.shutdown() }
         companion object {
             fun json(body: String) = MockResponse().setHeader("Content-Type", "application/json").setBody(body)
@@ -561,6 +564,162 @@ class ShellResumeTest {
             f.chunk(fresh, """${Fixture.shell(30, Fixture.project, Fixture.thread("b"))}, {"kind":"synchronized"}""")
             assertEquals(listOf("b"), f.client.state.value.threads.map { it.id })
             assertTrue(f.client.state.value.canWrite)
+        }
+    }
+
+    /** An app restart that reads [entry] back through the cache file format and restores it into the new client. */
+    private fun Fixture.restartFrom(entry: CachedShell?): CachedShell {
+        val bytes = ShellCacheCodec.encode(entry ?: error("No cache entry"))!!
+        restart()
+        val cached = ShellCacheCodec.decode(bytes, environmentId)!!
+        assertTrue(client.restoreShell(cached))
+        return cached
+    }
+
+    private suspend fun Fixture.loadAB(): Triple<WebSocket, String, JsonObject> = connect().also {
+        chunk(it, """${Fixture.shell(10, Fixture.project, "${Fixture.thread("a")},${Fixture.thread("b")}")}, {"kind":"synchronized"}""")
+        chunk(it, """{"kind":"thread.updated","sequence":12,"location":"active","thread":${Fixture.thread("a", "A1")}}""")
+    }
+
+    private fun assertNotLive(state: ClientState) {
+        assertFalse(state.shellLive); assertFalse(state.canWrite); assertFalse(state.canWriteThreads)
+    }
+
+    @Test fun cachedRowsShowAtOnceAfterARestartAndResumeFromTheirCursor() = runBlocking {
+        Fixture().use { f ->
+            f.loadAB()
+            assertTrue(f.client.state.value.shellLive)
+            f.client.disconnect()
+            val entry = f.client.shellCacheEntry("env", nowMillis = 77)
+            assertEquals(CachedShellCursor("1.2.3", 40, 12, entry!!.cursor!!.snapshotAtMillis), entry.cursor)
+            assertEquals(77L, entry.savedAtMillis)
+            val before = f.rows()
+
+            f.restartFrom(entry)
+            val resumed = f.connect()
+            assertEquals(12L, resumed.afterSequence)
+            assertEquals("The cached rows show while the connection resumes", before, f.rows())
+            assertTrue(f.client.state.value.shellLoaded)
+            assertNotLive(f.client.state.value)
+            f.chunk(resumed, """{"kind":"thread.removed","sequence":13,"location":"active","threadId":"b"}""")
+            assertNotLive(f.client.state.value)
+            f.chunk(resumed, """{"kind":"synchronized"}""")
+            assertEquals(listOf("a" to "A1"), f.client.state.value.threads.map { it.id to it.title })
+            assertTrue(f.client.state.value.shellLive)
+            assertTrue(f.client.state.value.canWrite)
+            assertEquals(13L, f.client.shellCacheEntry("env")?.cursor?.sequence)
+        }
+    }
+
+    @Test fun cachedRowsOfAnotherServerBuildLoadAFullSnapshot() = runBlocking {
+        Fixture().use { f ->
+            f.loadAB(); f.client.disconnect()
+            f.restartFrom(f.client.shellCacheEntry("env"))
+            f.serverVersion = "1.2.4"
+            val fresh = f.connect()
+            assertNull(fresh.afterSequence)
+            assertEquals(listOf("a", "b"), f.client.state.value.threads.map { it.id }.sorted())
+            assertNotLive(f.client.state.value)
+            f.chunk(fresh, """${Fixture.shell(3, Fixture.project, Fixture.thread("z"))}, {"kind":"synchronized"}""")
+            assertEquals(listOf("z"), f.client.state.value.threads.map { it.id })
+            assertTrue(f.client.state.value.canWrite)
+        }
+    }
+
+    @Test fun aCachedCursorOlderThanTheResumeWindowLoadsAFullSnapshot() = runBlocking {
+        Fixture().use { f ->
+            f.loadAB(); f.client.disconnect()
+            val entry = f.client.shellCacheEntry("env")!!
+            val stale = entry.copy(cursor = entry.cursor!!.copy(snapshotAtMillis = System.currentTimeMillis() - SHELL_RESUME_MAX_AGE_MS - 60_000))
+            f.restartFrom(stale)
+            val fresh = f.connect()
+            assertNull(fresh.afterSequence)
+            assertTrue("Old rows still show until the snapshot", f.client.state.value.shellLoaded)
+            f.chunk(fresh, """${Fixture.shell(20, Fixture.project, Fixture.thread("c"))}, {"kind":"synchronized"}""")
+            assertEquals(listOf("c"), f.client.state.value.threads.map { it.id })
+            f.client.disconnect()
+            assertEquals(20L, f.connect().afterSequence)
+        }
+    }
+
+    @Test fun cachedRowsWithoutACursorLoadAFullSnapshot() = runBlocking {
+        Fixture().use { f ->
+            f.loadAB(); f.client.disconnect()
+            f.restartFrom(f.client.shellCacheEntry("env")!!.copy(cursor = null))
+            val fresh = f.connect()
+            assertNull(fresh.afterSequence)
+            assertEquals(2, f.client.state.value.threads.size)
+        }
+    }
+
+    @Test fun aCorruptOrUnknownCacheFileRestoresNothingAndLoadsAFullSnapshot() = runBlocking {
+        Fixture().use { f ->
+            f.loadAB(); f.client.disconnect()
+            val bytes = ShellCacheCodec.encode(f.client.shellCacheEntry("env")!!)!!
+            f.restart()
+            assertNull(ShellCacheCodec.decode(bytes.copyOf(bytes.size / 2), "env"))
+            assertNull(ShellCacheCodec.decode(bytes.decodeToString().replace("\"version\":1", "\"version\":2").encodeToByteArray(), "env"))
+            assertNull("Another environment's file", ShellCacheCodec.decode(bytes, "other"))
+            val fresh = f.connect()
+            assertNull(fresh.afterSequence)
+            assertFalse(f.client.state.value.shellLoaded)
+            assertTrue(f.client.state.value.threads.isEmpty())
+        }
+    }
+
+    @Test fun nothingCanBeWrittenFromCachedRows() = runBlocking {
+        Fixture().use { f ->
+            f.loadAB(); f.client.disconnect()
+            f.restartFrom(f.client.shellCacheEntry("env"))
+            val rename = runCatching { f.client.threadAction(ThreadTarget("env", "a"), ThreadAction.Rename, "x") }
+            assertTrue(rename.exceptionOrNull() is IllegalStateException)
+            f.answerConfigs = false
+            val connecting = async { f.client.connect(f.environment()) }
+            val held = withTimeout(5000) { f.heldConfigs.receive() }
+            assertNotLive(f.client.state.value)
+            assertFalse(f.client.state.value.canRead)
+            assertEquals(2, f.client.state.value.threads.size)
+            assertTrue(runCatching { f.client.threadAction(ThreadTarget("env", "a"), ThreadAction.Rename, "x") }.isFailure)
+            f.answerConfig(held)
+            val resumed = f.nextShell()
+            withTimeout(5000) { connecting.await() }
+            assertEquals(12L, resumed.afterSequence)
+            assertNotLive(f.client.state.value)
+            assertTrue(runCatching { f.client.threadAction(ThreadTarget("env", "a"), ThreadAction.Settle) }.isFailure)
+            assertFalse("Nothing was dispatched", "orchestration.dispatchCommand" in f.log)
+            f.chunk(resumed, """{"kind":"synchronized"}""")
+            assertTrue(f.client.state.value.canWriteThreads)
+        }
+    }
+
+    @Test fun restoringNeverReplacesRowsThisProcessAlreadyHolds() = runBlocking {
+        Fixture().use { f ->
+            f.loadAB(); f.client.disconnect()
+            val older = f.client.shellCacheEntry("env")!!.copy(threads = emptyList(), cursor = null)
+            assertFalse("Retained rows are newer", f.client.restoreShell(older))
+            assertEquals(2, f.client.state.value.threads.size)
+            assertEquals(12L, f.connect().afterSequence)
+            assertFalse("A connection in progress wins", f.client.restoreShell(older))
+        }
+    }
+
+    @Test fun deselectingKeepsTheRowsAndCursorButForgettingDropsThem() = runBlocking {
+        Fixture().use { f ->
+            f.loadAB()
+            f.client.deselectEnvironment("env")
+            assertNull(f.client.state.value.environment)
+            assertTrue(f.client.state.value.threads.isEmpty())
+            assertEquals(ConnectionStatus.Disconnected, f.client.state.value.connection)
+            assertEquals("Deselecting keeps what the cache stores", 12L, f.client.shellCacheEntry("env")?.cursor?.sequence)
+            val resumed = f.connect()
+            assertEquals(12L, resumed.afterSequence)
+            assertEquals(2, f.client.state.value.threads.size)
+            f.client.deselectEnvironment("other")
+            assertEquals("Another machine's deselect changes nothing", "env", f.client.state.value.environment?.id)
+            f.client.disconnect()
+            f.client.forgetEnvironment("env")
+            assertNull("Forgetting leaves nothing to cache", f.client.shellCacheEntry("env"))
+            assertNull(f.connect().afterSequence)
         }
     }
 }

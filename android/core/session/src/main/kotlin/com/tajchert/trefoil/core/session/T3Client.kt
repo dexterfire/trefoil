@@ -169,13 +169,17 @@ class T3Client(
         val current = state.value
         current.environment?.id?.let { id ->
             environmentStates.remove(id)
-            environmentStates[id] = current.copy(canWrite = false, canWriteThreads = false, canRead = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = null, screens = ScreenCatalog(), localServers = LocalServerCatalog(), portForwards = emptyList())
-            while (environmentStates.size > 4) {
-                val evicted = environmentStates.keys.first()
-                environmentStates.remove(evicted)
-                shellResume.forget(evicted)
-                threadProjections.keys.removeAll { it.first == evicted }
-            }
+            environmentStates[id] = current.copy(canWrite = false, canWriteThreads = false, canRead = false, shellLive = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = null, screens = ScreenCatalog(), localServers = LocalServerCatalog(), portForwards = emptyList())
+            evictRetained()
+        }
+    }
+    /** Keeps the four most recently retained environments; an evicted one loses its cursor and thread projections. */
+    private fun evictRetained() {
+        while (environmentStates.size > 4) {
+            val evicted = environmentStates.keys.first()
+            environmentStates.remove(evicted)
+            shellResume.forget(evicted)
+            threadProjections.keys.removeAll { it.first == evicted }
         }
     }
     private fun update(block: (ClientState) -> ClientState) = mutable.update(block)
@@ -427,7 +431,7 @@ class T3Client(
             if (state.value.environment?.id != environment.id) usageCache.clear()
             val retained = environmentStates[environment.id] ?: ClientState()
             projection = JsonObject(emptyMap())
-            update { retained.copy(environment = environment, connection = ConnectionStatus.Connecting, canWrite = false, canWriteThreads = false, canRead = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = null, settlementUndo = null, threadActionsConfigured = false, activeRoute = null,
+            update { retained.copy(environment = environment, connection = ConnectionStatus.Connecting, canWrite = false, canWriteThreads = false, canRead = false, shellLive = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = null, settlementUndo = null, threadActionsConfigured = false, activeRoute = null,
                 localServers = LocalServerCatalog(), previewTunnelSetting = null, previewTunnelDisabled = false, portForwards = emptyList()) }
         }
         try {
@@ -682,7 +686,7 @@ class T3Client(
         resetScreens()
         stopPortForwards()
         undoPlan = null; pendingModelSelections = null
-        update { it.copy(connection =ConnectionStatus.Error, canWrite = false, canWriteThreads = false, canRead = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = message, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
+        update { it.copy(connection =ConnectionStatus.Error, canWrite = false, canWriteThreads = false, canRead = false, shellLive = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = message, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
         pending.values.forEach { it.completeExceptionally(IllegalStateException(message)) }; pending.clear()
         streams.clear(); heartbeat?.cancel(); socket?.cancel(); socket = null
     }
@@ -702,7 +706,7 @@ class T3Client(
         resetScreens()
         stopPortForwards()
         undoPlan = null; pendingModelSelections = null
-        update { it.copy(connection =ConnectionStatus.Disconnected, canWrite = false, canWriteThreads = false, canRead = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = reason ?: it.error, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
+        update { it.copy(connection =ConnectionStatus.Disconnected, canWrite = false, canWriteThreads = false, canRead = false, shellLive = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = reason ?: it.error, threadActionsConfigured = false, settlementUndo = null, activeRoute = null) }
     }
 
     private fun usageEnvironment(): SavedEnvironment {
@@ -910,7 +914,8 @@ class T3Client(
     private fun updateWritable() = update {
         val fresh = shellReady && (it.selectedThreadId == null || threadReady) && it.connection == ConnectionStatus.Connected
         it.copy(canRead = fresh, canWrite = authorized && fresh,
-            canWriteThreads = authorized && shellReady && it.connection == ConnectionStatus.Connected)
+            canWriteThreads = authorized && shellReady && it.connection == ConnectionStatus.Connected,
+            shellLive = shellReady && it.connection == ConnectionStatus.Connected)
     }
     /** Memory-only shell cursors; see [ShellResume]. */
     private val shellResume = ShellResume()
@@ -1798,6 +1803,62 @@ class T3Client(
         threadProjections.keys.removeAll { it.first == environmentId }
         environmentId?.let(tokens::forget)
     }
+    /**
+     * Stops showing [environmentId] (a failed cold-start connect returns to the machine list) without forgetting it: the
+     * connection closes and the visible state is cleared, while its retained rows, resume cursor, thread projections and
+     * renewed token stay, as after a disconnect. Unlike [forgetEnvironment], nothing about the machine is dropped.
+     */
+    fun deselectEnvironment(environmentId: String) = synchronized(lifecycleLock) {
+        if (environmentId != state.value.environment?.id) return@synchronized
+        disconnectNow()
+        projection = JsonObject(emptyMap())
+        mutable.value = ClientState()
+    }
+
+    /**
+     * Restores [shell] (read from the local cache) as [CachedShell.environmentId]'s retained rows, so its next connect
+     * shows them at once with `shellLoaded` and, when the cached cursor still matches the server origin and is recent,
+     * resumes with `afterSequence`. Restored rows are never live: `canRead`, `canWrite` and `canWriteThreads` stay false
+     * and `shellLive` false until the `synchronized` marker of a live connection, and nothing is sent. Rows this process
+     * already holds (retained, or a connection to it in progress) are newer and win; returns whether [shell] was restored.
+     * The restored lists are [shell]'s own instances, which is what the cursor describes.
+     */
+    fun restoreShell(shell: CachedShell): Boolean = synchronized(lifecycleLock) {
+        val id = shell.environmentId
+        val current = state.value
+        val shown = current.environment?.id == id
+        if (shown && (current.shellLoaded || current.connection != ConnectionStatus.Disconnected && current.connection != ConnectionStatus.Error)) return false
+        if (environmentStates[id]?.shellLoaded == true) return false
+        val base = (if (shown) current else environmentStates[id]) ?: ClientState()
+        val restored = base.copy(projects = shell.projects, threads = shell.threads, shellLoaded = true, shellLive = false,
+            canWrite = false, canWriteThreads = false, canRead = false, canReadUsage = false, busy = false)
+        if (shown) mutable.value = restored
+        environmentStates.remove(id)
+        environmentStates[id] = restored
+        evictRetained()
+        shellResume.forget(id)
+        shell.cursor?.takeIf { id in environmentStates }?.let { cursor ->
+            shellResume.restore(id, ShellCursor(ShellOrigin(id, cursor.serverVersion, cursor.databaseMigration), cursor.sequence,
+                cursor.snapshotAtMillis, ShellRows(shell.projects, shell.threads)))
+        }
+        true
+    }
+
+    /**
+     * What the local cache should hold for [environmentId]: its rows (shown or retained) once a snapshot was loaded, with
+     * the resume cursor only while it describes exactly these rows and knows its server origin; null without rows.
+     */
+    fun shellCacheEntry(environmentId: String, nowMillis: Long = System.currentTimeMillis()): CachedShell? = synchronized(lifecycleLock) {
+        val current = state.value
+        val source = (if (current.environment?.id == environmentId) current else environmentStates[environmentId])?.takeIf { it.shellLoaded }
+            ?: return null
+        val cursor = shellResume.cursor(environmentId)?.takeIf { it.rows.sameAs(ShellRows(source.projects, source.threads)) }
+        val origin = cursor?.origin
+        CachedShell(environmentId, source.projects, source.threads,
+            if (cursor != null && origin != null) CachedShellCursor(origin.serverVersion, origin.databaseMigration, cursor.sequence, cursor.snapshotAtMillis) else null,
+            nowMillis)
+    }
+
     override fun close() {
         disconnectNow(); environmentStates.clear(); shellResume.forget(null); threadProjections.clear()
         // Only this client's own calls and socket end above; a pool shared with the probe, the renewer and sibling clients keeps its warm connections.
