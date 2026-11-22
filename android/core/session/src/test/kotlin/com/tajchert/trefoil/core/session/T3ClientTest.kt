@@ -12,6 +12,43 @@ import org.junit.Test
 import java.util.concurrent.TimeUnit
 
 class T3ClientTest {
+ private fun T3Client.derivedHttp() = T3Client::class.java.getDeclaredField("http").apply { isAccessible = true }.get(this) as OkHttpClient
+
+ @Test fun sharedHttpKeepsThePoolAndClosingASiblingLeavesItWarm() = runBlocking {
+   val server = MockWebServer(); server.start()
+   val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+   val shared = OkHttpClient()
+   val client = T3Client(scope, http = shared); val sibling = T3Client(scope, http = shared)
+   try {
+     val http = client.derivedHttp()
+     assertSame(shared.connectionPool, http.connectionPool)
+     assertSame(shared.connectionPool, sibling.derivedHttp().connectionPool)
+     assertFalse(http.followRedirects); assertFalse(http.followSslRedirects)
+     assertTrue("The shared client itself is left as it was", shared.followRedirects)
+     repeat(2) { server.enqueue(MockResponse().setBody("ok")) }
+     http.newCall(Request.Builder().url(server.url("/a")).build()).execute().use { it.body!!.string() }
+     assertEquals(0, server.takeRequest().sequenceNumber)
+     sibling.close()
+     assertEquals("Closing a sibling keeps the shared pool's warm connection", 1, shared.connectionPool.idleConnectionCount())
+     http.newCall(Request.Builder().url(server.url("/b")).build()).execute().use { it.body!!.string() }
+     assertEquals("Second request reuses the pooled connection", 1, server.takeRequest().sequenceNumber)
+   } finally { client.close(); scope.cancel(); shared.connectionPool.evictAll(); server.shutdown() }
+ }
+
+ @Test fun privatePoolIsEvictedOnClose() = runBlocking {
+   val server = MockWebServer(); server.start()
+   val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+   val client = T3Client(scope)
+   try {
+     server.enqueue(MockResponse().setBody("ok"))
+     val http = client.derivedHttp()
+     http.newCall(Request.Builder().url(server.url("/a")).build()).execute().use { it.body!!.string() }
+     assertEquals(1, http.connectionPool.idleConnectionCount())
+     client.close()
+     assertEquals(0, http.connectionPool.idleConnectionCount())
+   } finally { scope.cancel(); server.shutdown() }
+ }
+
  @Test fun cancellationDuringConfigurationClosesSession() = runBlocking {
    val server = MockWebServer(); server.start()
    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)

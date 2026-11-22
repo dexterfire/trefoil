@@ -62,14 +62,18 @@ class T3Client(
     dpopKey: (() -> DpopKey)? = null,
     /** Renews DPoP sessions; share one per process so renewals of an environment are serialized and persisted. */
     private val tokens: EnvironmentTokenRenewer = EnvironmentTokenRenewer(dpopKey),
-    /** Share one per process with the renewer and the probe: this client derives its own from it and keeps its connection pool. */
-    http: OkHttpClient = OkHttpClient(),
+    /**
+     * Share one per process with the renewer and the probe: this client derives its own from it and keeps its connection
+     * pool. A shared pool is never evicted by [close]; null gives this client a private pool that [close] evicts.
+     */
+    http: OkHttpClient? = null,
 ) : TrefoilClient {
     private val authorizer = tokens.authorizer
     private var renewJob: Job? = null
     private val mutable = MutableStateFlow(ClientState())
     override val state: StateFlow<ClientState> = mutable.asStateFlow()
-    private val http = http.newBuilder().followRedirects(false).followSslRedirects(false).build()
+    private val ownsPool = http == null
+    private val http = (http ?: OkHttpClient()).newBuilder().followRedirects(false).followSslRedirects(false).build()
     private val fileDownloads = mutableSetOf<Call>()
     @Volatile private var socket: WebSocket? = null
     @Volatile private var generation = 0L
@@ -110,7 +114,7 @@ class T3Client(
     private var tunnelTickets: Pair<Long, MediaTicketCache>? = null
     /** One admission for every forward, matching [tunnelHttp]'s own dispatcher, so tunnels never queue or starve RPC. */
     private val tunnelAdmission = TunnelAdmission()
-    private val tunnelHttp: OkHttpClient by lazy { tunnelClient(http, tunnelAdmission) }
+    private val tunnelHttp: OkHttpClient by lazy { tunnelClient(this.http, tunnelAdmission) }
     @Volatile private var pongAt = 0L
     /** Arrival of the live connection's latest frame of any kind; a large snapshot in transit keeps it fresh. */
     @Volatile private var frameAt = 0L
@@ -1749,7 +1753,11 @@ class T3Client(
         threadProjections.keys.removeAll { it.first == environmentId }
         environmentId?.let(tokens::forget)
     }
-    override fun close() { disconnectNow(); environmentStates.clear(); shellResume.forget(null); threadProjections.clear(); http.connectionPool.evictAll() }
+    override fun close() {
+        disconnectNow(); environmentStates.clear(); shellResume.forget(null); threadProjections.clear()
+        // Only this client's own calls and socket end above; a pool shared with the probe, the renewer and sibling clients keeps its warm connections.
+        if (ownsPool) http.connectionPool.evictAll()
+    }
 }
 
 private const val CREATION_SOURCE = "mobile"
