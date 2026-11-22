@@ -5,6 +5,10 @@ import android.os.Looper
 import androidx.lifecycle.viewModelScope
 import com.tajchert.trefoil.core.model.AccessTokenType
 import com.tajchert.trefoil.core.model.ConnectionAttempt
+import com.tajchert.trefoil.core.model.ConnectionPhase
+import com.tajchert.trefoil.core.model.EnvironmentRoute
+import com.tajchert.trefoil.core.model.RouteKind
+import com.tajchert.trefoil.core.model.RouteSource
 import com.tajchert.trefoil.core.model.MachineProbe
 import com.tajchert.trefoil.core.model.SavedEnvironment
 import com.tajchert.trefoil.core.model.SshHostKey
@@ -20,6 +24,7 @@ import kotlinx.coroutines.cancel
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -50,16 +55,20 @@ class ColdStartConnectTest {
         private val clients = CopyOnWriteArrayList<Socket>()
         val port get() = socket.localPort
         val accepted = AtomicInteger()
+        @Volatile private var refusing = false
         init {
             servers += this
             thread(isDaemon = true) {
                 while (!socket.isClosed) {
                     val client = try { socket.accept() } catch (_: Exception) { break }
                     clients += client; accepted.incrementAndGet()
+                    if (refusing) runCatching { client.close() }
                 }
             }
         }
         fun dropAll() = clients.forEach { runCatching { it.close() } }
+        /** Closes every connection, now and from here on: the machine is down. */
+        fun refuse() { refusing = true; dropAll() }
         override fun close() { dropAll(); socket.close() }
     }
 
@@ -77,9 +86,14 @@ class ColdStartConnectTest {
     private fun machine(id: String, server: HangingServer) =
         SavedEnvironment(id, id.replaceFirstChar { it.uppercase() }, "https://127.0.0.1:${server.port}", "$id-token", tokenType = AccessTokenType.Bearer)
 
-    private fun start(store: MemoryStore, lastUsed: String?) {
+    /** Machines each probe saw, in order; filled when [start] is given probe results. */
+    private val probed = CopyOnWriteArrayList<String>()
+
+    /** With [probes], machine probes answer from it (missing: Unreachable) instead of reaching the fixtures. */
+    private fun start(store: MemoryStore, lastUsed: String?, probes: Map<String, MachineProbe>? = null) {
         prefs.edit().apply { if (lastUsed == null) remove(LAST_ENVIRONMENT) else putString(LAST_ENVIRONMENT, lastUsed) }.commit()
         model = TrefoilViewModel(RuntimeEnvironment.getApplication(), store)
+        if (probes != null) model.machineProbe = { environment, _ -> probed += environment.id; probes[environment.id] ?: MachineProbe.Unreachable }
         awaitTrue { model.environments.value == store.saved }
         model.resume()
     }
@@ -92,6 +106,9 @@ class ColdStartConnectTest {
             Thread.sleep(10)
         }
     }
+
+    /** Counts connects started (each user or automatic connect moves the view model's private epoch on once). */
+    private fun connects() = TrefoilViewModel::class.java.getDeclaredField("connectionEpoch").apply { isAccessible = true }.getLong(model)
 
     /** Lets the code under test run for [ms]; for asserting that something did not happen. */
     private fun idleFor(ms: Long) {
@@ -163,5 +180,98 @@ class ColdStartConnectTest {
         idleFor(500)
         assertTrue(model.working.value)
         assertEquals("The user's attempt is the one running", attempt, model.connectionAttempt.value.id)
+    }
+
+    @Test fun anUnreachableLastUsedMachineFailsQuietlyAndReturnsToThePicker() {
+        val alphaServer = HangingServer(); val betaServer = HangingServer()
+        start(MemoryStore(listOf(machine("alpha", alphaServer), machine("beta", betaServer))), lastUsed = "alpha", probes = emptyMap())
+        awaitTrue { alphaServer.accepted.get() >= 1 }
+        assertEquals("Only the connecting machine is probed, alongside its attempt", listOf("alpha"), probed.toList())
+        alphaServer.refuse()
+        awaitTrue { "beta" in probed }
+        assertNull(model.notice.value)
+        assertNull("The failed selection is cleared, so the picker shows", model.state.value.environment)
+        assertNull(model.state.value.error)
+        assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
+        assertEquals(MachineProbe.Unreachable, model.machineProbes.value["alpha"])
+        idleFor(500)
+        val acceptedAfterSettling = alphaServer.accepted.get()
+        idleFor(500)
+        assertEquals("alpha is probed once and not connected again", listOf("alpha", "beta"), probed.toList())
+        assertEquals(acceptedAfterSettling, alphaServer.accepted.get())
+        assertEquals(1L, connects())
+        assertFalse(model.working.value)
+    }
+
+    @Test fun aFailureTheProbeCannotExplainStaysLoudAndNothingAutoConnects() {
+        val alphaServer = HangingServer(); val betaServer = HangingServer()
+        // The machine answers but rejects the saved sign-in: the user has to pair again, so the failure is shown.
+        start(MemoryStore(listOf(machine("alpha", alphaServer), machine("beta", betaServer))), lastUsed = "alpha",
+            probes = mapOf("alpha" to MachineProbe.AuthFailed, "beta" to MachineProbe.Online))
+        awaitTrue { alphaServer.accepted.get() >= 1 }
+        alphaServer.refuse()
+        awaitTrue { model.connectionAttempt.value.phase == ConnectionPhase.Failed }
+        assertNotNull(model.notice.value ?: model.state.value.error)
+        idleFor(500)
+        assertEquals("No other machine is connected in its place", 1L, connects())
+        assertEquals(0, betaServer.accepted.get())
+    }
+
+    @Test fun aUrlPolicyRefusalAtColdStartIsShown() {
+        // Public plain HTTP is blocked by the shared URL policy; the real prober reports it as needing attention.
+        val blocked = SavedEnvironment("alpha", "Alpha", "http://203.0.113.7:3773", "alpha-token", tokenType = AccessTokenType.Bearer)
+        start(MemoryStore(listOf(blocked)), lastUsed = "alpha")
+        awaitTrue { model.connectionAttempt.value.phase == ConnectionPhase.Failed }
+        assertNotNull(model.notice.value ?: model.state.value.error)
+    }
+
+    @Test fun whenTheLastUsedMachineIsDownAndAnotherIsOnlineExactlyOneFollowUpConnectRuns() {
+        val alphaServer = HangingServer(); val betaServer = HangingServer()
+        start(MemoryStore(listOf(machine("alpha", alphaServer), machine("beta", betaServer))), lastUsed = "alpha",
+            probes = mapOf("beta" to MachineProbe.Online))
+        awaitTrue { alphaServer.accepted.get() >= 1 }
+        assertEquals(1L, connects())
+        alphaServer.refuse()
+        awaitTrue { betaServer.accepted.get() >= 1 }
+        assertEquals("One automatic connect, to the online machine", 2L, connects())
+        val alphaAccepted = alphaServer.accepted.get()
+        // beta fails as well: nothing connects again, neither alpha nor beta.
+        betaServer.refuse()
+        awaitTrue { !model.working.value }
+        idleFor(1_000)
+        assertEquals(2L, connects())
+        assertEquals("alpha is not retried", alphaAccepted, alphaServer.accepted.get())
+        assertEquals(listOf("alpha", "beta"), probed.toList())
+    }
+
+    private fun sshWithLanRoute(lan: HangingServer) = SavedEnvironment("ssh", "Home", "", "ssh-token",
+        ssh = SshProfile("127.0.0.1", 22, "fixture", "SHA256:fixture", "ssh-ed25519"),
+        routes = listOf(EnvironmentRoute(RouteKind.Lan, "https://127.0.0.1:${lan.port}", RouteSource.Learned)))
+
+    @Test fun tappingTheMachineTheColdStartConnectIsReachingMakesItTheUsersAttempt() {
+        val lanServer = HangingServer()
+        val home = sshWithLanRoute(lanServer)
+        start(MemoryStore(listOf(home)), lastUsed = "ssh", probes = emptyMap())
+        awaitTrue { lanServer.accepted.get() >= 1 }
+        val attempt = model.connectionAttempt.value.id
+        model.selectMachine(home)
+        idleFor(100)
+        assertEquals("The running attempt is kept, not restarted", attempt, model.connectionAttempt.value.id)
+        assertEquals(1L, connects())
+        // The LAN address fails; SSH has no saved login, and the attempt is the user's now: it asks for one.
+        lanServer.refuse()
+        awaitTrue { model.sshLogin.value != null }
+        assertEquals(1L, connects())
+    }
+
+    @Test fun withoutATapTheColdStartConnectNeverAsksForAnSshLogin() {
+        val lanServer = HangingServer()
+        start(MemoryStore(listOf(sshWithLanRoute(lanServer))), lastUsed = "ssh", probes = emptyMap())
+        awaitTrue { lanServer.accepted.get() >= 1 }
+        lanServer.refuse()
+        awaitTrue { !model.working.value }
+        idleFor(200)
+        assertNull(model.sshLogin.value)
+        assertEquals("An SSH machine's failure is shown", ConnectionPhase.Failed, model.connectionAttempt.value.phase)
     }
 }

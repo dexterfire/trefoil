@@ -219,10 +219,15 @@ class TrefoilViewModel internal constructor(
     private var probeJob: Job? = null
     /** Auto-connect is considered once per app launch, until a decision is made or the user acts. */
     private var autoConnectPending = true
-    /** The [connectionEpoch] of the cold-start connect of the last-used machine; its failure is quiet (its probe shows why). */
-    private var quietFailureEpoch: Long? = null
-    /** The quiet attempt of [quietFailureEpoch] failed. */
+    /**
+     * The [connectionEpoch] of the cold-start connect while it is still quiet (see [startConnect]); a tap on its machine
+     * makes it the user's attempt (null) before it ends.
+     */
+    private var quietAttemptEpoch: Long? = null
+    /** The quiet attempt of this epoch failed as unreachable. */
     private var quietFailedEpoch: Long? = null
+    /** Probes one saved machine; replaced only by tests. */
+    internal var machineProbe: suspend (SavedEnvironment, List<SshHostKey>) -> MachineProbe = { environment, keys -> prober.probe(environment, keys) }
     /**
      * The machine of the last successful connection attempt. Armed only by a successful connection and disarmed by any
      * disconnect this view model makes, so a later drop to Error/Disconnected is unexpected and reconnects once.
@@ -320,16 +325,11 @@ class TrefoilViewModel internal constructor(
     /** A mutation the user started; counted so a route switch never abandons it. */
     private fun mutation(failure: String, block: suspend () -> Unit) = action(failure) { mutationsInFlight.tracked { block() } }
 
-    private fun connectionAction(failure: String, kind: ConnectionKind = ConnectionKind.Saved, block: suspend () -> Unit): Job =
-        runConnectionAction(failure, kind, quietFailure = false, block)
-
-    /** [quietFailure]: see [connectionFailed]. */
-    private fun runConnectionAction(failure: String, kind: ConnectionKind, quietFailure: Boolean, block: suspend () -> Unit): Job {
+    private fun connectionAction(failure: String, kind: ConnectionKind = ConnectionKind.Saved, block: suspend () -> Unit): Job {
         backgroundDisconnectJob?.cancel(); backgroundDisconnectJob = null
         reconnectWhenOnline = null
         keepAliveLatched = false
         val epoch = ++connectionEpoch
-        quietFailureEpoch = epoch.takeIf { quietFailure }
         attemptEnvironmentId = null
         autoConnectPending = false
         connectionJob?.cancel()
@@ -362,7 +362,7 @@ class TrefoilViewModel internal constructor(
                         if (epoch == connectionEpoch) {
                             if (e.changed) {
                                 pendingInput = null
-                                reportConnectionFailure(epoch, kind, "SSH host key changed for ${e.presented.host}:${e.presented.port}. Connection blocked. Verify the server key independently before changing your saved trust.")
+                                connectionFailed(epoch, kind, "SSH host key changed for ${e.presented.host}:${e.presented.port}. Connection blocked. Verify the server key independently before changing your saved trust.")
                             } else if (!foreground) {
                                 // A background (keep-alive) attempt never raises the trust prompt; it fails like any other attempt.
                                 pendingInput = null
@@ -375,6 +375,8 @@ class TrefoilViewModel internal constructor(
                     } catch (e: SshLoginRequired) {
                         // Every route before it failed and SSH is the last option: ask for the login, like a plain SSH connect.
                         if (epoch == connectionEpoch) { pendingInput = null; _connectionAttempt.value = ConnectionAttempt(); _sshLogin.value = e.input }
+                    } catch (e: QuietStartupFailure) {
+                        if (epoch == connectionEpoch) { pendingInput = null; quietStartupFailed(epoch, e.environmentId) }
                     } catch (e: SshConnectionException) {
                         if (epoch == connectionEpoch) { pendingInput = null; connectionFailed(epoch, kind, e.message ?: failure) }
                     } catch (e: PairingException) {
@@ -388,22 +390,22 @@ class TrefoilViewModel internal constructor(
         return connectionJob!!
     }
 
-    /**
-     * The cold-start connect of the last-used machine fails without a notice: the machine list then probes it and shows
-     * why. A changed SSH host key is always reported ([reportConnectionFailure]).
-     */
     private fun connectionFailed(epoch: Long, kind: ConnectionKind, message: String) {
-        if (epoch == quietFailureEpoch) {
-            quietFailedEpoch = epoch
-            _connectionAttempt.value = ConnectionAttempt()
-            return
-        }
-        reportConnectionFailure(epoch, kind, message)
-    }
-
-    private fun reportConnectionFailure(epoch: Long, kind: ConnectionKind, message: String) {
         showConnectionFailure(message)
         _connectionAttempt.value = ConnectionAttempt(epoch, kind, ConnectionPhase.Failed, message)
+    }
+
+    /**
+     * The cold-start connect found its machine unreachable: no notice, and the failed selection is cleared so the machine
+     * list (with that machine's probe) is shown instead of its empty thread screen.
+     */
+    private fun quietStartupFailed(epoch: Long, environmentId: String) {
+        quietFailedEpoch = epoch
+        _machineProbes.update { it + (environmentId to MachineProbe.Unreachable) }
+        if (state.value.environment?.id == environmentId && state.value.connection != ConnectionStatus.Connected) client.forgetEnvironment(environmentId)
+        if (selectedEnvironment?.id == environmentId) selectedEnvironment = null
+        if (attemptEnvironmentId == environmentId) attemptEnvironmentId = null
+        _connectionAttempt.value = ConnectionAttempt()
     }
 
     private fun connectionStage(message: String) {
@@ -481,6 +483,9 @@ class TrefoilViewModel internal constructor(
      * connects (and [connectThroughPlan] closes the previous one first).
      */
     fun selectMachine(environment: SavedEnvironment) {
+        // A tap on the machine the cold-start connect is reaching makes that attempt the user's: it then asks for an SSH
+        // login and reports a failure like any connect.
+        if (quietAttemptEpoch == connectionEpoch && _working.value && attemptEnvironmentId == environment.id) { quietAttemptEpoch = null; return }
         if (reusableSession(environment.id)) return
         connect(environment)
     }
@@ -496,8 +501,9 @@ class TrefoilViewModel internal constructor(
     fun connect(environment: SavedEnvironment) { startConnect(environment, quiet = false) }
 
     /**
-     * A [quiet] attempt (the cold-start connect) never prompts: it does not start when only SSH without a saved login is
-     * left, and fails without a notice instead of asking for the login. Null when no attempt started.
+     * A [quiet] attempt (the cold-start connect) does not start when only SSH without a saved login is left (that would
+     * prompt), and while it stays quiet ([quietAttemptEpoch]) an unreachable machine fails without a notice (see
+     * [connectThroughPlan]). Null when no attempt started.
      */
     private fun startConnect(environment: SavedEnvironment, quiet: Boolean): Job? {
         val input = environment.ssh?.let { environment.sshInput() }
@@ -506,8 +512,15 @@ class TrefoilViewModel internal constructor(
         if (draft.value != null && environment.id != drafts.environmentId) clearDraft()
         // Only SSH is left and its login is not saved: ask right away, without a connection attempt.
         if (needsLogin) { cancelSsh(); _sshLogin.value = input; return null }
-        val job = if (input != null) runConnectionAction(SSH_FAILURE, ConnectionKind.Ssh, quiet) { leaveMachine(environment.id); connectThroughPlan(environment, interactive = !quiet) }
-        else runConnectionAction("Could not connect. Check the server or pair again if access has expired.", ConnectionKind.Saved, quiet) { leaveMachine(environment.id); connectThroughPlan(environment, interactive = !quiet) }
+        val attempt: suspend () -> Unit = {
+            // The block runs only while its epoch is current.
+            val epoch = connectionEpoch
+            leaveMachine(environment.id)
+            connectThroughPlan(environment, quiet = if (quiet) ({ quietAttemptEpoch == epoch }) else null)
+        }
+        val job = if (input != null) connectionAction(SSH_FAILURE, ConnectionKind.Ssh, attempt)
+        else connectionAction("Could not connect. Check the server or pair again if access has expired.", block = attempt)
+        if (quiet) quietAttemptEpoch = connectionEpoch
         attemptEnvironmentId = environment.id
         return job
     }
@@ -518,29 +531,64 @@ class TrefoilViewModel internal constructor(
      * Walks [requested]'s connection plan (its latest saved copy), from [startAt] when given: direct routes in one
      * [TrefoilClient.connect] call per run, SSH in its slot when its login is saved. Without a saved login SSH is skipped
      * when a later route (the tunnel) exists; as the last option it asks for the login when [interactive], else fails.
+     *
+     * Routes that cannot work on plain cellular are left out ([usableRoutes]); when the network stops being plain cellular
+     * during the attempt, they are tried before it fails (through the client, so the URL policy still applies).
+     *
+     * While [quiet] holds (the cold-start connect, see [startConnect]), a machine without SSH is probed alongside the
+     * attempt; a failure ends quietly ([QuietStartupFailure]) only when that probe finds the machine unreachable. Anything
+     * a probe reports otherwise (sign-in rejected, blocked address, another machine, a server that answers while the
+     * session fails) and every SSH failure or login prompt is a normal failure.
      */
-    private suspend fun connectThroughPlan(requested: SavedEnvironment, startAt: EnvironmentRoute? = null, interactive: Boolean = true) {
+    private suspend fun connectThroughPlan(
+        requested: SavedEnvironment,
+        startAt: EnvironmentRoute? = null,
+        interactive: Boolean = true,
+        quiet: (() -> Boolean)? = null,
+    ) {
         disconnectCurrent()
         // A request made before its machine was forgotten never connects it (nor pairs it anew).
         val environment = _environments.value.firstOrNull { it.id == requested.id } ?: throw MachineRemovedException()
         selectedEnvironment = environment.forStorage()
-        val plan = environment.candidateRoutes().let { plan -> startAt?.let { start -> plan.dropWhile { !sameRoute(it, start) } }?.ifEmpty { null } ?: plan }
-            .let { usableRoutes(it, cellularOnly) }
+        val fullPlan = environment.candidateRoutes().let { plan -> startAt?.let { start -> plan.dropWhile { !sameRoute(it, start) } }?.ifEmpty { null } ?: plan }
+        val plan = usableRoutes(fullPlan, cellularOnly)
+        val skipped = fullPlan.filter { route -> plan.none { it === route } }
         val input = environment.ssh?.let { environment.sshInput() }
         // No leg connects for a machine forgotten while the plan runs; one that connected anyway is closed again.
         fun ensureSaved() { if (_environments.value.none { it.id == environment.id }) throw MachineRemovedException() }
-        val outcome = walkConnectionPlan(plan, input?.hasSavedLogin() == true, ::connectionStage,
-            direct = { routes ->
-                ensureSaved()
-                client.connect(environment, routes)
-                try { ensureSaved() } catch (e: MachineRemovedException) { client.disconnect(); throw e }
-            },
-            ssh = { ensureSaved(); openSsh(checkNotNull(input)) },
-        )
-        if (outcome == PlanOutcome.NeedsSshLogin) {
-            if (interactive && input != null) throw SshLoginRequired(input)
-            throw PairingException("Could not reach this machine without your SSH login. Connect to sign in again.")
+        val direct: suspend (List<EnvironmentRoute>) -> Unit = { routes ->
+            ensureSaved()
+            client.connect(environment, routes)
+            try { ensureSaved() } catch (e: MachineRemovedException) { client.disconnect(); throw e }
         }
+        val keys = hostKeys
+        val reachability = if (quiet != null && environment.ssh == null) viewModelScope.async {
+            try { machineProbe(environment, keys) } catch (e: CancellationException) { throw e } catch (_: Exception) { MachineProbe.Unknown }
+        } else null
+        try {
+            var failure: Exception? = null
+            var outcome = try { walkConnectionPlan(plan, input?.hasSavedLogin() == true, ::connectionStage, direct, ssh = { ensureSaved(); openSsh(checkNotNull(input)) }) }
+            catch (e: CancellationException) { throw e } catch (e: MachineRemovedException) { throw e } catch (e: SshHostKeyException) { throw e }
+            catch (e: Exception) { failure = e; null }
+            if (outcome != PlanOutcome.Connected && skipped.isNotEmpty() && cellularOnly != true) {
+                // Left out on plain cellular (only LAN and Tailnet routes are), and the network changed since.
+                outcome = try { walkConnectionPlan(skipped, false, ::connectionStage, direct, ssh = {}) }
+                catch (e: CancellationException) { throw e } catch (e: MachineRemovedException) { throw e }
+                catch (_: Exception) { outcome }
+            }
+            when (outcome) {
+                PlanOutcome.Connected -> return
+                PlanOutcome.NeedsSshLogin -> {
+                    if (interactive && quiet?.invoke() != true && input != null) throw SshLoginRequired(input)
+                    throw PairingException("Could not reach this machine without your SSH login. Connect to sign in again.")
+                }
+                null -> {
+                    val error = checkNotNull(failure)
+                    if (reachability != null && reachability.await() == MachineProbe.Unreachable && quiet?.invoke() == true) throw QuietStartupFailure(environment.id)
+                    throw error
+                }
+            }
+        } finally { reachability?.cancel() }
     }
 
     private suspend fun openSsh(input: SshConnectionInput) {
@@ -959,8 +1007,8 @@ class TrefoilViewModel internal constructor(
             if (connectLastUsedFirst) connectLastUsedNow()?.let { (id, attempt, attemptEpoch) ->
                 attempt.join()
                 if (!foreground) return@launch
-                // Only a quiet failure with nothing started since leaves auto-connect to the probes; the failed machine
-                // is probed (so its card shows why) but not connected again.
+                // Only a quiet failure with nothing started since leaves auto-connect to the probes. The failed machine
+                // was probed with its attempt (its card shows Unreachable), so it is neither probed nor connected again.
                 if (attemptEpoch == connectionEpoch && quietFailedEpoch == attemptEpoch) { autoConnectPending = true; failedLastUsed = id }
             }
             val epoch = connectionEpoch
@@ -968,7 +1016,7 @@ class TrefoilViewModel internal constructor(
             val live = state.value.environment?.id?.takeIf {
                 state.value.connection in setOf(ConnectionStatus.Connected, ConnectionStatus.Connecting, ConnectionStatus.Reconnecting)
             }
-            val targets = _environments.value.filter { it.id != skipId && it.id != live }
+            val targets = _environments.value.filter { it.id != skipId && it.id != live && it.id != failedLastUsed }
             _machineProbes.update { probes ->
                 probes.filterKeys { id -> _environments.value.any { it.id == id } } + targets.associate { it.id to MachineProbe.Checking }
             }
@@ -992,7 +1040,7 @@ class TrefoilViewModel internal constructor(
             supervisorScope {
                 targets.forEach { environment ->
                     launch {
-                        val result = prober.probe(environment, keys)
+                        val result = machineProbe(environment, keys)
                         _machineProbes.update { probes -> if (environment.id in probes) probes + (environment.id to result) else probes }
                         considerAutoConnect()
                     }
@@ -1276,6 +1324,8 @@ internal enum class PlanOutcome { Connected, NeedsSshLogin }
 
 /** The machine was forgotten while connecting: the whole connection plan stops, no route may connect for it. */
 internal class MachineRemovedException : Exception("This machine was removed while connecting")
+/** The cold-start connect found its machine unreachable; it ends without a notice. */
+private class QuietStartupFailure(val environmentId: String) : Exception("Machine unreachable")
 
 /** Every route before SSH failed, SSH is the last option and its login is not saved. */
 internal class SshLoginRequired(val input: SshConnectionInput) : Exception("SSH login required")
