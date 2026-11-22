@@ -12,6 +12,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.descriptors.elementNames
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -20,6 +21,33 @@ import java.util.concurrent.ConcurrentHashMap
 
 class ShellCacheTest {
     @get:Rule val timeout: Timeout = Timeout.seconds(30)
+
+    /**
+     * Every field the cache file persists. When this changes, bump [ShellCacheCodec.VERSION] (old files would otherwise
+     * read the new field as its default while keeping their resume cursor, so the rows would never be corrected) and
+     * then update the list and the expected version together.
+     */
+    @Test fun persistedFieldsChangeOnlyWithTheFormatVersion() {
+        val persisted = mapOf(
+            "Project" to Project.serializer().descriptor.elementNames.toList(),
+            "ThreadSummary" to ThreadSummary.serializer().descriptor.elementNames.toList(),
+            "CachedShellCursor" to CachedShellCursor.serializer().descriptor.elementNames.toList(),
+        )
+        assertEquals("Bump ShellCacheCodec.VERSION when the persisted fields change", 1, ShellCacheCodec.VERSION)
+        assertEquals("Persisted fields changed: bump ShellCacheCodec.VERSION, then update this list", mapOf(
+            "Project" to listOf("id", "title", "path"),
+            "ThreadSummary" to listOf("id", "projectId", "title", "status", "createdAt", "updatedAt", "latestUserMessageAt",
+                "latestUserAuthoredMessageAt", "archivedAt", "archived", "pinnedAt", "settledAt", "settledOverride", "activeOrderKey",
+                "pinOrderKey", "pendingRequestKind", "latestMessage", "branch", "model", "blockedOnThreadWait", "activityRunStatus",
+                "snoozedUntil", "unsettledAt", "latestRunRequestedAt", "latestRunCompletedAt", "latestRunStartedAt",
+                "activityRunStartedAt", "activityRunStartedAtPresent", "latestRunId", "activeRunId", "providerInstanceId",
+                "modelInstanceId", "providerInstanceHistory", "parentThreadId", "relationshipToParent", "sideChat", "creationSource",
+                "deletedAt", "activeProviderThreadId", "activityRunStatusPresent", "snoozedAt", "pendingRequestId",
+                "pendingRequestCreatedAt", "pendingRequestBlocking", "pendingGuestMessageCount", "interactionMode",
+                "hasActionableProposedPlan", "latestUserAuthoredMessageAtPresent", "completionHeldBackgroundWork"),
+            "CachedShellCursor" to listOf("serverVersion", "databaseMigration", "sequence", "snapshotAtMillis"),
+        ), persisted)
+    }
 
     private val projects = listOf(Project("p", "Project", "/w/p"))
     private val threads = listOf(
@@ -79,18 +107,41 @@ class ShellCacheTest {
     }
 
     private class MemoryStore : ShellCacheStore {
+        private val sequencer = ShellCacheSequencer()
+        private val lock = Any()
         val entries = ConcurrentHashMap<String, CachedShell>()
         val writes = Channel<CachedShell>(Channel.UNLIMITED)
         @Volatile var gate: CompletableDeferred<Unit>? = null
         @Volatile var failWrites = false
+        override fun ticket(environmentId: String) = sequencer.ticket(environmentId)
+        override fun valid(environmentId: String, ticket: ShellCacheTicket) = sequencer.valid(environmentId, ticket)
         override suspend fun read(environmentId: String) = entries[environmentId]
-        override suspend fun write(shell: CachedShell) {
+        override suspend fun write(shell: CachedShell, ticket: ShellCacheTicket): Boolean {
             gate?.await()
             if (failWrites) error("disk full")
-            entries[shell.environmentId] = shell; writes.trySend(shell)
+            synchronized(lock) {
+                if (!sequencer.mayCommit(shell.environmentId, ticket)) return false
+                entries[shell.environmentId] = shell; sequencer.committed(shell.environmentId, ticket)
+            }
+            writes.trySend(shell)
+            return true
         }
-        override suspend fun delete(environmentId: String) { entries.remove(environmentId) }
-        override suspend fun retainOnly(environmentIds: Set<String>) { entries.keys.retainAll(environmentIds) }
+        override suspend fun delete(environmentId: String) = synchronized(lock) { entries.remove(environmentId); sequencer.invalidate(environmentId) }
+        override suspend fun retainOnly(environmentIds: Set<String>) = synchronized(lock) { entries.keys.retainAll(environmentIds); sequencer.invalidateAllExcept(environmentIds) }
+    }
+
+    /** Another writer's view of [delegate] whose writes wait for [gate] (a flush still queued behind the file lock). */
+    private class GatedStore(private val delegate: ShellCacheStore) : ShellCacheStore by delegate {
+        val gate = CompletableDeferred<Unit>()
+        val waiting = CompletableDeferred<Unit>()
+        override suspend fun write(shell: CachedShell, ticket: ShellCacheTicket): Boolean { waiting.complete(Unit); gate.await(); return delegate.write(shell, ticket) }
+    }
+
+    /** Runs launched coroutines only when the test says so, in the order it picks. */
+    private class ManualDispatcher : kotlinx.coroutines.CoroutineDispatcher() {
+        val tasks = java.util.concurrent.LinkedBlockingDeque<Runnable>()
+        override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) { tasks.add(block) }
+        fun runNewestFirst() { while (true) (tasks.pollLast() ?: return).run() }
     }
 
     private class WriterFixture(delayMillis: Long = 50) : AutoCloseable {
@@ -173,6 +224,43 @@ class ShellCacheTest {
             delay(250)
             assertEquals("A machine no longer saved is never written", setOf("env"), f.store.entries.keys)
         }
+    }
+
+    @Test fun aLateFlushOfAClearedModelNeverRecreatesAForgottenMachinesEntry() = runBlocking {
+        WriterFixture().use { f ->
+            f.current["env"] = shell
+            val old = GatedStore(f.store)
+            val oldWriter = ShellCacheWriter(old, f.scope, { f.current[it] })
+            // The cleared model's flush is captured, then waits behind the file lock.
+            val late = oldWriter.close("env")
+            withTimeout(5_000) { old.waiting.await() }
+            // Its successor forgets the machine meanwhile.
+            f.current.remove("env")
+            withTimeout(5_000) { f.writer.wipe("env") }
+            old.gate.complete(Unit)
+            withTimeout(5_000) { late.join() }
+            assertNull("The late flush lost to the forget", f.store.entries["env"])
+            oldWriter.changed("env"); oldWriter.flush("env")
+            delay(150)
+            assertNull("A closed writer captures nothing", f.store.entries["env"])
+        }
+    }
+
+    @Test fun flushesThatRunInReverseOrderKeepTheNewerRows() = runBlocking {
+        val dispatcher = ManualDispatcher()
+        val scope = CoroutineScope(SupervisorJob() + dispatcher)
+        try {
+            val store = MemoryStore()
+            val current = ConcurrentHashMap<String, CachedShell>()
+            val writer = ShellCacheWriter(store, scope, { current[it] })
+            current["env"] = shell
+            writer.flush("env")
+            val newer = shell.copy(threads = threads.take(1))
+            current["env"] = newer
+            writer.flush("env")
+            dispatcher.runNewestFirst()
+            assertSame("The older capture ran last and was rejected", newer.threads, store.entries["env"]?.threads)
+        } finally { scope.cancel() }
     }
 
     @Test fun writeFailuresAreDroppedAndRetriedOnTheNextChange() = runBlocking {

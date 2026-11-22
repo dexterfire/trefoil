@@ -7,8 +7,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -38,16 +36,63 @@ data class CachedShell(
 }
 
 /**
- * Local storage of [CachedShell]s, one entry per environment (implemented encrypted in the app). Content never reaches
- * logs, exception messages or file names.
+ * When a [CachedShell] was captured: [epoch] is its environment's invalidation count (bumped by every delete) and
+ * [revision] a process-wide capture order. See [ShellCacheSequencer].
+ */
+data class ShellCacheTicket(val epoch: Long, val revision: Long)
+
+/**
+ * Process-wide ordering of cache writes, shared by every writer of one store (a view model being cleared and its
+ * successor): a write commits only when no delete of its environment came after its capture and no later capture of it
+ * was already committed, so a late flush never recreates a forgotten machine's entry or overwrites newer rows. Stores
+ * call [mayCommit] and [committed] under the lock that also guards their files.
+ */
+class ShellCacheSequencer {
+    private val lock = Any()
+    private var counter = 0L
+    private val epochs = mutableMapOf<String, Long>()
+    private val committedRevisions = mutableMapOf<String, Long>()
+
+    /** Taken before the rows it covers are read or captured. */
+    fun ticket(environmentId: String): ShellCacheTicket = synchronized(lock) {
+        ShellCacheTicket(epochs.getOrPut(environmentId) { 0L }, ++counter)
+    }
+
+    /** No delete of [environmentId] since [ticket]: a read under it may still be shown. */
+    fun valid(environmentId: String, ticket: ShellCacheTicket): Boolean = synchronized(lock) { epochs[environmentId] == ticket.epoch }
+
+    fun mayCommit(environmentId: String, ticket: ShellCacheTicket): Boolean = synchronized(lock) {
+        epochs[environmentId] == ticket.epoch && ticket.revision > (committedRevisions[environmentId] ?: 0L)
+    }
+
+    fun committed(environmentId: String, ticket: ShellCacheTicket) = synchronized(lock) { committedRevisions[environmentId] = ticket.revision }
+
+    fun invalidate(environmentId: String) = synchronized(lock) { epochs[environmentId] = ++counter; committedRevisions.remove(environmentId); Unit }
+
+    fun invalidateAllExcept(keep: Set<String>) = synchronized(lock) {
+        epochs.keys.toList().filter { it !in keep }.forEach { epochs[it] = ++counter; committedRevisions.remove(it) }
+    }
+}
+
+/**
+ * Local storage of [CachedShell]s, one entry per environment (implemented encrypted in the app). One instance per
+ * process holds the [ShellCacheSequencer] of its entries. Content never reaches logs, exception messages or file names.
  */
 interface ShellCacheStore {
+    /** Taken before reading or capturing rows of [environmentId]; see [ShellCacheSequencer.ticket]. */
+    fun ticket(environmentId: String): ShellCacheTicket
+    /** Whether rows read under [ticket] may still be shown (no delete since). */
+    fun valid(environmentId: String, ticket: ShellCacheTicket): Boolean
     /** The stored entry, or null when there is none or it is unusable (corrupt, another format version, another environment). */
     suspend fun read(environmentId: String): CachedShell?
-    /** Replaces the entry; one larger than [ShellCacheCodec.MAX_ENCODED_BYTES] is not written and removes the older one. */
-    suspend fun write(shell: CachedShell)
+    /**
+     * Replaces the entry when [ticket] may still commit ([ShellCacheSequencer.mayCommit]); returns whether it was written.
+     * One larger than [ShellCacheCodec.MAX_ENCODED_BYTES] is not written and leaves the older entry in place.
+     */
+    suspend fun write(shell: CachedShell, ticket: ShellCacheTicket): Boolean
+    /** Deletes the entry; writes captured before it never commit. */
     suspend fun delete(environmentId: String)
-    /** Deletes every entry except those of [environmentIds] (machines forgotten, or a vault replaced). */
+    /** Deletes every entry except those of [environmentIds] (machines forgotten, or a vault replaced), like [delete]. */
     suspend fun retainOnly(environmentIds: Set<String>)
 }
 
@@ -57,6 +102,11 @@ interface ShellCacheStore {
  * a file of another [VERSION], for another environment, or that does not parse decodes to null.
  */
 object ShellCacheCodec {
+    /**
+     * Bump when a persisted field ([Project], [ThreadSummary] without its `@Transient` fields, [CachedShellCursor]) is
+     * added, removed or renamed: a v1 file read by a later build would give a new field its default while keeping the
+     * cursor, so the resumed rows would never be corrected. ShellCacheTest's golden field list guards this.
+     */
     const val VERSION = 1
     /** Larger snapshots are not cached (about 4 MB of JSON is thousands of threads). */
     const val MAX_ENCODED_BYTES = 4 * 1024 * 1024
@@ -96,10 +146,12 @@ object ShellCacheCodec {
 /**
  * Writes shells to [store] off the caller's thread: [changed] schedules a write [delayMillis] later (later changes ride
  * on it, so a busy shell is written at most that often), [flush] writes at once, and [wipe] / [retainOnly] remove
- * entries. Operations run one at a time in order on [scope], and an entry whose content did not change since it was
- * written or restored ([markWritten]) is not written again. [snapshot] returns what to store for an environment, or null
- * when it must not be stored (no rows, or the machine is not saved); a scheduled write takes it when it runs, a flush when
- * it is called. Write failures are dropped: the cache is an optimization and never fails the app.
+ * entries. Each capture takes a [ShellCacheTicket] first, so the store drops it when a delete or a later capture (from
+ * this writer or another on the same store) came first. An entry whose content did not change since this writer wrote or
+ * restored it ([markWritten]) is not written again. [snapshot] returns what to store for an environment, or null when it
+ * must not be stored (no rows, or the machine is not saved); a scheduled write takes it when it runs, a flush when it is
+ * called. After [close] nothing new is captured. Write failures are dropped: the cache is an optimization and never
+ * fails the app.
  */
 class ShellCacheWriter(
     private val store: ShellCacheStore,
@@ -113,30 +165,37 @@ class ShellCacheWriter(
     private val lock = Any()
     private val scheduled = mutableMapOf<String, Job>()
     private val written = mutableMapOf<String, Written>()
-    /** Wipes per environment, so a flush captured before a wipe never writes after it. */
-    private val wipes = mutableMapOf<String, Int>()
     /** The environments of the last [retainOnly]; others are never written afterwards. Null until the first one. */
     private var retained: Set<String>? = null
-    private val mutex = Mutex()
+    private var closed = false
 
     /** [environmentId]'s rows changed; written within [delayMillis]. */
     fun changed(environmentId: String) = synchronized(lock) {
-        if (scheduled[environmentId]?.isActive == true) return@synchronized
+        if (closed || scheduled[environmentId]?.isActive == true) return@synchronized
         scheduled[environmentId] = scope.launch {
             delay(delayMillis)
-            synchronized(lock) { scheduled.remove(environmentId) }
-            mutex.withLock {
-                val wiped = synchronized(lock) { wipesOf(environmentId) }
-                snapshot(environmentId)?.let { persist(it, wiped) }
+            val capture = synchronized(lock) {
+                scheduled.remove(environmentId)
+                if (closed) null else capture(environmentId)
             }
+            capture?.let { (shell, ticket) -> persist(shell, ticket) }
         }
     }
 
     /** Writes [environmentId]'s current rows now (background, disconnect); returns the write's job. */
     fun flush(environmentId: String): Job {
-        val shell = snapshot(environmentId)
-        val wiped = synchronized(lock) { scheduled.remove(environmentId)?.cancel(); wipesOf(environmentId) }
-        return scope.launch { if (shell != null) mutex.withLock { persist(shell, wiped) } }
+        val capture = synchronized(lock) {
+            scheduled.remove(environmentId)?.cancel()
+            if (closed) null else capture(environmentId)
+        }
+        return scope.launch { capture?.let { (shell, ticket) -> persist(shell, ticket) } }
+    }
+
+    /** Flushes [environmentId] (when given), then captures nothing more: the owner is going away. */
+    fun close(environmentId: String?): Job {
+        val job = environmentId?.let(::flush)
+        synchronized(lock) { closed = true; scheduled.values.forEach { it.cancel() }; scheduled.clear() }
+        return job ?: Job().apply { complete() }
     }
 
     /** [shell] is what the store already holds (just read and restored), so it is not written back unchanged. */
@@ -144,10 +203,10 @@ class ShellCacheWriter(
         written[shell.environmentId] = Written(shell.projects, shell.threads, shell.cursor)
     }
 
-    /** Removes [environmentId]'s entry after any write already running; a scheduled one is cancelled. */
+    /** Removes [environmentId]'s entry; writes captured before it (scheduled, running, or another writer's) are dropped. */
     suspend fun wipe(environmentId: String) {
-        synchronized(lock) { scheduled.remove(environmentId)?.cancel(); written.remove(environmentId); wipes[environmentId] = wipesOf(environmentId) + 1 }
-        mutex.withLock { attempt { store.delete(environmentId) } }
+        synchronized(lock) { scheduled.remove(environmentId)?.cancel(); written.remove(environmentId) }
+        attempt { store.delete(environmentId) }
     }
 
     /** Removes every entry except those of [environmentIds]. */
@@ -157,20 +216,23 @@ class ShellCacheWriter(
             written.keys.retainAll(environmentIds)
             retained = environmentIds.toSet()
         }
-        mutex.withLock { attempt { store.retainOnly(environmentIds) } }
+        attempt { store.retainOnly(environmentIds) }
     }
 
-    private fun wipesOf(environmentId: String) = wipes[environmentId] ?: 0
+    /** The ticket first, then the rows: a delete between them invalidates the ticket. Caller holds [lock]. */
+    private fun capture(environmentId: String): Pair<CachedShell, ShellCacheTicket>? {
+        if (retained?.contains(environmentId) == false) return null
+        val ticket = store.ticket(environmentId)
+        return snapshot(environmentId)?.let { it to ticket }
+    }
 
-    /** Caller holds [mutex]; [wiped] is the environment's wipe count when [shell] was taken. */
-    private suspend fun persist(shell: CachedShell, wiped: Int) {
+    private suspend fun persist(shell: CachedShell, ticket: ShellCacheTicket) {
         val id = shell.environmentId
-        val last = synchronized(lock) {
-            if (wipesOf(id) != wiped || retained?.contains(id) == false) return
-            written[id]
-        }
+        val last = synchronized(lock) { if (retained?.contains(id) == false) return; written[id] }
         if (last != null && last.projects === shell.projects && last.threads === shell.threads && last.cursor == shell.cursor) return
-        if (attempt { store.write(shell) }) synchronized(lock) { written[id] = Written(shell.projects, shell.threads, shell.cursor) }
+        var stored = false
+        if (attempt { stored = store.write(shell, ticket) } && stored)
+            synchronized(lock) { written[id] = Written(shell.projects, shell.threads, shell.cursor) }
     }
 
     private suspend fun attempt(block: suspend () -> Unit): Boolean = try { block(); true }

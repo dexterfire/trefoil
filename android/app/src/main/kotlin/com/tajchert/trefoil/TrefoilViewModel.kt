@@ -16,6 +16,7 @@ import com.tajchert.trefoil.core.session.EnvironmentTokenRenewer
 import com.tajchert.trefoil.core.session.T3Client
 import com.tajchert.trefoil.core.session.CachedShell
 import com.tajchert.trefoil.core.session.ShellCacheStore
+import com.tajchert.trefoil.core.session.ShellCacheTicket
 import com.tajchert.trefoil.core.session.ShellCacheWriter
 import com.tajchert.trefoil.core.session.withTokenOf
 import com.tajchert.trefoil.core.session.ComposerDraft
@@ -289,23 +290,22 @@ class TrefoilViewModel internal constructor(
     }
 
     /**
-     * Writes the shown machine's shell rows to [shellCache], debounced and off the main thread; only saved machines are
-     * written. Its scope outlives this model, so the flush in [onCleared] completes.
+     * Writes a machine's last synchronized shell checkpoint ([T3Client.shellCheckpointed]) to [shellCache], debounced and
+     * off the main thread; only saved machines are written. Its scope outlives this model, so the flush in [onCleared]
+     * completes; the store's process-wide ticket order keeps that late flush from undoing a successor's forget.
      */
     private val shellCacheWriter = ShellCacheWriter(shellCache, CoroutineScope(SupervisorJob() + Dispatchers.IO), snapshot = { id ->
         if (_environments.value.any { it.id == id }) client.shellCacheEntry(id) else null
     })
     /** Machines whose cache entry was read (or forgotten) in this process: read at most once, never after a forget. Main thread. */
     private val shellCacheRead = mutableSetOf<String>()
-    /**
-     * The cold start shows the last-used machine's cached rows as soon as the vault is loaded: the file is read alongside
-     * the vault, and restored once the machine is known to be still saved. The cold-start connect waits for it.
-     */
-    private val startupShellRestore = viewModelScope.async {
-        val id = prefs.getString(LAST_ENVIRONMENT, null) ?: return@async
-        val cached = readShellCache(id)
-        initialized.await()
-        restoreShellCache(id, cached)
+    /** Machines whose cache read is running. Main thread. */
+    private val shellCacheReading = mutableSetOf<String>()
+
+    init {
+        // The cold start shows the last-used machine's cached rows as soon as they and the vault are loaded; nothing waits
+        // for the file (see [readShellCacheInBackground]).
+        prefs.getString(LAST_ENVIRONMENT, null)?.let(::readShellCacheInBackground)
     }
 
     init {
@@ -313,16 +313,13 @@ class TrefoilViewModel internal constructor(
             initialized.await()
             if (vaultRead) shellCacheWriter.retainOnly(_environments.value.mapTo(HashSet()) { it.id })
         }
+        // Only synchronized shell state is cached: a checkpoint schedules a write, and a dropped connection writes the
+        // last checkpoint at once (rows a catch-up applied before its marker never reach the disk).
+        viewModelScope.launch { client.shellCheckpointed.collect(shellCacheWriter::changed) }
         viewModelScope.launch {
-            // Rows are compared by identity: the client replaces the lists whenever they change.
-            client.state.map { ShellCacheTrigger(it.environment?.id, it.projects, it.threads, it.shellLoaded, it.connection) }
-                .distinctUntilChanged { a, b -> a.environmentId == b.environmentId && a.projects === b.projects && a.threads === b.threads &&
-                    a.loaded == b.loaded && a.connection == b.connection }
-                .collect { trigger ->
-                    val id = trigger.environmentId ?: return@collect
-                    if (trigger.connection == ConnectionStatus.Disconnected || trigger.connection == ConnectionStatus.Error) shellCacheWriter.flush(id)
-                    else if (trigger.loaded) shellCacheWriter.changed(id)
-                }
+            client.state.map { it.environment?.id to it.connection }.distinctUntilChanged().collect { (id, connection) ->
+                if (id != null && (connection == ConnectionStatus.Disconnected || connection == ConnectionStatus.Error)) shellCacheWriter.flush(id)
+            }
         }
         viewModelScope.launch { client.routeHints.collect { hints -> learnRoutes(hints) } }
         viewModelScope.launch {
@@ -483,19 +480,32 @@ class TrefoilViewModel internal constructor(
 
     /**
      * Restores [cached] rows of [environmentId] into the client (never live: no reads or writes until the connection's
-     * `synchronized` marker), once per machine per process, only while it is saved and never after it was forgotten.
+     * `synchronized` marker), once per machine per process, only while it is saved, never after it was forgotten (here,
+     * or in the store since [ticket]) and only while its connection has not subscribed the shell ([T3Client.restoreShell]).
      */
-    private fun restoreShellCache(environmentId: String, cached: CachedShell?) {
+    private fun restoreShellCache(environmentId: String, cached: CachedShell?, ticket: ShellCacheTicket) {
         if (!shellCacheRead.add(environmentId) || cached == null || _environments.value.none { it.id == environmentId }) return
-        // Marked first: the restore emits state whose collector may flush at once, and these rows are already stored.
+        if (!shellCache.valid(environmentId, ticket)) return
+        // Marked first: these rows are what the store holds, whether or not the client still takes them.
         shellCacheWriter.markWritten(cached)
         client.restoreShell(cached)
     }
 
-    /** Before connecting [environmentId]: its cached rows, unless this process already read them (or holds newer rows). */
-    private suspend fun restoreShellCacheBeforeConnect(environmentId: String) {
-        if (environmentId in shellCacheRead) return
-        restoreShellCache(environmentId, readShellCache(environmentId))
+    /**
+     * Reads [environmentId]'s cached rows unless this process already did (or holds newer rows). Never awaited: a stalled
+     * file or Keystore call must not hold up a connection, so the rows show only if they arrive before it subscribes the shell.
+     */
+    private fun readShellCacheInBackground(environmentId: String) {
+        if (environmentId in shellCacheRead || !shellCacheReading.add(environmentId)) return
+        // Taken before the read: a forget while it runs invalidates what it returns.
+        val ticket = shellCache.ticket(environmentId)
+        viewModelScope.launch {
+            try {
+                val cached = readShellCache(environmentId)
+                initialized.await()
+                restoreShellCache(environmentId, cached, ticket)
+            } finally { shellCacheReading.remove(environmentId) }
+        }
     }
 
     /**
@@ -623,7 +633,7 @@ class TrefoilViewModel internal constructor(
         // A request made before its machine was forgotten never connects it (nor pairs it anew).
         val environment = _environments.value.firstOrNull { it.id == requested.id } ?: throw MachineRemovedException()
         selectedEnvironment = environment.forStorage()
-        restoreShellCacheBeforeConnect(environment.id)
+        readShellCacheInBackground(environment.id)
         val fullPlan = environment.candidateRoutes().let { plan -> startAt?.let { start -> plan.dropWhile { !sameRoute(it, start) } }?.ifEmpty { null } ?: plan }
         val plan = usableRoutes(fullPlan, cellularOnly)
         val skipped = fullPlan.filter { route -> plan.none { it === route } }
@@ -674,7 +684,7 @@ class TrefoilViewModel internal constructor(
         val saved = normalized.savedEnvironmentId?.let { id -> _environments.value.firstOrNull { it.id == id && it.ssh != null } }
         // A reconnect of a machine forgotten meanwhile must not turn into a new pairing.
         if (normalized.savedEnvironmentId?.let { id -> _environments.value.none { it.id == id } } == true) throw MachineRemovedException()
-        saved?.let { restoreShellCacheBeforeConnect(it.id) }
+        saved?.let { readShellCacheInBackground(it.id) }
         val expected = hostKeys.firstOrNull { it.host.equals(normalized.host, ignoreCase = true) && it.port == normalized.port }?.fingerprint
             ?: saved?.ssh?.takeIf { it.host.equals(normalized.host, ignoreCase = true) && it.port == normalized.port }?.fingerprint
         pendingInput = normalized
@@ -1083,8 +1093,6 @@ class TrefoilViewModel internal constructor(
             initialized.await()
             if (!foreground) return@launch
             var failedLastUsed: String? = null
-            // The cached rows are in place before the cold-start connect shows that machine.
-            if (connectLastUsedFirst) startupShellRestore.await()
             if (connectLastUsedFirst) connectLastUsedNow()?.let { (id, attempt, attemptEpoch) ->
                 attempt.join()
                 if (!foreground) return@launch
@@ -1352,8 +1360,8 @@ class TrefoilViewModel internal constructor(
         tunnelMonitor?.cancel()
         val closing = tunnel; tunnel = null
         if (closing != null) Thread({ closing.close() }, "trefoil-ssh-cleanup").apply { isDaemon = true; start() }
-        // Taken now, written on the cache's own scope.
-        state.value.environment?.id?.let(shellCacheWriter::flush)
+        // Taken now, written on the cache's own scope; nothing is captured after it.
+        shellCacheWriter.close(state.value.environment?.id)
         client.close()
     }
 
@@ -1364,8 +1372,6 @@ class TrefoilViewModel internal constructor(
     }
 }
 
-/** What a shell cache write depends on; rows compared by identity. */
-private class ShellCacheTrigger(val environmentId: String?, val projects: List<Project>, val threads: List<ThreadSummary>, val loaded: Boolean, val connection: ConnectionStatus)
 
 /** Starts and stops the keep-alive service; [ServiceKeepAliveControl] in production. */
 internal interface KeepAliveControl {

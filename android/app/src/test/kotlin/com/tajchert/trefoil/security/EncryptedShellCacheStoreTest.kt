@@ -5,6 +5,14 @@ import com.tajchert.trefoil.core.model.ThreadSummary
 import com.tajchert.trefoil.core.session.CachedShell
 import com.tajchert.trefoil.core.session.CachedShellCursor
 import com.tajchert.trefoil.core.session.ShellCacheCodec
+import com.tajchert.trefoil.core.session.ShellCacheStore
+import com.tajchert.trefoil.core.session.ShellCacheTicket
+import com.tajchert.trefoil.core.session.ShellCacheWriter
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import java.io.File
 import javax.crypto.KeyGenerator
 import kotlinx.coroutines.runBlocking
@@ -38,9 +46,10 @@ class EncryptedShellCacheStoreTest {
     private fun files() = dir.listFiles().orEmpty().map { it.name }.sorted()
     private fun entryFile(environmentId: String = "env") = File(dir, EncryptedShellCacheStore.fileName(environmentId))
     private fun test(block: suspend () -> Unit) = runBlocking { withTimeout(20_000) { block() } }
+    private suspend fun EncryptedShellCacheStore.put(entry: CachedShell) = write(entry, ticket(entry.environmentId))
 
     @Test fun roundTripIsEncryptedAndNamedWithoutContent() = test {
-        store.write(shell)
+        store.put(shell)
         assertEquals(shell.toString(), store.read("env").toString())
         val read = store.read("env")!!
         assertEquals(shell.projects, read.projects)
@@ -55,9 +64,9 @@ class EncryptedShellCacheStoreTest {
     }
 
     @Test fun everyWriteUsesAFreshNonce() = test {
-        store.write(shell)
+        store.put(shell)
         val first = entryFile().readBytes()
-        store.write(shell.copy(savedAtMillis = 2_001))
+        store.put(shell.copy(savedAtMillis = 2_001))
         val second = entryFile().readBytes()
         assertFalse(first.copyOfRange(1, 13).contentEquals(second.copyOfRange(1, 13)))
     }
@@ -68,7 +77,7 @@ class EncryptedShellCacheStoreTest {
     }
 
     @Test fun aCorruptFileIsDiscarded() = test {
-        store.write(shell)
+        store.put(shell)
         val bytes = entryFile().readBytes()
         bytes[bytes.size - 1] = (bytes[bytes.size - 1].toInt() xor 1).toByte()
         entryFile().writeBytes(bytes)
@@ -89,21 +98,21 @@ class EncryptedShellCacheStoreTest {
     }
 
     @Test fun aFileMovedToAnotherEnvironmentDoesNotDecrypt() = test {
-        store.write(shell)
+        store.put(shell)
         entryFile().copyTo(entryFile("other"))
         assertNull(store.read("other"))
         assertNotNull(store.read("env"))
     }
 
     @Test fun aFileUnderAnotherKeyIsDiscarded() = test {
-        store.write(shell)
+        store.put(shell)
         val rotated = EncryptedShellCacheStore(dir, ShellCacheCipher(ProcessKeyCache { KeyGenerator.getInstance("AES").apply { init(256) }.generateKey() }))
         assertNull(rotated.read("env"))
         assertFalse(entryFile().exists())
     }
 
     @Test fun aKeystoreFailureKeepsTheFile() = test {
-        store.write(shell)
+        store.put(shell)
         val unavailable = EncryptedShellCacheStore(dir, ShellCacheCipher(ProcessKeyCache { throw java.security.KeyStoreException("unavailable") }))
         assertNull(unavailable.read("env"))
         assertTrue(entryFile().exists())
@@ -111,9 +120,9 @@ class EncryptedShellCacheStoreTest {
     }
 
     @Test fun wipeAndRetainOnlyRemoveEntries() = test {
-        store.write(shell)
-        store.write(shell.copy(environmentId = "second"))
-        store.write(shell.copy(environmentId = "third"))
+        store.put(shell)
+        store.put(shell.copy(environmentId = "second"))
+        store.put(shell.copy(environmentId = "third"))
         File(dir, EncryptedShellCacheStore.fileName("gone") + ".bak").writeBytes(byteArrayOf(1))
         store.delete("env")
         assertNull(store.read("env"))
@@ -125,11 +134,77 @@ class EncryptedShellCacheStoreTest {
         assertTrue(files().isEmpty())
     }
 
-    @Test fun anEntryOverTheCapIsNotWrittenAndReplacesNothing() = test {
-        store.write(shell)
+    @Test fun anEntryOverTheCapIsSkippedAndTheEarlierEntryStays() = test {
+        store.put(shell)
         val small = EncryptedShellCacheStore(dir, cipher, maxBytes = 64)
-        small.write(shell.copy(savedAtMillis = 3_000))
-        assertFalse("The older entry no longer describes the rows", entryFile().exists())
-        assertNull(store.read("env"))
+        assertFalse(small.put(shell.copy(savedAtMillis = 3_000)))
+        assertEquals("The earlier entry is still usable", 2_000L, store.read("env")?.savedAtMillis)
+    }
+
+    @Test fun anOversizedFileIsDiscardedWithoutReadingItWhole() = test {
+        var keyLoads = 0
+        val counted = ShellCacheCipher(ProcessKeyCache { keyLoads++; KeyGenerator.getInstance("AES").apply { init(256) }.generateKey() })
+        val small = EncryptedShellCacheStore(dir, counted, maxBytes = 1_024)
+        dir.mkdirs()
+        // A well-formed envelope header followed by far more than the cap: dropped while reading, before any decryption.
+        entryFile().outputStream().use { out -> val block = ByteArray(64 * 1024) { 1 }; repeat(64) { out.write(block) } }
+        assertNull(small.read("env"))
+        assertEquals("Never handed to the cipher", 0, keyLoads)
+        assertFalse("An oversized file is deleted", entryFile().exists())
+        // Right at the cap still reads.
+        assertTrue(small.put(shell))
+        assertNotNull(small.read("env"))
+    }
+
+    @Test fun theDirectoryIsResolvedOnTheIoDispatcherOnFirstUse() = test {
+        val caller = Thread.currentThread()
+        var resolvedOn: Thread? = null
+        val lazy = EncryptedShellCacheStore({ resolvedOn = Thread.currentThread(); dir }, cipher)
+        assertNull("Constructing touches no file", resolvedOn)
+        assertNull(lazy.read("env"))
+        assertNotNull(resolvedOn)
+        assertNotSame("Resolved inside the store's I/O context", caller, resolvedOn)
+    }
+
+    /** A writer whose writes wait for [gate] after taking their ticket: a flush queued behind the file lock. */
+    private class Gated(private val delegate: ShellCacheStore) : ShellCacheStore by delegate {
+        val gate = CompletableDeferred<Unit>()
+        val waiting = CompletableDeferred<Unit>()
+        override suspend fun write(shell: CachedShell, ticket: ShellCacheTicket): Boolean { waiting.complete(Unit); gate.await(); return delegate.write(shell, ticket) }
+    }
+
+    @Test fun aClearedModelsLateFlushNeverRecreatesAForgottenMachinesFile() = test {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val rows = java.util.concurrent.ConcurrentHashMap(mapOf("env" to shell))
+            val old = Gated(store)
+            val cleared = ShellCacheWriter(old, scope, { rows[it] })
+            val successor = ShellCacheWriter(store, scope, { rows[it] })
+            val late = cleared.close("env")
+            old.waiting.await()
+            rows.remove("env")
+            successor.wipe("env")
+            old.gate.complete(Unit)
+            late.join()
+            assertFalse("The forgotten machine's file stays deleted", entryFile().exists())
+            assertNull(store.read("env"))
+            // A machine saved again later is cached again.
+            rows["env"] = shell
+            successor.flush("env").join()
+            assertTrue(entryFile().exists())
+        } finally { scope.cancel() }
+    }
+
+    @Test fun anOlderCaptureNeverOverwritesANewerOne() = test {
+        val older = store.ticket("env")
+        val newer = store.ticket("env")
+        assertTrue(store.write(shell.copy(savedAtMillis = 2), newer))
+        assertFalse(store.write(shell.copy(savedAtMillis = 1), older))
+        assertEquals(2L, store.read("env")?.savedAtMillis)
+        val beforeDelete = store.ticket("env")
+        store.delete("env")
+        assertFalse("A read taken before a delete is stale", store.valid("env", beforeDelete))
+        assertFalse(store.write(shell, beforeDelete))
+        assertFalse(entryFile().exists())
     }
 }

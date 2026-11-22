@@ -20,7 +20,10 @@ import com.tajchert.trefoil.core.model.ThreadSummary
 import com.tajchert.trefoil.core.model.ThreadTarget
 import com.tajchert.trefoil.core.session.CachedShell
 import com.tajchert.trefoil.core.session.CachedShellCursor
+import com.tajchert.trefoil.core.session.ShellCacheSequencer
 import com.tajchert.trefoil.core.session.ShellCacheStore
+import com.tajchert.trefoil.core.session.ShellCacheTicket
+import kotlinx.coroutines.CompletableDeferred
 import java.util.concurrent.ConcurrentHashMap
 import com.tajchert.trefoil.security.EnvironmentStore
 import java.net.InetAddress
@@ -60,12 +63,20 @@ class ColdStartConnectTest {
 
     /** The encrypted shell cache, in memory. */
     private class MemoryShellCache(vararg initial: CachedShell) : ShellCacheStore {
+        private val sequencer = ShellCacheSequencer()
         val entries = ConcurrentHashMap(initial.associateBy { it.environmentId })
         val reads = CopyOnWriteArrayList<String>()
-        override suspend fun read(environmentId: String): CachedShell? { reads += environmentId; return entries[environmentId] }
-        override suspend fun write(shell: CachedShell) { entries[shell.environmentId] = shell }
-        override suspend fun delete(environmentId: String) { entries.remove(environmentId) }
-        override suspend fun retainOnly(environmentIds: Set<String>) { entries.keys.retainAll(environmentIds) }
+        /** When set, reads wait for it: a stalled file or Keystore call. */
+        @Volatile var readGate: CompletableDeferred<Unit>? = null
+        override fun ticket(environmentId: String) = sequencer.ticket(environmentId)
+        override fun valid(environmentId: String, ticket: ShellCacheTicket) = sequencer.valid(environmentId, ticket)
+        override suspend fun read(environmentId: String): CachedShell? { reads += environmentId; readGate?.await(); return entries[environmentId] }
+        override suspend fun write(shell: CachedShell, ticket: ShellCacheTicket): Boolean = synchronized(this) {
+            if (!sequencer.mayCommit(shell.environmentId, ticket)) return false
+            entries[shell.environmentId] = shell; sequencer.committed(shell.environmentId, ticket); true
+        }
+        override suspend fun delete(environmentId: String) = synchronized(this) { sequencer.invalidate(environmentId); entries.remove(environmentId); Unit }
+        override suspend fun retainOnly(environmentIds: Set<String>) = synchronized(this) { sequencer.invalidateAllExcept(environmentIds); entries.keys.retainAll(environmentIds); Unit }
     }
 
     private fun cached(id: String) = CachedShell(id, listOf(Project("p", "Project")),
@@ -321,6 +332,36 @@ class ColdStartConnectTest {
         idleFor(300)
         assertEquals("A quiet cold-start failure deselects and never wipes", setOf("alpha", "beta"), cache.entries.keys)
         assertEquals(listOf("t1", "t2"), cache.entries["alpha"]?.threads?.map { it.id })
+    }
+
+    @Test fun aStalledCacheReadNeverHoldsUpTheColdStartConnect() {
+        val alphaServer = HangingServer()
+        val cache = MemoryShellCache(cached("alpha")).apply { readGate = CompletableDeferred() }
+        start(MemoryStore(listOf(machine("alpha", alphaServer))), lastUsed = "alpha", probes = emptyMap(), shellCache = cache)
+        awaitTrue { alphaServer.accepted.get() >= 1 }
+        assertEquals("The connect started while the read is stalled", listOf("alpha"), cache.reads.toList())
+        assertEquals(ConnectionStatus.Connecting, model.state.value.connection)
+        assertTrue(model.state.value.threads.isEmpty())
+        // The read finishes while the connect is still before its shell subscription: the rows show, never live.
+        cache.readGate!!.complete(Unit)
+        awaitTrue { model.state.value.threads.isNotEmpty() }
+        assertFalse(model.state.value.shellLive); assertFalse(model.state.value.canWriteThreads)
+        assertEquals(ConnectionStatus.Connecting, model.state.value.connection)
+    }
+
+    @Test fun aCacheReadOverlappingAForgetIsNeverRestored() {
+        val alphaServer = HangingServer(); val betaServer = HangingServer()
+        val cache = MemoryShellCache(cached("alpha"), cached("beta")).apply { readGate = CompletableDeferred() }
+        val store = MemoryStore(listOf(machine("alpha", alphaServer), machine("beta", betaServer)))
+        start(store, lastUsed = null, probes = emptyMap(), shellCache = cache)
+        model.connect(store.saved.first { it.id == "alpha" })
+        awaitTrue { "alpha" in cache.reads }
+        model.forget(store.saved.first { it.id == "alpha" })
+        awaitTrue { store.saved.none { it.id == "alpha" } }
+        cache.readGate!!.complete(Unit)
+        idleFor(300)
+        assertTrue(model.state.value.threads.isEmpty())
+        assertFalse(cache.entries.containsKey("alpha"))
     }
 
     @Test fun forgettingAMachineWipesItsCacheEntryOnly() {
