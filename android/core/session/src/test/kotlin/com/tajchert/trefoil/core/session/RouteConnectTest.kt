@@ -10,12 +10,16 @@ import okhttp3.*
 import okhttp3.mockwebserver.*
 import org.junit.After
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.Timeout
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 
 /** Multi-route connect, route hints and preflight against isolated fixture hosts (no real threads). */
 class RouteConnectTest {
+    /** A hang fails in seconds instead of parking the test worker. */
+    @get:Rule val timeout: Timeout = Timeout.seconds(30)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val servers = mutableListOf<MockWebServer>()
     private val clients = mutableListOf<T3Client>()

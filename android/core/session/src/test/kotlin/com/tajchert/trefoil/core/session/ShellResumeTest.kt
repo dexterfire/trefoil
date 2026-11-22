@@ -9,9 +9,13 @@ import kotlinx.serialization.json.*
 import okhttp3.*
 import okhttp3.mockwebserver.*
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.Timeout
 
 class ShellResumeTest {
+    /** A hang fails in seconds instead of parking the test worker. */
+    @get:Rule val timeout: Timeout = Timeout.seconds(30)
     private val origin = ShellOrigin("env", "1.2.3", 40)
     /** Rows as the client hands them over: compared by identity, so equal but different lists never resume. */
     private val rows = ShellRows(mutableListOf<Any>(), mutableListOf<Any>())

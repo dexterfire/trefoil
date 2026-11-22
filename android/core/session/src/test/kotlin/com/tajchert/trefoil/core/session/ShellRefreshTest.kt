@@ -7,10 +7,14 @@ import kotlinx.coroutines.flow.first
 import okhttp3.*
 import okhttp3.mockwebserver.*
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.Timeout
 
 /** The thread list must not keep a stale run status: a refresh resubscribes the shell and its snapshot wins. */
 class ShellRefreshTest {
+    /** A hang fails in seconds instead of parking the test worker. */
+    @get:Rule val timeout: Timeout = Timeout.seconds(30)
     private val descriptor = """{"environmentId":"env-1","label":"Test","orchestrationProtocolVersion":2,"capabilities":{}}"""
     private fun json(body: String) = MockResponse().setHeader("Content-Type", "application/json").setBody(body)
     private fun row(status: String, extra: String = "") =

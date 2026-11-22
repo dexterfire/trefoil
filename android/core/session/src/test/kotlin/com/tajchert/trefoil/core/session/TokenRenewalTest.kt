@@ -16,9 +16,13 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.ResponseBody.Companion.toResponseBody
 import okhttp3.mockwebserver.*
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.Timeout
 
 class TokenRenewalTest {
+    /** A hang fails in seconds instead of parking the test worker. */
+    @get:Rule val timeout: Timeout = Timeout.seconds(30)
     private val keyPair = KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair()
     private val key = JcaDpopKey(keyPair.private, keyPair.public as ECPublicKey)
     private val descriptor = """{"environmentId":"env-1","label":"Test","orchestrationProtocolVersion":2,"capabilities":{"accessTokenRenewal":true}}"""
@@ -161,13 +165,15 @@ class TokenRenewalTest {
             assertNotNull(server.takeRequest(5, TimeUnit.SECONDS))
             val renewAgain = server.takeRequest(5, TimeUnit.SECONDS)
             assertEquals("first", form(renewAgain!!)["subject_token"])
-            assertEquals("second", tokens.current(expired).accessToken)
+            // The host saw the request before the client read the answer: wait for the adoption, still before any store.
+            withTimeout(5_000) { while (tokens.current(expired).accessToken != "second") delay(10) }
+            assertTrue("The newer store waits behind the older one", saved.isEmpty())
             release.complete(Unit)
             assertEquals("first", withTimeout(5_000) { first.await() }.accessToken)
             assertEquals("second", withTimeout(5_000) { second.await() }.accessToken)
             assertEquals("Stores run in order, newest last", listOf("first", "second"), saved.map { it.renewed.accessToken })
             assertEquals(setOf("old-secret", "first"), saved.last().replaces)
-        } finally { server.shutdown() }
+        } finally { release.complete(Unit); server.shutdown() } // a failed assertion must not leave the store parked
     }
 
     @Test fun cancelledRenewalAbortsTheCallAndReleasesTheLock() = runBlocking {

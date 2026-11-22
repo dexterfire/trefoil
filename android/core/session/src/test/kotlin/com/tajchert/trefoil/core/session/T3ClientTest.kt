@@ -8,10 +8,14 @@ import kotlinx.serialization.json.*
 import okhttp3.*
 import okhttp3.mockwebserver.*
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.Timeout
 import java.util.concurrent.TimeUnit
 
 class T3ClientTest {
+ /** A hang fails in seconds instead of parking the test worker. */
+ @get:Rule val timeout: Timeout = Timeout.seconds(30)
  private fun T3Client.derivedHttp() = T3Client::class.java.getDeclaredField("http").apply { isAccessible = true }.get(this) as OkHttpClient
 
  @Test fun sharedHttpKeepsThePoolAndClosingASiblingLeavesItWarm() = runBlocking {
