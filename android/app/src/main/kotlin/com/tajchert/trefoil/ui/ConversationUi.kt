@@ -516,12 +516,14 @@ private fun ComposerPickers(state: ClientState, draft: ThreadDraft?, onSetRuntim
             val shown = catalogModel(model, state.models)
             val explicit = if (draft != null) draft.modelOptions else state.selectedModelOptions
             val pillLabel = modelPillLabel(shown, explicit)
-            TfPill(pillLabel, { modelOpen = true }, icon = TfIcons.Sparkle, enabled = enabled && state.models.isNotEmpty(), contentDescription = "Model: ${if (shown == null) "not set" else pillLabel}")
+            val loading = modelPickerLoading(state.models, state.connection)
+            TfPill(pillLabel, { modelOpen = true }, icon = TfIcons.Sparkle, enabled = loading || (enabled && state.models.isNotEmpty()), contentDescription = "Model: ${if (shown == null) "not set" else pillLabel}")
             if (modelOpen) ModelPickerSheet(
                 models = pickerModels(state.models, model, state.selectedProviderLocked, draft != null), providers = state.providers,
                 current = shown, explicit = explicit, enabled = enabled, dismiss = { modelOpen = false },
                 onSetModel = onSetModel, onSetModelOption = onSetModelOption, threadSelection = draft == null,
                 preferences = state.modelPreferences, canWriteSettings = state.canWriteSettings, onToggleFavorite = onSetModelFavorite,
+                loading = loading,
             )
         }
         val effortShown = catalogModel(model, state.models)

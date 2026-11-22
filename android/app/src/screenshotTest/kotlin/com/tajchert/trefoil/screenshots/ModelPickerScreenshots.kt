@@ -62,12 +62,13 @@ private object ModelPickerFixtures {
 private fun Picker(
     current: ModelOption, explicit: ModelOptionValues = emptyMap(), enabled: Boolean = true, dark: Boolean = false, models: List<ModelOption> = ModelPickerFixtures.all,
     prefs: ModelPreferences = ModelPickerFixtures.synced, canWriteSettings: Boolean = true, query: String = "", startOnFavourites: Boolean = false, threadSelection: Boolean = false,
+    loading: Boolean = false,
 ) {
     val fx = ModelPickerFixtures
     TrefoilTheme(darkTheme = dark) {
         ModelPickerContent(
             models, fx.providers, current, explicit, enabled, {}, {}, { _, _ -> }, Modifier.background(Tf.colors.sheet),
-            preferences = prefs, canWriteSettings = canWriteSettings, initialQuery = query, startOnFavourites = startOnFavourites, threadSelection = threadSelection,
+            preferences = prefs, canWriteSettings = canWriteSettings, initialQuery = query, startOnFavourites = startOnFavourites, threadSelection = threadSelection, loading = loading,
         )
     }
 }
@@ -124,3 +125,14 @@ fun ModelPicker_Disabled_Light() = Picker(
 @Preview(showBackground = true, widthDp = 400, heightDp = 540)
 @Composable
 fun ModelPicker_NoOptions_Light() = Picker(ModelPickerFixtures.luna)
+
+/** Connecting with no catalog yet: disabled search/tabs and four placeholder rows (frame captured at the pulse's start). */
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, heightDp = 480)
+@Composable
+fun ModelPicker_Loading_Light() = Picker(ModelPickerFixtures.luna, models = emptyList(), loading = true)
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, heightDp = 480, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun ModelPicker_Loading_Dark() = Picker(ModelPickerFixtures.luna, models = emptyList(), dark = true, loading = true)

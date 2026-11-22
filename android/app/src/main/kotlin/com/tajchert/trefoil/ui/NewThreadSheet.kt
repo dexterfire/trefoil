@@ -317,7 +317,7 @@ internal fun NewThreadSheetContent(
             var effortMenu by remember { mutableStateOf(false) }
             var modeMenu by remember { mutableStateOf(false) }
             Box {
-                SheetPill(model?.let { modelPillLabel(it, explicitOptions) } ?: "No models", TfIcons.Sparkle, "Model: ${model?.let { modelPillLabel(it, explicitOptions) } ?: "not set"}", enabled = state.models.isNotEmpty()) { modelMenu = true }
+                SheetPill(model?.let { modelPillLabel(it, explicitOptions) } ?: "No models", TfIcons.Sparkle, "Model: ${model?.let { modelPillLabel(it, explicitOptions) } ?: "not set"}", enabled = state.models.isNotEmpty() || modelPickerLoading(state.models, state.connection)) { modelMenu = true }
                 // An effort pick takes the chosenEffort path, the Fast switch the chosenFast one; both persist with the draft.
                 if (modelMenu) ModelPickerSheet(
                     models = state.models, providers = state.providers, current = model, explicit = explicitOptions, enabled = loaded, dismiss = { modelMenu = false },
@@ -328,6 +328,7 @@ internal fun NewThreadSheetContent(
                         else if (loaded && id == FAST_MODE_OPTION_ID && value is Boolean && model?.fastMode != null) { chosenFast = value; touched = true; persist(fast = value) }
                     },
                     preferences = state.modelPreferences, canWriteSettings = state.canWriteSettings, onToggleFavorite = onSetModelFavorite, showFast = true,
+                    loading = modelPickerLoading(state.models, state.connection),
                 )
             }
             if (model != null && reasoning != null) {
