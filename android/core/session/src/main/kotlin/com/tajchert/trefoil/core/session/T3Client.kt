@@ -85,6 +85,12 @@ class T3Client(
     private var visitTimer: Job? = null
     private var threadViewing = false
     private var shellReady = false
+    /** The current shell subscription (not just the connection) delivered its `synchronized` marker; see [checkpointShell]. */
+    private var shellSynced = false
+    /** The connect of this generation decided how to subscribe the shell; a cache restore after that is refused. */
+    private var shellPlannedEpoch = -1L
+    /** A thread selected before the shell of this connection was synchronized; subscribed (or dropped) at the marker. */
+    private var deferredThread: String? = null
     /** Request id of the live `orchestration.subscribeShell` stream; replaced by [refreshThreads]. */
     private var shellSubscription: String? = null
     /** Completes when the current shell stream's snapshot is synchronized; shared by concurrent [refreshThreads] calls. */
@@ -139,6 +145,16 @@ class T3Client(
     private var activeBase: HttpUrl? = null
     /** Routes of the last multi-route connect, so [reconnect] walks the same plan. */
     private var lastRoutes: Pair<String, List<EnvironmentRoute>>? = null
+    /** Rows and resume cursor per environment as of the last synchronized shell state; what the local cache stores. */
+    private class ShellCheckpoint(val projects: List<Project>, val threads: List<ThreadSummary>, val cursor: CachedShellCursor?)
+    private val shellCheckpoints = mutableMapOf<String, ShellCheckpoint>()
+    private val checkpoints = MutableSharedFlow<String>(extraBufferCapacity = 64, onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
+    /**
+     * Environment ids whose [shellCacheEntry] moved: emitted at each `synchronized` marker of a shell subscription (even
+     * when the rows did not change) and for each later change applied while it stays synchronized. Rows a subscription
+     * applies before its marker (a catch-up or a full refresh) never become a checkpoint, so a failure keeps the last one.
+     */
+    val shellCheckpointed: Flow<String> = checkpoints.asSharedFlow()
     private val hints = MutableSharedFlow<RouteHints>(extraBufferCapacity = 8, onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
     override val routeHints: Flow<RouteHints> = hints.asSharedFlow()
     /** Last `directEndpoints` reported for the live connection (null: not reported); snapshots emit only on change. */
@@ -178,6 +194,7 @@ class T3Client(
         while (environmentStates.size > 4) {
             val evicted = environmentStates.keys.first()
             environmentStates.remove(evicted)
+            if (evicted != state.value.environment?.id) shellCheckpoints.remove(evicted)
             shellResume.forget(evicted)
             threadProjections.keys.removeAll { it.first == evicted }
         }
@@ -480,6 +497,7 @@ class T3Client(
             // still resumes, so the shell waits for it.
             val early = synchronized(lifecycleLock) {
                 check(epoch == generation) { "Connection was cancelled" }
+                shellPlannedEpoch = epoch
                 !shellResume.mayResume(environment.id, ShellRows(state.value.projects, state.value.threads))
             }
             val config = coroutineScope {
@@ -508,6 +526,8 @@ class T3Client(
                 check(epoch == generation) { "Connection was cancelled" }
                 authorized = mayOperate; previewAuthorized = mayPreview; serverBrowser = browserCapable
                 directEndpoints = endpoints; tunnelConfig = tunnel; liveShellOrigin = origin; shellResume.originKnown(origin)
+                // An early shell synchronized before its origin was known has a checkpoint without its cursor.
+                if (shellSynced) checkpointShell(marker = false)
                 update { it.copy(connection = ConnectionStatus.Connected, threadActionsConfigured = true, activeRoute = route, canReadUsage = mayReadUsage, models = models, providers = providers, defaultRuntimeMode = defaultMode, threadStopSupported = threadStop, previewTunnelSetting = tunnel.capability, previewTunnelDisabled = tunnel.disabled,
                     selectedModel = it.selectedModel?.let { selected -> models.firstOrNull { m -> m.instanceId == selected.instanceId && m.model == selected.model } ?: selected }) }
                 // Route hints (a second config snapshot and the link-state read) would compete with the snapshot on a slow
@@ -518,7 +538,11 @@ class T3Client(
             // An early shell may already be synchronized; writes still needed Connected, so re-evaluate them now.
             synchronized(lifecycleLock) { if (epoch == generation) { writable(); shellLive() } }
             startRenewal(epoch, base)
-            state.value.selectedThreadId?.let { selectThread(it) }
+            synchronized(lifecycleLock) {
+                if (epoch != generation) return@synchronized
+                // An early shell is already synchronized: a selected thread it no longer lists is dropped, never subscribed.
+                state.value.selectedThreadId?.let { id -> if (shellReady && state.value.threads.none { it.id == id }) clearThreadSelection() else selectThreadNow(id) }
+            }
         } catch (error: CancellationException) {
             if (error is TimeoutCancellationException && currentCoroutineContext().isActive) {
                 val message = "T3 connection timed out. Check the server and network, then try again."
@@ -680,7 +704,7 @@ class T3Client(
         fileDownloads.forEach { it.cancel() }; fileDownloads.clear()
         generation++
         refreshSignals?.close(); refreshJob?.cancel(); visits.reset(null); visitTimer?.cancel(); visitTimer = null
-        shellReady = false; threadReady = false; authorized = false; previewAuthorized = false
+        shellReady = false; shellSynced = false; deferredThread = null; threadReady = false; authorized = false; previewAuthorized = false
         endShellStream(message)
         resetRoute()
         resetScreens()
@@ -700,7 +724,7 @@ class T3Client(
         visits.reset(null); visitTimer?.cancel(); visitTimer = null
         socket?.close(1000, null); socket = null
         pending.values.forEach { it.completeExceptionally(IllegalStateException("Disconnected; pending command outcome may be uncertain")) }
-        pending.clear(); streams.clear(); threadSubscription = null; shellReady = false; threadReady = false; authorized = false; previewAuthorized = false
+        pending.clear(); streams.clear(); threadSubscription = null; shellReady = false; shellSynced = false; deferredThread = null; threadReady = false; authorized = false; previewAuthorized = false
         endShellStream("Disconnected before the thread list refreshed")
         resetRoute()
         resetScreens()
@@ -778,17 +802,27 @@ class T3Client(
         }
         return work.await()
     }
-    override suspend fun selectThread(threadId: String) = synchronized(lifecycleLock) {
+    override suspend fun selectThread(threadId: String) = selectThreadNow(threadId)
+    /**
+     * Shows [threadId] and subscribes it once the current connection's shell is synchronized: a row shown from the cache
+     * (or retained) may name a thread deleted meanwhile, whose subscription the server would reject, failing the session.
+     * Before the marker the selection is remembered with any cached projection, and [shellItem] subscribes it at the
+     * marker only while the shell still lists it; otherwise the selection is cleared.
+     */
+    private fun selectThreadNow(threadId: String): Unit = synchronized(lifecycleLock) {
         if (state.value.selectedThreadId != threadId) { fileDownloads.forEach { it.cancel() }; fileDownloads.clear(); resetScreens(interrupt = true) }
         if (state.value.connection != ConnectionStatus.Connected) {
             val cached = state.value.environment?.id?.let { threadProjections[it to threadId] }
-            check(cached != null) { "Connect to load this thread" }
             threadReady = false
-            applyProjection(cached, threadId)
+            if (cached != null) { applyProjection(cached, threadId); return@synchronized }
+            // While the connection comes up, the connect subscribes the selection (see above); offline, there is nothing to show.
+            check(state.value.connection == ConnectionStatus.Connecting || state.value.connection == ConnectionStatus.Reconnecting) { "Connect to load this thread" }
+            if (state.value.selectedThreadId != threadId) { projection = JsonObject(emptyMap()); showEmptySelection(threadId) }
             return@synchronized
         }
-        if (state.value.selectedThreadId == threadId && threadSubscription != null) return@synchronized
+        if (state.value.selectedThreadId == threadId && (threadSubscription != null || deferredThread == threadId)) return@synchronized
         threadSubscription?.let { streams.remove(it); send(EffectRpc.signal("Interrupt", it)) }
+        threadSubscription = null
         threadReady = false
         val selection = ++threadGeneration
         visits.reset(threadId); visitTimer?.cancel()
@@ -796,9 +830,11 @@ class T3Client(
         val cached = state.value.environment?.id?.let { threadProjections[it to threadId] }
         if (cached != null) applyProjection(cached, threadId)
         else if (state.value.selectedThreadId == threadId) update { it.copy(canWrite = false, canRead = false) }
-        else update { it.copy(selectedThreadId = threadId, messages = emptyList(), requests = emptyList(), activities = emptyList(), runs = emptyList(), attempts = emptyList(), subagents = emptyList(), backgroundWork = emptyList(), queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, activeRunId = null, canWrite = false, selectedRuntimeMode = null, selectedModel = null, selectedModelOptions = emptyMap(), selectedProviderLocked = false) }
+        else showEmptySelection(threadId)
         val epoch = generation
         refreshSignals?.close(); refreshJob?.cancel()
+        if (!shellReady) { deferredThread = threadId; return@synchronized }
+        deferredThread = null
         val signals = Channel<Unit>(Channel.CONFLATED)
         var revision = 0L
         var appliedRevision = 0L
@@ -828,6 +864,17 @@ class T3Client(
             }
         }
     }
+    private fun showEmptySelection(threadId: String?) = update { it.copy(selectedThreadId = threadId, messages = emptyList(), requests = emptyList(), activities = emptyList(), runs = emptyList(), attempts = emptyList(), subagents = emptyList(), backgroundWork = emptyList(), queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, activeRunId = null, canWrite = false, selectedRuntimeMode = null, selectedModel = null, selectedModelOptions = emptyMap(), selectedProviderLocked = false) }
+    /** Drops the selection of a thread the synchronized shell no longer lists, without touching the connection. Caller holds [lifecycleLock]. */
+    private fun clearThreadSelection() {
+        threadSubscription?.let { streams.remove(it); runCatching { send(EffectRpc.signal("Interrupt", it)) } }
+        threadSubscription = null; deferredThread = null; threadReady = false; threadGeneration++
+        refreshSignals?.close(); refreshJob?.cancel(); visits.reset(null); visitTimer?.cancel(); visitTimer = null
+        projection = JsonObject(emptyMap())
+        resetScreens(interrupt = true)
+        showEmptySelection(null)
+        writable()
+    }
     override fun setThreadViewing(viewing: Boolean) = synchronized(lifecycleLock) { threadViewing = viewing; noteThreadVisit() }
     /** Records a visit (T3 `thread.visit`) once, fire-and-forget: a failure is dropped, never retried or surfaced. */
     private fun noteThreadVisit() {
@@ -852,7 +899,7 @@ class T3Client(
      */
     private fun subscribeFullShell() {
         shellResume.invalidate()
-        shellSubscription = subscribe("orchestration.subscribeShell", shellSubscribeInput(null), ::shellItem)
+        shellSubscription = subscribeShellStream(null)
         shellReplaying = false
     }
     /**
@@ -862,7 +909,7 @@ class T3Client(
     private fun subscribeResumedShell() {
         val environmentId = state.value.environment?.id ?: error("Connect before refreshing threads")
         val afterSequence = shellResume.begin(environmentId, liveShellOrigin, ShellRows(state.value.projects, state.value.threads), environmentStates.keys.toSet())
-        shellSubscription = subscribe("orchestration.subscribeShell", shellSubscribeInput(afterSequence), ::shellItem)
+        shellSubscription = subscribeShellStream(afterSequence)
         shellReplaying = afterSequence != null
     }
     private fun endShellStream(message: String) {
@@ -930,7 +977,7 @@ class T3Client(
         // A pull made while the config was on its way wants the stale rows corrected, not caught up.
         val afterSequence = if (shellFullWanted) { shellResume.invalidate(); null } else resumable
         shellFullWanted = false
-        shellSubscription = subscribe("orchestration.subscribeShell", shellSubscribeInput(afterSequence), ::shellItem)
+        shellSubscription = subscribeShellStream(afterSequence)
         shellReplaying = afterSequence != null
     }
     /**
@@ -940,7 +987,7 @@ class T3Client(
     private fun subscribeShellBeforeOrigin(epoch: Long, environmentId: String) = synchronized(lifecycleLock) {
         check(epoch == generation && state.value.environment?.id == environmentId) { "Connection was cancelled" }
         shellResume.beginBeforeOrigin(environmentId, environmentStates.keys.toSet())
-        shellSubscription = subscribe("orchestration.subscribeShell", shellSubscribeInput(null), ::shellItem)
+        shellSubscription = subscribeShellStream(null)
         shellReplaying = false; shellFullWanted = false
     }
     /** Starts what waits for both a configured connection and a synchronized shell. Caller holds [lifecycleLock]. */
@@ -949,13 +996,35 @@ class T3Client(
         startDiscovery()
         pendingRouteHints?.let { pendingRouteHints = null; it() }
     }
+    /** Every shell stream starts unsynchronized: its rows become a checkpoint only from its own marker on. */
+    private fun subscribeShellStream(afterSequence: Long?): String {
+        shellSynced = false
+        return subscribe("orchestration.subscribeShell", shellSubscribeInput(afterSequence), ::shellItem)
+    }
+    /**
+     * Records the shown rows and cursor as the environment's checkpoint ([shellCacheEntry]) and emits
+     * [shellCheckpointed]; [marker] emits even when nothing changed. Caller holds [lifecycleLock] and the current shell
+     * subscription is synchronized.
+     */
+    private fun checkpointShell(marker: Boolean) {
+        val current = state.value
+        val id = current.environment?.id ?: return
+        if (!current.shellLoaded) return
+        val cursor = shellResume.cursor(id)?.takeIf { it.rows.sameAs(ShellRows(current.projects, current.threads)) }
+        val origin = cursor?.origin
+        val stored = if (cursor != null && origin != null) CachedShellCursor(origin.serverVersion, origin.databaseMigration, cursor.sequence, cursor.snapshotAtMillis) else null
+        val previous = shellCheckpoints[id]
+        if (!marker && previous != null && previous.projects === current.projects && previous.threads === current.threads && previous.cursor == stored) return
+        shellCheckpoints[id] = ShellCheckpoint(current.projects, current.threads, stored)
+        checkpoints.tryEmit(id)
+    }
     private fun shellItem(item: JsonObject) {
         if (item.string("kind") == "snapshot-required") {
             // Only sent for `httpSnapshotFallback`, which Trefoil never asks for: drop the cursor and load a socket snapshot.
             shellResume.invalidate()
             shellSubscription?.let { streams.remove(it); runCatching { send(EffectRpc.signal("Interrupt", it)) } }
             shellReady = false; shellReplaying = false; writable()
-            shellSubscription = subscribe("orchestration.subscribeShell", shellSubscribeInput(null), ::shellItem)
+            shellSubscription = subscribeShellStream(null)
             return
         }
         when (item.string("kind")) {
@@ -980,13 +1049,20 @@ class T3Client(
                 update { it.copy(threads = it.threads.filterNot { t -> t.id == item.string("threadId") && (archived == null || (t.archived || t.archivedAt != null) == archived) }) }
             }
             "synchronized" -> {
-                shellReady = true; writable()
+                shellReady = true; shellSynced = true; writable()
                 shellRefresh?.complete(Unit); shellRefresh = null; shellReplaying = false
                 shellLive()
+                deferredThread?.let { id ->
+                    deferredThread = null
+                    if (state.value.selectedThreadId == id && state.value.connection == ConnectionStatus.Connected) {
+                        if (state.value.threads.any { it.id == id }) selectThreadNow(id) else clearThreadSelection()
+                    }
+                }
             }
         }
         // After the rows changed: an item that failed to apply never moves the cursor.
         shellResume.applied(item, ShellRows(state.value.projects, state.value.threads))
+        if (shellSynced) checkpointShell(marker = item.string("kind") == "synchronized")
     }
     private fun project(value: JsonObject) = Project(value.string("id"), value.string("title"), value.string("workspaceRoot"))
     private fun applyProjection(incoming: JsonObject, threadId: String? = state.value.selectedThreadId, authoritative: Boolean = true) {
@@ -1799,6 +1875,7 @@ class T3Client(
             mutable.value = ClientState()
         }
         environmentStates.remove(environmentId)
+        shellCheckpoints.remove(environmentId)
         environmentId?.let(shellResume::forget)
         threadProjections.keys.removeAll { it.first == environmentId }
         environmentId?.let(tokens::forget)
@@ -1820,14 +1897,16 @@ class T3Client(
      * shows them at once with `shellLoaded` and, when the cached cursor still matches the server origin and is recent,
      * resumes with `afterSequence`. Restored rows are never live: `canRead`, `canWrite` and `canWriteThreads` stay false
      * and `shellLive` false until the `synchronized` marker of a live connection, and nothing is sent. Rows this process
-     * already holds (retained, or a connection to it in progress) are newer and win; returns whether [shell] was restored.
+     * already holds are newer and win, and a connection in progress takes the rows only until it decides how to subscribe
+     * the shell: a cache read that finishes later is dropped, never waited for. Returns whether [shell] was restored.
      * The restored lists are [shell]'s own instances, which is what the cursor describes.
      */
     fun restoreShell(shell: CachedShell): Boolean = synchronized(lifecycleLock) {
         val id = shell.environmentId
         val current = state.value
         val shown = current.environment?.id == id
-        if (shown && (current.shellLoaded || current.connection != ConnectionStatus.Disconnected && current.connection != ConnectionStatus.Error)) return false
+        val connecting = current.connection == ConnectionStatus.Connecting || current.connection == ConnectionStatus.Reconnecting
+        if (shown && (current.shellLoaded || current.connection == ConnectionStatus.Connected || connecting && shellPlannedEpoch == generation)) return false
         if (environmentStates[id]?.shellLoaded == true) return false
         val base = (if (shown) current else environmentStates[id]) ?: ClientState()
         val restored = base.copy(projects = shell.projects, threads = shell.threads, shellLoaded = true, shellLive = false,
@@ -1837,7 +1916,8 @@ class T3Client(
         environmentStates[id] = restored
         evictRetained()
         shellResume.forget(id)
-        shell.cursor?.takeIf { id in environmentStates }?.let { cursor ->
+        if (shown || id in environmentStates) shellCheckpoints[id] = ShellCheckpoint(shell.projects, shell.threads, shell.cursor)
+        shell.cursor?.takeIf { shown || id in environmentStates }?.let { cursor ->
             shellResume.restore(id, ShellCursor(ShellOrigin(id, cursor.serverVersion, cursor.databaseMigration), cursor.sequence,
                 cursor.snapshotAtMillis, ShellRows(shell.projects, shell.threads)))
         }
@@ -1845,22 +1925,17 @@ class T3Client(
     }
 
     /**
-     * What the local cache should hold for [environmentId]: its rows (shown or retained) once a snapshot was loaded, with
-     * the resume cursor only while it describes exactly these rows and knows its server origin; null without rows.
+     * What the local cache should hold for [environmentId]: its last checkpoint ([shellCheckpointed]), the rows and resume
+     * cursor of a synchronized shell; null before any. Rows a failed catch-up or refresh applied before its marker never
+     * replace it.
      */
     fun shellCacheEntry(environmentId: String, nowMillis: Long = System.currentTimeMillis()): CachedShell? = synchronized(lifecycleLock) {
-        val current = state.value
-        val source = (if (current.environment?.id == environmentId) current else environmentStates[environmentId])?.takeIf { it.shellLoaded }
-            ?: return null
-        val cursor = shellResume.cursor(environmentId)?.takeIf { it.rows.sameAs(ShellRows(source.projects, source.threads)) }
-        val origin = cursor?.origin
-        CachedShell(environmentId, source.projects, source.threads,
-            if (cursor != null && origin != null) CachedShellCursor(origin.serverVersion, origin.databaseMigration, cursor.sequence, cursor.snapshotAtMillis) else null,
-            nowMillis)
+        val checkpoint = shellCheckpoints[environmentId] ?: return null
+        CachedShell(environmentId, checkpoint.projects, checkpoint.threads, checkpoint.cursor, nowMillis)
     }
 
     override fun close() {
-        disconnectNow(); environmentStates.clear(); shellResume.forget(null); threadProjections.clear()
+        disconnectNow(); environmentStates.clear(); shellCheckpoints.clear(); shellResume.forget(null); threadProjections.clear()
         // Only this client's own calls and socket end above; a pool shared with the probe, the renewer and sibling clients keeps its warm connections.
         if (ownsPool) http.connectionPool.evictAll()
     }

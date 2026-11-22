@@ -138,6 +138,8 @@ class ShellResumeTest {
         @Volatile var environmentId = "env"
         @Volatile var serverVersion: String? = "1.2.3"
         @Volatile var sessionDown = false
+        /** When set, the WebSocket ticket request waits for it: the connect is in progress and has not planned the shell. */
+        @Volatile var ticketHold: java.util.concurrent.CountDownLatch? = null
         /** When false, `server.getConfig` requests wait in [heldConfigs] for [answerConfig]. */
         @Volatile var answerConfigs = true
         val heldConfigs = Channel<Pair<WebSocket, String>>(Channel.UNLIMITED)
@@ -149,7 +151,10 @@ class ShellResumeTest {
                     request.path == "/.well-known/t3/environment" -> json("""{"environmentId":"$environmentId","orchestrationProtocolVersion":2}""")
                     request.path == "/api/auth/session" && sessionDown -> MockResponse().setResponseCode(503)
                     request.path == "/api/auth/session" -> json("""{"authenticated":true,"permissions":["orchestration:read","orchestration:operate"]}""")
-                    request.path.orEmpty().startsWith("/api/auth/websocket-ticket") -> json("""{"ticket":"fixture"}""")
+                    request.path.orEmpty().startsWith("/api/auth/websocket-ticket") -> {
+                        ticketHold?.await(10, java.util.concurrent.TimeUnit.SECONDS)
+                        json("""{"ticket":"fixture"}""")
+                    }
                     request.path.orEmpty().startsWith("/ws?") -> MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
                         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, null) }
                         override fun onMessage(webSocket: WebSocket, text: String) {
@@ -720,6 +725,105 @@ class ShellResumeTest {
             f.client.forgetEnvironment("env")
             assertNull("Forgetting leaves nothing to cache", f.client.shellCacheEntry("env"))
             assertNull(f.connect().afterSequence)
+        }
+    }
+
+    @Test fun aCatchUpOrRefreshThatFailsBeforeItsMarkerKeepsTheLastCheckpoint() = runBlocking {
+        Fixture().use { f ->
+            val events = Channel<String>(Channel.UNLIMITED)
+            f.scope.launch(start = CoroutineStart.UNDISPATCHED) { f.client.shellCheckpointed.collect { events.trySend(it) } }
+            f.loadAB()
+            val checkpoint = f.client.shellCacheEntry("env", nowMillis = 1)!!
+            assertEquals(12L, checkpoint.cursor?.sequence)
+            f.client.disconnect()
+            while (events.tryReceive().isSuccess) {}
+
+            val resumed = f.connect()
+            assertEquals(12L, resumed.afterSequence)
+            f.chunk(resumed, """{"kind":"thread.removed","sequence":13,"location":"active","threadId":"b"}""")
+            assertEquals("The delta shows", 1, f.client.state.value.threads.size)
+            resumed.first.close(1011, null)
+            withTimeout(5000) { while (f.client.state.value.connection != ConnectionStatus.Error) yield() }
+            assertEquals("Rows applied before the marker are not what the cache stores", checkpoint, f.client.shellCacheEntry("env", nowMillis = 1))
+            assertTrue("No checkpoint without a marker", events.tryReceive().isFailure)
+
+            f.client.reconnect()
+            val again = f.nextShell()
+            assertEquals("Memory still resumes from the applied delta", 13L, again.afterSequence)
+            val unchanged = f.client.state.value.threads
+            f.chunk(again, """{"kind":"synchronized"}""")
+            assertSame(unchanged, f.client.state.value.threads)
+            assertEquals("The marker checkpoints even with unchanged rows", "env", withTimeout(5000) { events.receive() })
+            assertEquals(13L, f.client.shellCacheEntry("env")?.cursor?.sequence)
+            assertEquals(listOf("a"), f.client.shellCacheEntry("env")?.threads?.map { it.id })
+
+            val refresh = async { runCatching { f.client.refreshThreads() } }
+            val full = f.nextShell()
+            f.chunk(full, Fixture.shell(20, Fixture.project, Fixture.thread("z")))
+            assertEquals(listOf("z"), f.client.state.value.threads.map { it.id })
+            full.first.close(1011, null)
+            withTimeout(5000) { refresh.await() }
+            assertEquals("A full refresh that never synchronized replaces nothing", listOf("a"), f.client.shellCacheEntry("env")?.threads?.map { it.id })
+            assertEquals(13L, f.client.shellCacheEntry("env")?.cursor?.sequence)
+        }
+    }
+
+    @Test fun aThreadOpenedBeforeTheShellIsSynchronizedIsSubscribedAfterTheMarkerOnlyIfItStillExists() = runBlocking {
+        Fixture().use { f ->
+            f.loadAB(); f.client.disconnect()
+            f.restartFrom(f.client.shellCacheEntry("env"))
+            f.answerConfigs = false
+            val connecting = async { f.client.connect(f.environment()) }
+            val held = withTimeout(5000) { f.heldConfigs.receive() }
+            f.client.selectThread("b")
+            assertEquals("A cached row opens while connecting", "b", f.client.state.value.selectedThreadId)
+            f.answerConfig(held)
+            val resumed = f.nextShell()
+            withTimeout(5000) { connecting.await() }
+            assertEquals(ConnectionStatus.Connected, f.client.state.value.connection)
+            assertFalse("Nothing subscribed before the marker", "orchestration.subscribeThread" in f.log)
+            f.chunk(resumed, """{"kind":"thread.removed","sequence":13,"location":"active","threadId":"b"},{"kind":"synchronized"}""")
+            assertNull("A thread deleted while offline is closed", f.client.state.value.selectedThreadId)
+            assertEquals(ConnectionStatus.Connected, f.client.state.value.connection)
+            assertTrue(f.client.state.value.canWriteThreads)
+            delay(100)
+            assertFalse("orchestration.subscribeThread" in f.log)
+
+            f.client.disconnect(); f.answerConfigs = true
+            val again = f.connect()
+            f.client.selectThread("a")
+            assertEquals("a", f.client.state.value.selectedThreadId)
+            delay(100)
+            assertFalse("Still waiting for the marker", "orchestration.subscribeThread" in f.log)
+            f.chunk(again, """{"kind":"synchronized"}""")
+            withTimeout(5000) { while ("orchestration.subscribeThread" !in f.log) delay(5) }
+            assertEquals("a", f.client.state.value.selectedThreadId)
+            assertEquals(ConnectionStatus.Connected, f.client.state.value.connection)
+        }
+    }
+
+    @Test fun aCacheReadThatFinishesWhileConnectingIsUsedOnlyUntilTheShellIsPlanned() = runBlocking {
+        Fixture().use { f ->
+            f.loadAB(); f.client.disconnect()
+            val bytes = ShellCacheCodec.encode(f.client.shellCacheEntry("env")!!)!!
+            f.restart()
+            val cached = ShellCacheCodec.decode(bytes, "env")!!
+            f.log.clear()
+            f.ticketHold = java.util.concurrent.CountDownLatch(1)
+            val connecting = async { f.client.connect(f.environment()) }
+            withTimeout(5000) { while (f.log.none { it.startsWith("/api/auth/websocket-ticket") }) delay(5) }
+            assertEquals(ConnectionStatus.Connecting, f.client.state.value.connection)
+            assertTrue("The connect did not wait for the read, and still takes its rows", f.client.restoreShell(cached))
+            assertEquals(2, f.client.state.value.threads.size)
+            assertNotLive(f.client.state.value)
+            f.ticketHold!!.countDown()
+            val resumed = f.nextShell()
+            withTimeout(5000) { connecting.await() }
+            assertEquals(12L, resumed.afterSequence)
+            assertFalse("A read finishing after the shell was planned is dropped", f.client.restoreShell(cached.copy(threads = emptyList(), cursor = null)))
+            assertEquals(2, f.client.state.value.threads.size)
+            f.chunk(resumed, """{"kind":"synchronized"}""")
+            assertTrue(f.client.state.value.shellLive)
         }
     }
 }
