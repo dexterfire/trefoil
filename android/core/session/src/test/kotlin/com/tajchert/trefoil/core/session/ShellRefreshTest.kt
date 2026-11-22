@@ -142,6 +142,17 @@ class ShellRefreshTest {
         } finally { f.close() }
     }
 
+    @Test fun emptySnapshotMarksTheShellLoaded() = runBlocking<Unit> {
+        val f = fixture { _, _ -> """{"kind":"snapshot","snapshot":{"snapshotSequence":1,"projects":[],"threads":[],"archivedThreads":[]}}, {"kind":"synchronized"}""" }
+        try {
+            assertFalse(f.client.state.value.shellLoaded)
+            f.client.connect(SavedEnvironment("env-1", "Test", f.server.url("/").toString(), "bearer"))
+            val loaded = withTimeout(5_000) { f.client.state.first { it.canWriteThreads } }
+            assertTrue("No threads at all is a loaded list", loaded.shellLoaded)
+            assertTrue(loaded.threads.isEmpty() && loaded.projects.isEmpty())
+        } finally { f.close() }
+    }
+
     @Test fun archiveMoveRemovalKeepsTheRowInItsNewLocation() = runBlocking<Unit> {
         val f = fixture { _, _ -> "${snapshot(row("completed"))}, {\"kind\":\"synchronized\"}" }
         try {
