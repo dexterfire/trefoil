@@ -142,6 +142,34 @@ class TokenRenewalTest {
         } finally { server.shutdown() }
     }
 
+    @Test fun slowStoreNeverHoldsUpTheNextRenewalAndTheNewestTokenIsStoredLast() = runBlocking {
+        val server = MockWebServer(); server.start()
+        val saved = CopyOnWriteArrayList<Saved>()
+        val storing = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val tokens = EnvironmentTokenRenewer({ key }, onRenewed = { renewed, replaces ->
+            if (renewed.accessToken == "first") { storing.complete(Unit); release.await() }
+            saved += Saved(renewed, replaces)
+        })
+        try {
+            server.enqueue(renewal("first")); server.enqueue(renewal("second"))
+            val expired = environment(server.url("/").toString(), System.currentTimeMillis() - 1)
+            val first = async(Dispatchers.Default) { tokens.fresh(expired, server.url("/")) }
+            withTimeout(5_000) { storing.await() }
+            assertEquals("Adopted before it is stored", "first", tokens.current(expired).accessToken)
+            // The host refuses "first" while it is still being stored: the next renewal must not wait for that store.
+            val second = async(Dispatchers.Default) { tokens.fresh(expired, server.url("/"), rejectedToken = "first") }
+            assertNotNull(server.takeRequest(5, TimeUnit.SECONDS))
+            val renewAgain = server.takeRequest(5, TimeUnit.SECONDS)
+            assertEquals("first", form(renewAgain!!)["subject_token"])
+            assertEquals("second", tokens.current(expired).accessToken)
+            release.complete(Unit)
+            assertEquals("first", withTimeout(5_000) { first.await() }.accessToken)
+            assertEquals("second", withTimeout(5_000) { second.await() }.accessToken)
+            assertEquals("Stores run in order, newest last", listOf("first", "second"), saved.map { it.renewed.accessToken })
+            assertEquals(setOf("old-secret", "first"), saved.last().replaces)
+        } finally { server.shutdown() }
+    }
+
     @Test fun cancelledRenewalAbortsTheCallAndReleasesTheLock() = runBlocking {
         val server = MockWebServer(); server.start()
         val saved = CopyOnWriteArrayList<Saved>()
