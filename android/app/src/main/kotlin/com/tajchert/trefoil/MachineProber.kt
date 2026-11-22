@@ -55,9 +55,11 @@ class MachineProber(
     private val directTimeoutMillis: (List<EnvironmentRoute>) -> Long = ::directGroupTimeoutMillis,
     /** SSH login plus runtime discovery needs a few round trips before the HTTP check. */
     private val sshTimeoutMillis: Long = 15_000,
+    /** The machine's whole connection plan, as a connect would walk it (before it is split around SSH). */
+    private val plan: (SavedEnvironment) -> List<EnvironmentRoute> = { it.candidateRoutes() },
 ) {
     suspend fun probe(environment: SavedEnvironment, hostKeys: List<SshHostKey>): MachineProbe = try {
-        if (environment.ssh == null) probeDirect(environment, environment.candidateRoutes().filter { it.kind != RouteKind.Ssh }) ?: MachineProbe.NeedsAttention
+        if (environment.ssh == null) probeDirect(environment, plan(environment).filter { it.kind != RouteKind.Ssh }) ?: MachineProbe.NeedsAttention
         else probeSshMachine(environment, hostKeys)
     } catch (e: CancellationException) { throw e }
     catch (_: Exception) { MachineProbe.Unreachable }
@@ -71,7 +73,7 @@ class MachineProber(
     }
 
     private suspend fun probeSshMachine(environment: SavedEnvironment, hostKeys: List<SshHostKey>): MachineProbe {
-        val plan = environment.candidateRoutes()
+        val plan = plan(environment)
         val sshAt = plan.indexOfFirst { it.kind == RouteKind.Ssh }.takeIf { it >= 0 } ?: plan.size
         val results = mutableListOf<MachineProbe>()
         probeDirect(environment, plan.take(sshAt))?.let { result ->

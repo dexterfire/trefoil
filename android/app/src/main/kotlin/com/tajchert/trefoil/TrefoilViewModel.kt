@@ -205,11 +205,13 @@ class TrefoilViewModel internal constructor(
     private val environmentProbe = EnvironmentProbe(http = http, tokens = tokens)
     private val prober = MachineProber(
         // Adapter over the single-route probe; EnvironmentProbe's multi-route probe has the same contract.
-        direct = { environment, routes -> probeRoutes(usableRoutes(routes, cellularOnly)) { environmentProbe.probe(environment, it.baseUrl) } },
+        direct = { environment, routes -> probeRoutes(routes) { environmentProbe.probe(environment, it.baseUrl) } },
         openSsh = { input, pinned -> connector.open(input, pinned).let { opened -> object : ProbeTunnel {
             override val baseUrl = opened.baseUrl
             override fun close() = opened.close()
         } } },
+        // Filtered as a whole, like the connect's plan, so no group gets back a route the connect leaves out.
+        plan = { usableRoutes(it.candidateRoutes(), cellularOnly) },
     )
     private val _machineProbes = MutableStateFlow<Map<String, MachineProbe>>(emptyMap())
     /** Reachability of saved machines other than the active connection; never mutates a server. */

@@ -60,6 +60,21 @@ class MachineProberTest {
         assertEquals(listOf("Lan", "open", "Ssh", "Tunnel"), asked)
     }
 
+    @Test fun aRouteThePlanFilterDropsIsNotProbedEvenWhenItIsTheOnlyRouteBeforeSsh() = runBlocking {
+        val asked = mutableListOf<String>()
+        // On plain cellular the connect walks only [Ssh, Tunnel]; the LAN leg before SSH must not come back as its own group.
+        val prober = MachineProber({ _, routes -> asked += routes.joinToString(",") { it.kind.name }; MachineProbe.Unreachable },
+            { _, _ -> asked += "open"; FakeTunnel() }, plan = { usableRoutes(it.candidateRoutes(), cellularOnly = true) })
+        prober.probe(ssh().copy(routes = listOf(lan, tunnel)), emptyList())
+        assertEquals(listOf("open", "Ssh", "Tunnel"), asked)
+        // Off cellular the same machine probes its LAN address first, as before.
+        asked.clear()
+        MachineProber({ _, routes -> asked += routes.joinToString(",") { it.kind.name }; MachineProbe.Unreachable },
+            { _, _ -> asked += "open"; FakeTunnel() }, plan = { usableRoutes(it.candidateRoutes(), cellularOnly = false) })
+            .probe(ssh().copy(routes = listOf(lan, tunnel)), emptyList())
+        assertEquals(listOf("Lan", "open", "Ssh", "Tunnel"), asked)
+    }
+
     @Test fun sshMachineWithoutCredentialsStillProbesItsTunnel() = runBlocking {
         val machine = ssh(password = null).copy(routes = listOf(tunnel))
         var opened = false
