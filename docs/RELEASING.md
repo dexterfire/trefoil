@@ -1,5 +1,10 @@
 # Android releases
 
+Release `0.21.1` (`versionCode = 39`) adds T3 provider marks for Antigravity, Kiro, Muse, fx, Pi and ACP
+Registry, shared by the app and the usage widget; the brand-colored marks (Antigravity, Kiro, Muse) render
+untinted in the app, as T3 Code does. The New thread FAB is now a round plus button and slides above a
+snackbar instead of being covered by it. Check the new provider marks and the FAB with a snackbar on a device.
+
 Release `0.21.0` (`versionCode = 38`) adds stop, steer and queue to the thread composer: while an agent
 works, a follow-up can steer the running turn or wait in a queue strip (Send now, edit, remove), and Stop ends
 the turn, following T3's queue eligibility rules. The thread list starts from an encrypted per-machine shell
