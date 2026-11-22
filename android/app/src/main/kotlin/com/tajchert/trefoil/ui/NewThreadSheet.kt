@@ -193,8 +193,9 @@ internal fun NewThreadSheetContent(
         if (prompt.isBlank() && saved.text.isNotBlank()) prompt = saved.text
         state.models.indexOfFirst { it.instanceId == saved.modelInstanceId && it.model == saved.model }.takeIf { it >= 0 }?.let { modelIndex = it }
         saved.runtimeMode?.let { chosenMode = it }
-        saved.effort?.let { chosenEffort = it }
-        saved.fastMode?.let { chosenFast = it }
+        val restored = state.models.getOrNull(modelIndex) ?: state.newThreadSettings(projectId).model
+        restored.offeredEffort(saved.effort)?.let { chosenEffort = it }
+        restored.offeredFast(saved.fastMode)?.let { chosenFast = it }
     }
     val allowedModes = allowedRuntimeModes(model)
     val mode = resolveRuntimeMode(RuntimeMode.fromWire(chosenMode) ?: defaults.runtimeMode, allowedModes)
@@ -205,7 +206,7 @@ internal fun NewThreadSheetContent(
         if (id.isEmpty() || !loaded) return
         val chosen = state.models.getOrNull(index) ?: state.newThreadSettings(id).model
         if (composerDrafts.get(ComposerDraftKey.NewThread(env, id)) == null && id !in createdHere) createdHere = createdHere + id
-        composerDrafts.update(ComposerDraftKey.NewThread(env, id), text, chosen?.instanceId, chosen?.model, modeWire.takeIf { chosen != null }, effort.takeIf { chosen != null }, fast.takeIf { chosen != null })
+        composerDrafts.update(ComposerDraftKey.NewThread(env, id), text, chosen?.instanceId, chosen?.model, modeWire.takeIf { chosen != null }, chosen.offeredEffort(effort), chosen.offeredFast(fast))
     }
     /**
      * Switching project keeps the typed prompt. A draft already stored for the target is never overwritten: one with
@@ -418,3 +419,10 @@ private fun SheetPill(label: String?, icon: ImageVector, description: String, en
         Icon(TfIcons.ChevronDown, null, Modifier.size(14.dp), tint = c.muted)
     }
 }
+
+/** [effort] when [this] model offers it, so a pick made for another model is never stored or restored. */
+private fun ModelOption?.offeredEffort(effort: String?): String? =
+    effort?.takeIf { e -> this?.reasoning?.id?.let { offersOptionValue(it, e) } == true }
+
+/** [fast] when [this] model has the Fast mode switch. */
+private fun ModelOption?.offeredFast(fast: Boolean?): Boolean? = fast?.takeIf { this?.offersOptionValue(FAST_MODE_OPTION_ID, it) == true }
