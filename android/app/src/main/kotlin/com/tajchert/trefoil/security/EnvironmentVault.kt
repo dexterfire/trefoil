@@ -81,7 +81,7 @@ class EnvironmentVault(context: Context) : EnvironmentStore {
 }
 
 /** The AES-GCM key under [alias] in the Android Keystore, created on first use. */
-private fun keystoreKey(alias: String): SecretKey {
+internal fun keystoreKey(alias: String): SecretKey {
     val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
     (store.getKey(alias, null) as? SecretKey)?.let { return it }
     return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply {
