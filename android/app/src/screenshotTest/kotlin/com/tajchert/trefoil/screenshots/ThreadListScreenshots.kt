@@ -83,3 +83,20 @@ fun ThreadList_Drafts_Light() {
 fun ThreadList_Drafts_Dark() {
     TrefoilTheme(darkTheme = true) { ThreadList(ScreenshotFixtures.connectedState(draftThreads()), select = {}, create = {}, composerDrafts = draftsUi()) }
 }
+
+/** Connected (or connecting) before the first shell snapshot: placeholder rows and the progress bar, never "no threads". */
+private fun loadingState() = ScreenshotFixtures.connectedState(emptyList()).copy(projects = emptyList(), shellLoaded = false, canWrite = false, canWriteThreads = false)
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, heightDp = 800)
+@Composable
+fun ThreadList_Loading_Light() {
+    TrefoilTheme(darkTheme = false) { ThreadList(loadingState(), select = {}, create = {}) }
+}
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, heightDp = 800, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun ThreadList_Loading_Dark() {
+    TrefoilTheme(darkTheme = true) { ThreadList(loadingState(), select = {}, create = {}) }
+}

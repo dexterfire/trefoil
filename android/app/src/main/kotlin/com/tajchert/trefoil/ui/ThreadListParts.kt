@@ -340,6 +340,28 @@ internal fun NewThreadFab(enabled: Boolean, onClick: () -> Unit, modifier: Modif
 }
 
 @Composable
+internal fun ThreadListLoading(rows: Int = 6) {
+    val c = Tf.colors
+    val bar = RoundedCornerShape(4.dp)
+    // Static placeholders shaped like ThreadRow; the list header's progress bar shows the activity.
+    Column(Modifier.fillMaxWidth().padding(top = 4.dp).semantics(mergeDescendants = true) { contentDescription = "Loading threads" }) {
+        repeat(rows) { index ->
+            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                Box(Modifier.size(40.dp).background(c.s2, RoundedCornerShape(12.dp)))
+                Column(Modifier.weight(1f).padding(top = 3.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.fillMaxWidth(if (index % 2 == 0) .62f else .48f).height(12.dp).background(c.s2, bar))
+                        Spacer(Modifier.weight(1f))
+                        Box(Modifier.width(28.dp).height(10.dp).background(c.s2, bar))
+                    }
+                    Box(Modifier.fillMaxWidth(if (index % 3 == 1) .7f else .9f).height(10.dp).background(c.s2.copy(alpha = .6f), bar))
+                }
+            }
+        }
+    }
+}
+
+@Composable
 internal fun ThreadListEmpty(searching: Boolean) {
     val c = Tf.colors
     Column(Modifier.fillMaxWidth().padding(horizontal = 40.dp, vertical = 56.dp), horizontalAlignment = Alignment.CenterHorizontally) {

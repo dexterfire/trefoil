@@ -192,6 +192,19 @@ internal fun threadDraftRows(drafts: Map<ComposerDraftKey, ComposerDraft>, envir
     }.sortedByDescending { it.first.updatedAtMillis }
 
 /**
+ * The machine has no shell snapshot yet ([ClientState.shellLoaded]) while a connection is being made or is live: the
+ * list shows placeholder rows, never "no threads", until the first snapshot arrives.
+ */
+internal fun threadListLoading(state: ClientState): Boolean = !state.hasShellRows() &&
+    state.connection in setOf(ConnectionStatus.Connecting, ConnectionStatus.Reconnecting, ConnectionStatus.Connected)
+
+/** "No threads" is a fact only about a loaded shell; while it is loading or never loaded the list stays blank. */
+internal fun threadListShowsEmpty(state: ClientState): Boolean = state.hasShellRows() && !state.busy
+
+/** Rows on screen came from a snapshot, also when a client does not report [ClientState.shellLoaded]. */
+private fun ClientState.hasShellRows() = shellLoaded || threads.isNotEmpty()
+
+/**
  * Threads list: header (machine pill or machine title on the rail layout), inline search, filter chips,
  * grouped rows and the New action. [selectedId] highlights a row only where the detail pane is visible.
  */
@@ -254,12 +267,16 @@ internal fun ThreadList(
         banner()
         if (searching || query.isNotEmpty()) ThreadSearchField(query, { query = it }) { query = ""; searching = false }
         ThreadFilterChips(filter, counts, state.projects, projects[projectId], { filter = it }, { projectId = it })
-        if (state.busy && state.threads.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp).height(2.dp), color = c.accent, trackColor = c.s2)
+        val loading = threadListLoading(state)
+        if ((state.busy || loading) && state.threads.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp).height(2.dp), color = c.accent, trackColor = c.s2)
         PullToRefreshBox(isRefreshing, onRefresh, Modifier.weight(1f).fillMaxWidth()) {
             val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottomInset + if (railLayout) 24.dp else 96.dp)) {
-                if (sections.isEmpty() && draftRows.isEmpty() && !state.busy) item(key = "empty") {
-                    ThreadListEmpty(searching = query.isNotBlank() || filter != ThreadFilter.All || projectId != null)
+                if (sections.isEmpty() && draftRows.isEmpty()) {
+                    if (loading) item(key = "loading") { ThreadListLoading() }
+                    else if (threadListShowsEmpty(state)) item(key = "empty") {
+                        ThreadListEmpty(searching = query.isNotBlank() || filter != ThreadFilter.All || projectId != null)
+                    }
                 }
                 if (draftRows.isNotEmpty()) {
                     val draftsOpen = query.isNotBlank() || "Drafts" in expanded

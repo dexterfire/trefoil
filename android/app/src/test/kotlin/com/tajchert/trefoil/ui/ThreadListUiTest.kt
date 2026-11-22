@@ -4,6 +4,9 @@ import android.graphics.Bitmap
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.semantics.Role
@@ -178,6 +181,34 @@ class ThreadListUiTest {
         compose.onNodeWithContentDescription("Search").performClick()
         compose.onNodeWithText("Search threads").performTextInput("Hidden fixture child")
         compose.onNodeWithText("No matching threads").assertExists()
+    }
+    @Test fun aMachineWithoutAShellSnapshotShowsPlaceholdersInsteadOfTheEmptyState() {
+        var state by mutableStateOf(fixture.copy(threads = emptyList(), projects = emptyList(), shellLoaded = false))
+        compose.setContent { TrefoilTheme { ThreadList(state, {}, {}) } }
+        compose.onNodeWithContentDescription("Loading threads").assertExists()
+        compose.onNodeWithText("Your next idea starts here").assertDoesNotExist()
+        // The first snapshot is empty: now "no threads" is true.
+        state = state.copy(shellLoaded = true); compose.waitForIdle()
+        compose.onNodeWithContentDescription("Loading threads").assertDoesNotExist()
+        compose.onNodeWithText("Your next idea starts here").assertExists()
+    }
+    @Test fun loadingAndEmptyRules() {
+        val blank = ClientState(threads = emptyList())
+        for (status in listOf(ConnectionStatus.Connecting, ConnectionStatus.Reconnecting, ConnectionStatus.Connected)) {
+            assertTrue("$status", threadListLoading(blank.copy(connection = status)))
+            assertFalse("$status", threadListShowsEmpty(blank.copy(connection = status)))
+            assertFalse("a loaded shell is not loading: $status", threadListLoading(blank.copy(connection = status, shellLoaded = true)))
+        }
+        // Offline without a snapshot: neither placeholders nor "no threads" (the banner says what is wrong).
+        for (status in listOf(ConnectionStatus.Disconnected, ConnectionStatus.Error)) {
+            assertFalse("$status", threadListLoading(blank.copy(connection = status)))
+            assertFalse("$status", threadListShowsEmpty(blank.copy(connection = status)))
+        }
+        assertTrue(threadListShowsEmpty(blank.copy(connection = ConnectionStatus.Error, shellLoaded = true)))
+        assertFalse("busy keeps the progress bar instead", threadListShowsEmpty(blank.copy(shellLoaded = true, busy = true)))
+        // Rows from a client that does not report shellLoaded still count as loaded.
+        assertFalse(threadListLoading(fixture))
+        assertTrue(threadListShowsEmpty(fixture))
     }
 
     /* ---------- Design renders (build/reports/ui/design-*.png) ---------- */
