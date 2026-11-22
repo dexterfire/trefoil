@@ -205,7 +205,7 @@ class TrefoilViewModel internal constructor(
     private val environmentProbe = EnvironmentProbe(http = http, tokens = tokens)
     private val prober = MachineProber(
         // Adapter over the single-route probe; EnvironmentProbe's multi-route probe has the same contract.
-        direct = { environment, routes -> probeRoutes(routes) { environmentProbe.probe(environment, it.baseUrl) } },
+        direct = { environment, routes -> probeRoutes(usableRoutes(routes, cellularOnly)) { environmentProbe.probe(environment, it.baseUrl) } },
         openSsh = { input, pinned -> connector.open(input, pinned).let { opened -> object : ProbeTunnel {
             override val baseUrl = opened.baseUrl
             override fun close() = opened.close()
@@ -244,6 +244,8 @@ class TrefoilViewModel internal constructor(
     private var defaultNetwork: Long? = null
     private var networkKnown = false
     private var networkAvailable = true
+    /** The default network is plain cellular (see [usableRoutes]); null until its capabilities are known. */
+    private var cellularOnly: Boolean? = null
     private var linkCheckJob: Job? = null
     /** The [connectionEpoch] of a network change: a drop in that epoch reconnects without the first backoff. */
     private var networkChangeEpoch: Long? = null
@@ -518,6 +520,7 @@ class TrefoilViewModel internal constructor(
         val environment = _environments.value.firstOrNull { it.id == requested.id } ?: throw MachineRemovedException()
         selectedEnvironment = environment.forStorage()
         val plan = environment.candidateRoutes().let { plan -> startAt?.let { start -> plan.dropWhile { !sameRoute(it, start) } }?.ifEmpty { null } ?: plan }
+            .let { usableRoutes(it, cellularOnly) }
         val input = environment.ssh?.let { environment.sshInput() }
         // No leg connects for a machine forgotten while the plan runs; one that connected anyway is closed again.
         fun ensureSaved() { if (_environments.value.none { it.id == environment.id }) throw MachineRemovedException() }
@@ -1039,7 +1042,7 @@ class TrefoilViewModel internal constructor(
         // Leaving an SSH session whose login was typed, not saved, could not fall back to it if the switch failed.
         val fallbackPossible = active?.kind != RouteKind.Ssh || saved?.ssh?.let { saved.sshInput().hasSavedLogin() } == true
         routeMonitor.watch(if (foreground && current.connection == ConnectionStatus.Connected && active != null && saved != null && fallbackPossible)
-            RouteWatch(saved.id, active, saved.candidateRoutes(), saved.allowInsecureHttp) else null)
+            RouteWatch(saved.id, active, usableRoutes(saved.candidateRoutes(), cellularOnly), saved.allowInsecureHttp) else null)
     }
 
     /** A switch is a disconnect plus connect: only when nothing in flight could be abandoned or cut off. */
@@ -1114,6 +1117,7 @@ class TrefoilViewModel internal constructor(
         // Network callbacks can be the first thing the app runs after deep sleep.
         portForwards.checkDeadlines()
         val changed = networkKnown && defaultNetwork != handle
+        if (defaultNetwork != handle) cellularOnly = null
         networkKnown = true; defaultNetwork = handle; networkAvailable = true
         if (!(foreground || keepAlive)) return
         reconnectWhenOnline?.let { scheduleAutoReconnect(it, immediate = true); return }
@@ -1137,7 +1141,14 @@ class TrefoilViewModel internal constructor(
     /** Network [handle] stopped being the default; only the current default going away means offline. */
     fun onDefaultNetworkLost(handle: Long) {
         portForwards.checkDeadlines()
-        if (defaultNetwork == handle) { defaultNetwork = null; networkAvailable = false }
+        if (defaultNetwork == handle) { defaultNetwork = null; networkAvailable = false; cellularOnly = null }
+    }
+
+    /** The transports of the default network [handle]: plain cellular leaves out routes that cannot work there. */
+    fun onDefaultNetworkTransports(handle: Long, plainCellular: Boolean) {
+        if (defaultNetwork != handle || cellularOnly == plainCellular) return
+        cellularOnly = plainCellular
+        refreshRouteMonitor()
     }
 
     /** Coalesces keep-alive checks to after the current main-thread work, so transient states never stop the service. */

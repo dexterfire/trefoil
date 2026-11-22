@@ -23,6 +23,30 @@ internal fun betterRoutes(plan: List<EnvironmentRoute>, active: EnvironmentRoute
     return above.filter { it.kind != RouteKind.Ssh }
 }
 
+/**
+ * [plan] without the routes that cannot work on the default network when it is plain cellular ([cellularOnly]: no Wi-Fi,
+ * Ethernet, Bluetooth, USB or VPN transport). There a literal RFC 1918 address (LAN) or 100.64/10 address (Tailnet) is
+ * carrier space, never the user's machine, so trying it only spends its timeout before the next route. Host names
+ * (a `.ts.net` name may be Funnel), loopback and the emulator's 10.0.2.2 host alias are kept. Null (network unknown)
+ * keeps every route, and so does a plan that would end up empty: the attempt then fails as before instead of not trying.
+ */
+internal fun usableRoutes(plan: List<EnvironmentRoute>, cellularOnly: Boolean?): List<EnvironmentRoute> =
+    if (cellularOnly != true) plan else plan.filterNot(::unreachableOnCellular).ifEmpty { plan }
+
+private fun unreachableOnCellular(route: EnvironmentRoute): Boolean {
+    if (route.kind != RouteKind.Lan && route.kind != RouteKind.Tailnet) return false
+    val host = try { java.net.URI(route.baseUrl).host } catch (_: Exception) { null } ?: return false
+    return if (route.kind == RouteKind.Lan) host != "10.0.2.2" && isPrivateLanAddress(host) else isCarrierGradeNatAddress(host)
+}
+
+/** A literal IPv4 address in 100.64.0.0/10 (Tailscale addresses, carrier-grade NAT elsewhere). */
+private fun isCarrierGradeNatAddress(host: String): Boolean {
+    val parts = host.split('.')
+    if (parts.size != 4 || parts.any { it.isEmpty() || it.length > 3 || it.any { c -> c !in '0'..'9' } }) return false
+    val octets = parts.map { it.toInt() }
+    return octets.all { it in 0..255 } && octets[0] == 100 && octets[1] in 64..127
+}
+
 /** Direct routes answer fast or not at all; public and tunnel routes may cross the internet. */
 internal fun preflightTimeoutMillis(kind: RouteKind): Long = if (kind == RouteKind.Lan || kind == RouteKind.Tailnet) 3_000 else 15_000
 

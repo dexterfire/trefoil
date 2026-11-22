@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.os.Build
 import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -64,6 +65,9 @@ class MainActivity : ComponentActivity() {
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) { model.onDefaultNetwork(network.networkHandle) }
         override fun onLost(network: Network) { model.onDefaultNetworkLost(network.networkHandle) }
+        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+            model.onDefaultNetworkTransports(network.networkHandle, capabilities.isPlainCellular())
+        }
     }
     private var networkCallbackRegistered = false
     private fun registerNetworkCallback() {
@@ -248,3 +252,10 @@ internal fun parseUsageWidgetIntent(intent: Intent?): UsageWidgetTab? {
     if (intent?.action != ACTION_OPEN_USAGE) return null
     return UsageWidgetTab.entries.firstOrNull { it.name == intent.getStringExtra(EXTRA_OPEN_USAGE_TAB) } ?: UsageWidgetTab.Limits
 }
+
+/** Cellular with no transport that could reach a private network (Wi-Fi, Ethernet, Bluetooth, USB or a VPN). */
+internal fun NetworkCapabilities.isPlainCellular(): Boolean =
+    hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) &&
+        listOf(NetworkCapabilities.TRANSPORT_WIFI, NetworkCapabilities.TRANSPORT_ETHERNET, NetworkCapabilities.TRANSPORT_BLUETOOTH,
+            NetworkCapabilities.TRANSPORT_VPN, NetworkCapabilities.TRANSPORT_WIFI_AWARE, NetworkCapabilities.TRANSPORT_LOWPAN).none(::hasTransport) &&
+        (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || !hasTransport(NetworkCapabilities.TRANSPORT_USB))

@@ -37,6 +37,23 @@ class RouteMonitorTest {
 
     private fun TestScope.advance(ms: Long) { advanceTimeBy(ms); runCurrent() }
 
+    @Test fun plainCellularLeavesOutPrivateAndCarrierAddressesOnly() {
+        val lanTen = EnvironmentRoute(Lan, "https://10.1.2.3:3773/", Learned)
+        val emulatorHost = EnvironmentRoute(Lan, "http://10.0.2.2:3773/", Paired)
+        val loopback = EnvironmentRoute(Lan, "http://127.0.0.1:3773/", Paired)
+        val tailnetIp = EnvironmentRoute(Tailnet, "https://100.101.102.103/", Learned)
+        val plan = listOf(lan, lanTen, emulatorHost, loopback, tailnetIp, tailnet, public, ssh, tunnel)
+        assertEquals(listOf(emulatorHost, loopback, tailnet, public, ssh, tunnel), usableRoutes(plan, cellularOnly = true))
+        assertEquals("Wi-Fi, VPN or another local transport keeps every route", plan, usableRoutes(plan, cellularOnly = false))
+        assertEquals("An unknown network keeps every route", plan, usableRoutes(plan, cellularOnly = null))
+        assertEquals("Never an empty plan", listOf(lan, tailnetIp), usableRoutes(listOf(lan, tailnetIp), cellularOnly = true))
+        // Only a literal address is left out: a host name stays, even as a LAN route.
+        val namedLan = EnvironmentRoute(Lan, "https://mac.local/", Learned)
+        assertEquals(listOf(namedLan, public), usableRoutes(listOf(lan, namedLan, public), cellularOnly = true))
+        val outsideCgnat = EnvironmentRoute(Tailnet, "https://100.128.0.1/", Learned)
+        assertEquals("Outside 100.64/10 stays", listOf(outsideCgnat, public), usableRoutes(listOf(outsideCgnat, public), cellularOnly = true))
+    }
+
     @Test fun checksEveryMinuteAndOffersTheBestAnsweringRoute() = runTest {
         val recorder = Recorder()
         val monitor = monitor(recorder) { it != lan }
