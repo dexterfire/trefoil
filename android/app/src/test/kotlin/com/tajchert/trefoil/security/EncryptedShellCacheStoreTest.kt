@@ -71,6 +71,17 @@ class EncryptedShellCacheStoreTest {
         assertFalse(first.copyOfRange(1, 13).contentEquals(second.copyOfRange(1, 13)))
     }
 
+    @Test fun aWriteWhoseRenameFailedIsNotCommitted() = test {
+        val ticket = store.ticket("env")
+        // A non-empty directory where the entry belongs: AtomicFile's rename fails, logs and returns normally.
+        val blocker = entryFile().apply { mkdirs() }
+        File(blocker, "occupied").writeText("x")
+        assertFalse("A rename that failed is not a stored entry", store.write(shell, ticket))
+        blocker.deleteRecursively()
+        assertTrue("The same checkpoint is retried, not skipped as committed", store.write(shell, ticket))
+        assertEquals(shell.threads, store.read("env")!!.threads)
+    }
+
     @Test fun missingEntryReadsAsNothing() = test {
         assertNull(store.read("env"))
         assertFalse(dir.exists())

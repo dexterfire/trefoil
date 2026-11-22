@@ -126,6 +126,10 @@ class EncryptedShellCacheStore internal constructor(
             val file = file(id)
             val stream = file.startWrite()
             try { stream.write(sealed); file.finishWrite(stream) } catch (e: Exception) { file.failWrite(stream); throw e }
+            // finishWrite logs and returns when its rename fails, leaving the old file: neither the revision nor the caller
+            // may take the rows as stored then, so a later flush of the same checkpoint retries (as EnvironmentVault does).
+            val committed = try { file.baseFile.readBytes().contentEquals(sealed) } catch (_: Exception) { false }
+            if (!committed) return@synchronized false
             sequencer.committed(id, ticket)
             true
         }
