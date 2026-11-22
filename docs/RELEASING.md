@@ -1,5 +1,13 @@
 # Android releases
 
+Release `0.22.0` (`versionCode = 40`) sorts the New thread project picker by recent thread activity,
+preselects the most recent project, shows each project's last activity and path, and searches titles and
+workspace paths (five recent projects, then Show all). New threads start from T3's default model selection
+(with its options, such as reasoning effort) and per-project model and runtime mode overrides, falling back
+to the next scope when a selection is unavailable. Each new-thread draft now gets a fresh composer, so a
+second draft in the same project no longer sticks on "Waiting for server confirmation". Check the picker
+order, the default model and two drafts in a row against a real environment on a device.
+
 Release `0.21.1` (`versionCode = 39`) adds T3 provider marks for Antigravity, Kiro, Muse, fx, Pi and ACP
 Registry, shared by the app and the usage widget; the brand-colored marks (Antigravity, Kiro, Muse) render
 untinted in the app, as T3 Code does. The New thread FAB is now a round plus button and slides above a
