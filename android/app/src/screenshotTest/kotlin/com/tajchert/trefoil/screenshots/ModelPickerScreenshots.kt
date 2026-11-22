@@ -61,13 +61,13 @@ private object ModelPickerFixtures {
 @Composable
 private fun Picker(
     current: ModelOption, explicit: ModelOptionValues = emptyMap(), enabled: Boolean = true, dark: Boolean = false, models: List<ModelOption> = ModelPickerFixtures.all,
-    prefs: ModelPreferences = ModelPickerFixtures.synced, canWriteSettings: Boolean = true, query: String = "", startOnFavourites: Boolean = false,
+    prefs: ModelPreferences = ModelPickerFixtures.synced, canWriteSettings: Boolean = true, query: String = "", startOnFavourites: Boolean = false, threadSelection: Boolean = false,
 ) {
     val fx = ModelPickerFixtures
     TrefoilTheme(darkTheme = dark) {
         ModelPickerContent(
             models, fx.providers, current, explicit, enabled, {}, {}, { _, _ -> }, Modifier.background(Tf.colors.sheet),
-            preferences = prefs, canWriteSettings = canWriteSettings, initialQuery = query, startOnFavourites = startOnFavourites,
+            preferences = prefs, canWriteSettings = canWriteSettings, initialQuery = query, startOnFavourites = startOnFavourites, threadSelection = threadSelection,
         )
     }
 }
@@ -105,7 +105,7 @@ fun ModelPicker_Search_Light() = Picker(ModelPickerFixtures.opus, mapOf("effort"
 @Composable
 fun ModelPicker_SingleProvider_Light() = Picker(
     ModelPickerFixtures.sonnet, mapOf("effort" to "high"), models = ModelPickerFixtures.claudeOnly,
-    prefs = ModelPreferences(listOf(ModelKey.of(ModelPickerFixtures.opus)), synced = true),
+    prefs = ModelPreferences(listOf(ModelKey.of(ModelPickerFixtures.opus)), synced = true), threadSelection = true,
 )
 
 @PreviewTest
@@ -117,7 +117,7 @@ fun ModelPicker_NoFavourites_Light() = Picker(ModelPickerFixtures.luna, startOnF
 @Preview(showBackground = true, widthDp = 400, heightDp = 760)
 @Composable
 fun ModelPicker_Disabled_Light() = Picker(
-    ModelPickerFixtures.opus, mapOf("effort" to "high"), enabled = false, prefs = ModelPickerFixtures.favourites, canWriteSettings = false,
+    ModelPickerFixtures.opus, mapOf("effort" to "high"), enabled = false, prefs = ModelPickerFixtures.favourites, canWriteSettings = true,
 )
 
 @PreviewTest

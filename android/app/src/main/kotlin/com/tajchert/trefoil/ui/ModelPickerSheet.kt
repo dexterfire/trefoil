@@ -9,7 +9,9 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -27,8 +29,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -40,6 +44,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tajchert.trefoil.core.model.ModelKey
@@ -112,7 +117,7 @@ internal fun ModelPickerSheet(
         dragHandle = { Box(Modifier.padding(top = 12.dp, bottom = 8.dp).size(36.dp, 4.dp).background(c.s3, RoundedCornerShape(2.dp))) },
     ) {
         ModelPickerContent(
-            models, providers, current, explicit, enabled, { dismiss() }, onSetModel, onSetModelOption, Modifier.navigationBarsPadding(), threadSelection,
+            models, providers, current, explicit, enabled, { dismiss() }, onSetModel, onSetModelOption, Modifier, threadSelection,
             preferences, canWriteSettings, onToggleFavorite, showFast,
         )
     }
@@ -139,7 +144,8 @@ internal fun ModelPickerContent(
     val applied = highlighted != null && highlighted.sameModelAs(current)
     val values = if (applied) explicit else emptyMap()
     val optionsEnabled = enabled && applied
-    val starsEnabled = canWriteSettings && preferences.synced
+    val canStar = canWriteSettings && preferences.synced
+    val starsEnabled = enabled && canStar
 
     val catalog = remember(models, providers, preferences, current) { buildModelCatalog(models, providers, preferences, current) }
     var query by rememberSaveable { mutableStateOf(initialQuery) }
@@ -177,6 +183,7 @@ internal fun ModelPickerContent(
         }
         if (models.isEmpty()) {
             EmptyState(TfIcons.Sparkle, "No models available", "Reconnect to refresh configuration.", Modifier.padding(bottom = 24.dp))
+            Spacer(Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
             return@Column
         }
         if (models.size >= 5 || query.isNotEmpty()) {
@@ -190,6 +197,15 @@ internal fun ModelPickerContent(
             )
         }
         if (multiProvider && !searching) ProviderTabs(catalog, activeTab) { tab = it }
+        val singleSection = catalog.sections.firstOrNull()
+        if (!multiProvider && !searching && singleSection != null) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ProviderMark(singleSection.driver, null, Modifier.size(16.dp))
+                Text(singleSection.title, style = TrefoilType.meta.copy(fontWeight = FontWeight.SemiBold), color = c.text)
+                if (threadSelection) Text("· Locked to this thread", style = TrefoilType.meta, color = c.muted)
+            }
+            HorizontalDivider(color = c.line)
+        }
 
         Box(Modifier.weight(1f, fill = false)) {
             LazyColumn(contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -208,13 +224,7 @@ internal fun ModelPickerContent(
                         }
                     }
                     !multiProvider -> {
-                        val section = catalog.sections.firstOrNull()
-                        if (section != null) item {
-                            Row(Modifier.padding(start = 12.dp, top = 2.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                ProviderMark(section.driver, null, Modifier.size(16.dp))
-                                Text(section.title, style = TrefoilType.meta.copy(fontWeight = FontWeight.SemiBold), color = c.text)
-                            }
-                        }
+                        val section = singleSection
                         if (catalog.favorites.isNotEmpty()) {
                             item { SectionLabel("Favourites", Modifier.padding(start = 12.dp, top = 8.dp, bottom = 4.dp)) }
                             itemsIndexed(catalog.favorites, key = { _, m -> "f:${m.instanceId}:${m.model}" }) { _, option ->
@@ -227,7 +237,7 @@ internal fun ModelPickerContent(
                     activeTab == FAVOURITES_TAB -> {
                         if (catalog.favorites.isEmpty()) item {
                             EmptyState(TfIcons.Star, "No favourites yet",
-                                if (starsEnabled) "Star models in any provider tab to pin them here and sync with desktop." else "Connect with settings write access to edit favourites.",
+                                if (canStar) "Star models in any provider tab to pin them here and sync with desktop." else "Connect with settings write access to edit favourites.",
                                 Modifier.padding(bottom = 16.dp))
                         }
                         itemsIndexed(catalog.favorites, key = { _, m -> "f:${m.instanceId}:${m.model}" }) { _, option ->
@@ -241,6 +251,8 @@ internal fun ModelPickerContent(
         }
         if (highlighted != null && hasModelOptions(highlighted, showFast)) {
             ControlsDock(highlighted, providerDriver(highlighted.instanceId, providers), values, applied, optionsEnabled, threadSelection, showFast, onSetModelOption)
+        } else {
+            Spacer(Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
         }
     }
 }
@@ -272,8 +284,8 @@ private fun androidx.compose.foundation.lazy.LazyListScope.familyItems(
             Column {
                 ModelRow(title, null, null, shown.badge, selectedMember != null, enabled, "Model ${if (multi) family.name else family.latest.label}", pill, star(shown, shown.label), onClick = { pick(shown) })
                 AnimatedVisibility(multi && expanded, enter = expandVertically(tween(180)) + fadeIn(tween(140)), exit = shrinkVertically(tween(180)) + fadeOut(tween(100))) {
-                    FlowRow(Modifier.padding(start = 24.dp, end = 16.dp, top = 2.dp, bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        family.versions.forEachIndexed { vi, v -> VersionChip(family, v, vi == 0 && selectedMember != null && selectedMember != family.latest, v.sameModelAs(selectedMember), enabled) { pick(v) } }
+                    FlowRow(Modifier.padding(start = 24.dp, end = 16.dp, top = 2.dp, bottom = 2.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        family.versions.forEachIndexed { vi, v -> VersionChip(family, v, vi == 0 && selectedMember != null && selectedMember != family.latest, v.sameModelAs(selectedMember), enabled, star(v, v.label).starred) { pick(v) } }
                     }
                 }
             }
@@ -282,21 +294,45 @@ private fun androidx.compose.foundation.lazy.LazyListScope.familyItems(
 }
 
 @Composable
-private fun VersionChip(family: ModelFamily, version: ModelOption, offerLatest: Boolean, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
+private fun VersionChip(family: ModelFamily, version: ModelOption, offerLatest: Boolean, selected: Boolean, enabled: Boolean, favourite: Boolean, onClick: () -> Unit) {
     val c = Tf.colors
     val versionText = versionLabel(version) ?: version.label
     val text = versionText + (if (offerLatest) " · Latest" else "") + (if (version.isLegacy) " · Legacy" else "")
-    val content = if (selected) c.accent else if (version.isLegacy) c.muted else c.text
     FilterChip(
-        selected, onClick, label = { Text(text, style = TrefoilType.mono.copy(fontSize = 13.sp), color = content) }, enabled = enabled,
+        selected, onClick,
+        label = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(text, style = TrefoilType.mono.copy(fontSize = 13.sp))
+                version.badge?.let { NewBadge(it, selected, enabled) }
+            }
+        },
+        enabled = enabled,
         modifier = Modifier.semantics { role = Role.RadioButton; contentDescription = "${family.name} version $versionText" },
-        leadingIcon = if (selected) ({ Icon(TfIcons.Check, null, Modifier.size(14.dp), tint = c.accent) }) else null,
+        leadingIcon = if (selected) ({ Icon(TfIcons.Check, null, Modifier.size(14.dp)) }) else null,
+        trailingIcon = if (favourite) ({ Icon(TfIcons.StarFilled, null, Modifier.size(12.dp), tint = if (enabled) c.amber else c.amber.copy(alpha = .4f)) }) else null,
         colors = FilterChipDefaults.filterChipColors(
-            containerColor = Color.Transparent, selectedContainerColor = c.accentSoft, disabledContainerColor = Color.Transparent, disabledSelectedContainerColor = c.s2,
+            containerColor = Color.Transparent, labelColor = if (version.isLegacy) c.muted else c.text, iconColor = c.accent,
+            selectedContainerColor = c.accentSoft, selectedLabelColor = c.accent, selectedLeadingIconColor = c.accent,
+            disabledContainerColor = Color.Transparent, disabledLabelColor = c.muted, disabledLeadingIconColor = c.muted, disabledSelectedContainerColor = c.s2,
         ),
         border = FilterChipDefaults.filterChipBorder(
             enabled, selected, borderColor = c.line, selectedBorderColor = c.accent, disabledBorderColor = c.line.copy(alpha = .5f), disabledSelectedBorderColor = c.line,
         ),
+    )
+}
+
+/** The NEW-style badge; tinted so it stays visible on a selected (accentSoft) row and muted when the picker is disabled. */
+@Composable
+private fun NewBadge(badge: String, selected: Boolean, enabled: Boolean, modifier: Modifier = Modifier) {
+    val c = Tf.colors
+    val background = when {
+        !enabled -> c.s3
+        selected -> c.accent.copy(alpha = .16f)
+        else -> c.accentSoft
+    }
+    Text(
+        badge.uppercase(), modifier.padding(start = 6.dp).height(18.dp).background(background, RoundedCornerShape(6.dp)).padding(horizontal = 5.dp).wrapContentHeight(Alignment.CenterVertically),
+        style = TrefoilType.section.copy(fontSize = 10.sp, lineHeight = 12.sp, letterSpacing = 0.sp), color = if (enabled) c.accent else c.muted, maxLines = 1,
     )
 }
 
@@ -305,8 +341,12 @@ private fun ProviderTabs(catalog: ModelCatalog, active: String, onTab: (String) 
     val c = Tf.colors
     val keys = listOf(FAVOURITES_TAB) + catalog.sections.map { it.instanceId }
     PrimaryScrollableTabRow(
-        selectedTabIndex = keys.indexOf(active).coerceAtLeast(0), edgePadding = 16.dp, containerColor = c.sheet, contentColor = c.text,
-        indicator = { TabRowDefaults.PrimaryIndicator(Modifier.tabIndicatorOffset(keys.indexOf(active).coerceAtLeast(0)), height = 3.dp, color = c.accent) },
+        selectedTabIndex = keys.indexOf(active).coerceAtLeast(0), edgePadding = 16.dp, containerColor = c.sheet, contentColor = c.text, minTabWidth = 48.dp,
+        indicator = {
+            TabRowDefaults.PrimaryIndicator(
+                Modifier.tabIndicatorOffset(keys.indexOf(active).coerceAtLeast(0), matchContentSize = true), width = Dp.Unspecified, height = 3.dp, color = c.accent,
+            )
+        },
         divider = { HorizontalDivider(color = c.line) },
     ) {
         Tab(
@@ -344,11 +384,12 @@ private fun ModelRow(
     val c = Tf.colors
     val shape = RoundedCornerShape(12.dp)
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 52.dp).clip(shape).background(if (selected) (if (enabled) c.accentSoft else c.s2) else Color.Transparent).padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+        Modifier.fillMaxWidth().background(if (selected) (if (enabled) c.accentSoft else c.s2) else Color.Transparent, shape).padding(end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Row(
-            Modifier.weight(1f).heightIn(min = 44.dp).selectable(selected, enabled, Role.RadioButton, onClick = onClick).semantics { contentDescription = description },
+            Modifier.weight(1f).heightIn(min = 52.dp).clip(shape).selectable(selected, enabled, Role.RadioButton, onClick = onClick)
+                .padding(start = 12.dp, top = 4.dp, bottom = 4.dp).semantics { contentDescription = description },
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (driver != null) { ProviderMark(driver, null, Modifier.size(20.dp)); Spacer(Modifier.width(12.dp)) }
@@ -359,33 +400,32 @@ private fun ModelRow(
                         color = if (enabled) c.text else c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                     if (selected) Icon(TfIcons.Check, null, Modifier.padding(start = 6.dp).size(16.dp), tint = if (enabled) c.accent else c.muted)
-                    if (badge != null) Text(
-                        badge.uppercase(), Modifier.padding(start = 6.dp).height(18.dp).background(c.accentSoft, RoundedCornerShape(6.dp)).padding(horizontal = 5.dp).wrapContentHeight(Alignment.CenterVertically),
-                        style = TrefoilType.section.copy(fontSize = 10.sp, lineHeight = 12.sp, letterSpacing = 0.sp), color = c.accent, maxLines = 1,
-                    )
+                    if (badge != null) NewBadge(badge, selected, enabled)
                 }
                 if (subtitle != null) Text(subtitle, style = TrefoilType.meta.copy(fontSize = 12.sp), color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
-        if (pill != null) VersionPill(pill, selected)
+        if (pill != null) VersionPill(pill, selected, enabled)
         StarButton(star)
     }
 }
 
 @Composable
-private fun VersionPill(pill: VersionPillSpec, selected: Boolean) {
+private fun VersionPill(pill: VersionPillSpec, selected: Boolean, enabled: Boolean) {
     val c = Tf.colors
     val rotation by animateFloatAsState(if (pill.expanded) 180f else 0f, tween(180), label = "versionChevron")
     Box(
         Modifier.minimumInteractiveComponentSize().clickable(role = Role.Button, onClick = pill.toggle).semantics { contentDescription = pill.description; stateDescription = if (pill.expanded) "Expanded" else "Collapsed" },
         contentAlignment = Alignment.Center,
     ) {
+        val pillShape = RoundedCornerShape(8.dp)
+        val highlighted = selected && enabled
         Row(
-            Modifier.height(28.dp).background(if (selected) c.accent.copy(alpha = .16f) else c.s2, RoundedCornerShape(8.dp)).padding(horizontal = 8.dp),
+            Modifier.height(28.dp).background(if (highlighted) c.accent.copy(alpha = .16f) else c.s2, pillShape).then(if (highlighted) Modifier else Modifier.border(1.dp, c.line, pillShape)).padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Text(pill.label, style = TrefoilType.mono.copy(fontSize = 12.sp), color = if (selected) c.accent else c.text, maxLines = 1)
-            Icon(TfIcons.ChevronDown, null, Modifier.size(12.dp).rotate(rotation), tint = if (selected) c.accent else c.muted)
+            Text(pill.label, style = TrefoilType.mono.copy(fontSize = 12.sp), color = if (highlighted) c.accent else if (enabled) c.text else c.muted, maxLines = 1)
+            Icon(TfIcons.ChevronDown, null, Modifier.size(12.dp).rotate(rotation), tint = if (highlighted) c.accent else c.muted)
         }
     }
 }
@@ -427,9 +467,11 @@ private fun ControlsDock(
     Column(Modifier.fillMaxWidth().background(if (c.isDark) c.s1 else c.bg).navigationBarsPadding()) {
         HorizontalDivider(color = c.line)
         val on = fastModeOn(model, values)
-        Row(Modifier.padding(start = 16.dp, end = 12.dp, top = 10.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        val both = fast != null && reasoning != null
+        // The Fast chip's 48 dp target already pads the header, so trim the row padding to match the no-Fast gap.
+        Row(Modifier.padding(start = 16.dp, end = 12.dp, top = if (both) 2.dp else 10.dp, bottom = if (both) 0.dp else 6.dp), verticalAlignment = Alignment.CenterVertically) {
             ProviderMark(driver, null, Modifier.size(14.dp))
-            Text(model.shortName ?: model.label, Modifier.padding(start = 6.dp).weight(1f), style = TrefoilType.meta.copy(fontWeight = FontWeight.SemiBold), color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(model.shortName ?: model.label, Modifier.padding(start = 6.dp).weight(1f), style = TrefoilType.meta.copy(fontWeight = FontWeight.SemiBold), color = if (optionsEnabled) c.text else c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (!applied) WorkingSpinner(Modifier.padding(horizontal = 8.dp), size = 12.dp)
             if (fast != null && reasoning != null) FilterChip(
                 on, { onSetModelOption(fast.id, !on) }, label = { Text("Fast", style = MaterialTheme.typography.labelMedium.copy(fontSize = 13.sp)) }, enabled = optionsEnabled,
@@ -437,6 +479,7 @@ private fun ControlsDock(
                 leadingIcon = { Icon(TfIcons.Bolt, null, Modifier.size(15.dp)) },
                 colors = FilterChipDefaults.filterChipColors(
                     containerColor = Color.Transparent, labelColor = c.muted, iconColor = c.muted, selectedContainerColor = c.accentSoft, selectedLabelColor = c.accent, selectedLeadingIconColor = c.accent,
+                    disabledContainerColor = Color.Transparent, disabledLabelColor = c.muted, disabledLeadingIconColor = c.muted, disabledSelectedContainerColor = c.s2,
                 ),
                 border = FilterChipDefaults.filterChipBorder(optionsEnabled, on, borderColor = c.line, selectedBorderColor = c.accent, disabledBorderColor = c.line.copy(alpha = .5f), disabledSelectedBorderColor = c.line),
             )
@@ -446,22 +489,42 @@ private fun ControlsDock(
             val choice = reasoningChoice(model, values, threadSelection)
             val listState = rememberLazyListState()
             val activeIndex = choices.indexOfFirst { it.id == choice?.id }
-            LaunchedEffect(model.instanceId, model.model, activeIndex) { if (activeIndex >= 0) listState.scrollToItem((activeIndex - 2).coerceAtLeast(0)) }
-            LazyRow(state = listState, contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                itemsIndexed(choices, key = { _, o -> o.id }) { index, option ->
-                    val selected = option.id == choice?.id
-                    FilterChip(
-                        selected, { onSetModelOption(reasoning.id, option.id) }, label = { Text(option.label, style = MaterialTheme.typography.labelMedium.copy(fontSize = 13.sp)) }, enabled = optionsEnabled,
-                        modifier = Modifier.semantics { role = Role.RadioButton; contentDescription = "${reasoning.label} ${option.label}" },
-                        leadingIcon = { Icon(TfIcons.effort(effortBarCount(index, choices.size)), null, Modifier.size(14.dp)) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            containerColor = c.sheet, labelColor = c.text, iconColor = c.muted,
-                            selectedContainerColor = c.accentSoft, selectedLabelColor = c.accent, selectedLeadingIconColor = c.accent,
-                            disabledContainerColor = c.sheet, disabledLabelColor = c.muted, disabledLeadingIconColor = c.muted,
-                            disabledSelectedContainerColor = c.s2,
-                        ),
-                        border = FilterChipDefaults.filterChipBorder(optionsEnabled, selected, borderColor = c.line, selectedBorderColor = c.accent, disabledBorderColor = c.line.copy(alpha = .5f), disabledSelectedBorderColor = c.line),
-                    )
+            // Start at the first chip; only when the active chip would sit under an edge fade, centre it (neighbours then peek under the fades).
+            val fadePx = with(LocalDensity.current) { 24.dp.toPx() }
+            var positioned by remember(model.instanceId, model.model) { mutableStateOf(false) }
+            LaunchedEffect(model.instanceId, model.model, activeIndex) {
+                if (activeIndex < 0) return@LaunchedEffect
+                if (!positioned) { listState.scrollToItem(0); positioned = true }
+                var item = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == activeIndex }
+                if (item == null) { listState.scrollToItem(activeIndex); item = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == activeIndex } }
+                val viewport = listState.layoutInfo.viewportSize.width
+                if (item != null && (item.offset < fadePx && listState.canScrollBackward || item.offset + item.size > viewport - fadePx && listState.canScrollForward)) {
+                    listState.scrollBy(item.offset - (viewport - item.size) / 2f)
+                }
+            }
+            val dockBackground = if (c.isDark) c.s1 else c.bg
+            Box {
+                LazyRow(state = listState, contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    itemsIndexed(choices, key = { _, o -> o.id }) { index, option ->
+                        val selected = option.id == choice?.id
+                        FilterChip(
+                            selected, { onSetModelOption(reasoning.id, option.id) }, label = { Text(option.label, style = MaterialTheme.typography.labelMedium.copy(fontSize = 13.sp)) }, enabled = optionsEnabled,
+                            modifier = Modifier.semantics { role = Role.RadioButton; contentDescription = "${reasoning.label} ${option.label}" },
+                            leadingIcon = { Icon(TfIcons.effort(effortBarCount(index, choices.size)), null, Modifier.size(14.dp)) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                containerColor = c.sheet, labelColor = c.text, iconColor = c.muted,
+                                selectedContainerColor = c.accentSoft, selectedLabelColor = c.accent, selectedLeadingIconColor = c.accent,
+                                disabledContainerColor = c.sheet, disabledLabelColor = c.muted, disabledLeadingIconColor = c.muted,
+                                disabledSelectedContainerColor = c.s2,
+                            ),
+                            border = FilterChipDefaults.filterChipBorder(optionsEnabled, selected, borderColor = c.line, selectedBorderColor = c.accent, disabledBorderColor = c.line.copy(alpha = .5f), disabledSelectedBorderColor = c.line),
+                        )
+                    }
+                }
+                // The solid start of the leading fade (≈11 dp) covers the previous chip's sliver left in the content padding.
+                Box(Modifier.matchParentSize()) {
+                    if (listState.canScrollBackward) Box(Modifier.align(Alignment.CenterStart).width(24.dp).fillMaxHeight().background(Brush.horizontalGradient(0f to dockBackground, 0.45f to dockBackground, 1f to Color.Transparent)))
+                    if (listState.canScrollForward) Box(Modifier.align(Alignment.CenterEnd).width(24.dp).fillMaxHeight().background(Brush.horizontalGradient(listOf(Color.Transparent, dockBackground))))
                 }
             }
             choice?.description?.takeIf { it.isNotBlank() }?.let {
