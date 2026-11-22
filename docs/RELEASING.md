@@ -1,5 +1,13 @@
 # Android releases
 
+Release `0.21.0` (`versionCode = 38`) adds stop, steer and queue to the thread composer: while an agent
+works, a follow-up can steer the running turn or wait in a queue strip (Send now, edit, remove), and Stop ends
+the turn, following T3's queue eligibility rules. The thread list starts from an encrypted per-machine shell
+cache at cold start (rows marked not live until connected), the last-used machine connects before route
+probing, routes are preflighted together and reconnects resync from the shell cursor. Token renewal, saved
+machine writes and browser forward holds got correctness fixes. Check stop, steer and queue, and a cold start
+with cached rows, against a real environment on a device.
+
 Release `0.20.0` (`versionCode = 37`) adds dev servers and port forwarding: the app menu and a thread
 header chip open a screen of servers listening on the T3 host, which open in an in-app browser or are
 forwarded to a loopback port on the phone (T3 Code v0.1.11+, browser tunnels on, `terminal:operate`; see
