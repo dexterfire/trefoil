@@ -105,6 +105,43 @@ class ColdStartConnectTest {
         override fun close() { dropAll(); socket.close() }
     }
 
+    /**
+     * Plain HTTP on loopback (allowed by the URL policy): answers the descriptor as [environmentId] and every other path
+     * (the session check) with [sessionStatus]. One request per connection.
+     */
+    private inner class AnsweringServer(private val environmentId: String, private val sessionStatus: Int) : AutoCloseable {
+        private val socket = ServerSocket(0, 50, InetAddress.getLoopbackAddress())
+        val paths = CopyOnWriteArrayList<String>()
+        val url get() = "http://127.0.0.1:${socket.localPort}"
+        init {
+            closeables += this
+            thread(isDaemon = true) {
+                while (!socket.isClosed) {
+                    val client = try { socket.accept() } catch (_: Exception) { break }
+                    thread(isDaemon = true) {
+                        runCatching {
+                            client.use {
+                                val reader = it.getInputStream().bufferedReader()
+                                val path = reader.readLine().orEmpty().split(' ').getOrElse(1) { "" }
+                                while (reader.readLine().orEmpty().isNotEmpty()) Unit
+                                paths += path
+                                val (status, body) = if (path == "/.well-known/t3/environment") 200 to """{"environmentId":"$environmentId","orchestrationProtocolVersion":2}"""
+                                    else sessionStatus to """{"error":"unauthorized"}"""
+                                val bytes = body.encodeToByteArray()
+                                it.getOutputStream().apply {
+                                    write("HTTP/1.1 $status X\r\nContent-Type: application/json\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".encodeToByteArray())
+                                    write(bytes); flush()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        override fun close() { socket.close() }
+    }
+    private val closeables = mutableListOf<AutoCloseable>()
+
     /** The view model's private last-used key (lastEnvironmentId). */
     private val LAST_ENVIRONMENT = "lastEnvironmentId"
     private val servers = mutableListOf<HangingServer>()
@@ -114,6 +151,7 @@ class ColdStartConnectTest {
     @After fun tearDown() {
         if (::model.isInitialized) model.viewModelScope.cancel()
         servers.forEach { it.close() }
+        closeables.forEach { runCatching { it.close() } }
     }
 
     private fun machine(id: String, server: HangingServer) =
@@ -248,6 +286,19 @@ class ColdStartConnectTest {
         idleFor(500)
         assertEquals("No other machine is connected in its place", 1L, connects())
         assertEquals(0, betaServer.accepted.get())
+    }
+
+    @Test(timeout = 30_000) fun aRejectedSignInIsShownEvenWhenTheProbeFoundTheMachineUnreachable() {
+        // The descriptor answers within the probe's budget, the session check then rejects the saved token. The probe (here
+        // faked) only saw a timeout, but the connect's own failure is a sign-in rejection: the user must pair again.
+        val server = AnsweringServer("alpha", 401)
+        val alpha = SavedEnvironment("alpha", "Alpha", server.url, "alpha-token", tokenType = AccessTokenType.Bearer)
+        start(MemoryStore(listOf(alpha)), lastUsed = "alpha", probes = mapOf("alpha" to MachineProbe.Unreachable))
+        awaitTrue { model.connectionAttempt.value.phase == ConnectionPhase.Failed }
+        assertTrue("The session check was reached", "/api/auth/session" in server.paths)
+        assertNotNull(model.notice.value ?: model.state.value.error)
+        assertEquals("The machine stays selected with its error", "alpha", model.state.value.environment?.id)
+        assertEquals(1L, connects())
     }
 
     @Test fun aUrlPolicyRefusalAtColdStartIsShown() {

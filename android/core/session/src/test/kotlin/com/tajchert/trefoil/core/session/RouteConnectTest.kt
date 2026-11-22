@@ -235,6 +235,39 @@ class RouteConnectTest {
         catch (error: PairingException) { assertTrue(error.message.orEmpty().startsWith("Use HTTPS or SSH")) }
     }
 
+    @Test fun aFailedConnectSaysWhetherTheMachineWasOnlyUnreachable() = runBlocking {
+        val client = client(timeout = 300)
+        suspend fun failure(environment: SavedEnvironment, routes: List<EnvironmentRoute>): ConnectFailure =
+            try { client.connect(environment, routes); fail("The connect must fail"); error("unreachable") } catch (error: PairingException) { error.failure }
+        // Silent, refused and server errors before the session check are reachability failures.
+        val silent = Host(descriptor = { MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE) })
+        assertEquals(ConnectFailure.Unreachable, failure(environment(silent.url), listOf(silent.route(RouteKind.Lan))))
+        val broken = Host(descriptor = { json("oops", 502) })
+        val closed = Host().also { it.server.shutdown() }
+        assertEquals(ConnectFailure.Unreachable, failure(environment(broken.url), listOf(broken.route(RouteKind.Lan), closed.route(RouteKind.Tunnel))))
+        val failingSession = Host(session = json("oops", 500))
+        assertEquals(ConnectFailure.Unreachable, failure(environment(failingSession.url), listOf(failingSession.route(RouteKind.Lan))))
+        // The descriptor answers in time but the saved sign-in is rejected: actionable, never "offline".
+        val rejected = Host(session = json("""{"error":"unauthorized"}""", 401))
+        assertEquals(ConnectFailure.AuthRejected, failure(environment(rejected.url), listOf(rejected.route(RouteKind.Lan))))
+        val signedOut = Host(session = json("""{"authenticated":false}"""))
+        assertEquals(ConnectFailure.AuthRejected, failure(environment(signedOut.url), listOf(signedOut.route(RouteKind.Lan))))
+        // A refused address or another machine needs the user, even when another route was merely silent.
+        val blocked = EnvironmentRoute(RouteKind.Public, "http://8.8.8.8/", RouteSource.Learned)
+        assertEquals(ConnectFailure.UrlPolicy, failure(environment(silent.url), listOf(blocked, silent.route(RouteKind.Tunnel))))
+        val stranger = Host(environmentId = "someone-else")
+        assertEquals(ConnectFailure.Identity, failure(environment(silent.url), listOf(stranger.route(RouteKind.Lan), silent.route(RouteKind.Tunnel))))
+        // The session check passed and a later step failed.
+        val noTicket = Host().also { host ->
+            val base = host.server.dispatcher
+            host.server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse =
+                    if (request.path.orEmpty().startsWith("/api/auth/websocket-ticket")) json("oops", 500) else base.dispatch(request)
+            }
+        }
+        assertEquals(ConnectFailure.AfterSession, failure(environment(noTicket.url), listOf(noTicket.route(RouteKind.Lan))))
+    }
+
     @Test fun singleRouteConnectKeepsClassifiedPairedRoute() = runBlocking {
         val host = Host()
         val client = client()

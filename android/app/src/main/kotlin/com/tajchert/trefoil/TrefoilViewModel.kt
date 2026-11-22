@@ -668,7 +668,10 @@ class TrefoilViewModel internal constructor(
                 }
                 null -> {
                     val error = checkNotNull(failure)
-                    if (reachability != null && reachability.await() == MachineProbe.Unreachable && quiet?.invoke() == true) throw QuietStartupFailure(environment.id)
+                    // Quiet only when the connect itself failed to reach the machine: a sign-in rejected, an address refused by
+                    // the URL policy or anything after a successful session check is shown, whatever the probe found.
+                    if (reachability != null && error.isUnreachableFailure() && reachability.await() == MachineProbe.Unreachable && quiet?.invoke() == true)
+                        throw QuietStartupFailure(environment.id)
                     throw error
                 }
             }
@@ -1418,6 +1421,8 @@ internal enum class PlanOutcome { Connected, NeedsSshLogin }
 internal class MachineRemovedException : Exception("This machine was removed while connecting")
 /** The cold-start connect found its machine unreachable; it ends without a notice. */
 private class QuietStartupFailure(val environmentId: String) : Exception("Machine unreachable")
+/** A direct connect that never got as far as a successful session check, for reachability reasons only ([ConnectFailure]). */
+internal fun Exception.isUnreachableFailure(): Boolean = this is PairingException && failure == ConnectFailure.Unreachable
 
 /** Every route before SSH failed, SSH is the last option and its login is not saved. */
 internal class SshLoginRequired(val input: SshConnectionInput) : Exception("SSH login required")

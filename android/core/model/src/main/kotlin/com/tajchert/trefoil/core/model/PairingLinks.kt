@@ -3,7 +3,27 @@ package com.tajchert.trefoil.core.model
 import java.net.URI
 import java.net.URLDecoder
 
-class PairingException(message: String) : IllegalArgumentException(message)
+/** [failure] says why a connect failed (see [ConnectFailure]); other uses keep [ConnectFailure.Other]. */
+class PairingException(message: String, val failure: ConnectFailure = ConnectFailure.Other) : IllegalArgumentException(message)
+
+/**
+ * Why a connect failed, so a caller can tell a machine that is simply offline from one that needs the user. Only
+ * [Unreachable] may be treated as "offline"; every other kind is actionable and must be shown.
+ */
+enum class ConnectFailure {
+    /** No route got as far as a successful session check: refused, reset, silent, timed out or answering with an error. */
+    Unreachable,
+    /** The saved sign-in was rejected (401/403, not authenticated, renewal refused, or this device's key is gone). */
+    AuthRejected,
+    /** The shared URL policy refused an address before it was contacted. */
+    UrlPolicy,
+    /** A route answered as another machine or with an unsupported protocol. */
+    Identity,
+    /** The session check succeeded and a later step failed (ticket, socket, config or shell). */
+    AfterSession,
+    /** Anything else, including a cancelled or superseded attempt. */
+    Other,
+}
 
 /** Bootstrap credentials must never appear in diagnostics. */
 data class PairingTarget(val baseUrl: String, val token: String) {

@@ -363,6 +363,16 @@ class T3Client(
     }
 
     private data class SelectedRoute(val route: EnvironmentRoute, val base: HttpUrl, val session: JsonObject)
+    /** A route's preflight that did not verify, with why ([ConnectFailure]). */
+    private class RouteFailure(val kind: ConnectFailure, val error: Exception)
+    /** [selectRoute] found no usable route; [error] is the one reported (its message is kept), [kind] the typed reason. */
+    private class RouteSelectionFailed(val kind: ConnectFailure, val error: Exception) : Exception(error.message)
+
+    /** A route that failed before a successful session check, other than a rejected sign-in, policy or identity. */
+    private fun preSessionKind(error: Exception): ConnectFailure = when (error) {
+        is PairingException -> ConnectFailure.Identity
+        else -> ConnectFailure.Unreachable
+    }
 
     /**
      * Preflights [routes] concurrently: each passes the URL policy and must answer the credential-free descriptor as
@@ -381,17 +391,21 @@ class T3Client(
             launch {
                 val timeout = routeTimeoutMillis(route.kind)
                 val outcome: Any = try {
-                    val base = url(route.baseUrl, environment.allowInsecureHttp)
+                    val base = try { url(route.baseUrl, environment.allowInsecureHttp) }
+                        catch (error: PairingException) { throw RouteSelectionFailed(ConnectFailure.UrlPolicy, error) }
                     // OkHttp's call timeout cannot interrupt a DNS lookup; the coroutine timeout ends the wait regardless.
                     val answer = withTimeoutOrNull(timeout) { descriptor(base, timeout, enqueued = true) } ?: throw java.io.InterruptedIOException("timeout")
                     if (answer.string("environmentId") != environment.id) throw PairingException("Environment identity changed; pair again")
                     base
-                } catch (error: CancellationException) { throw error } catch (error: Exception) { error }
+                } catch (error: CancellationException) { throw error }
+                catch (error: RouteSelectionFailed) { RouteFailure(error.kind, error.error) }
+                catch (error: Exception) { RouteFailure(preSessionKind(error), error) }
                 preflights.set(index, outcome)
                 settled.update { it + 1 }
             }
         }
         val failures = arrayOfNulls<Exception>(routes.size)
+        val kinds = arrayOfNulls<ConnectFailure>(routes.size)
         val tried = BooleanArray(routes.size)
         try {
             while (true) {
@@ -399,19 +413,29 @@ class T3Client(
                 tried[index] = true
                 val base = preflights.get(index) as HttpUrl
                 currentCoroutineContext().ensureActive()
-                check(epoch == generation) { "Connection was cancelled" }
+                if (epoch != generation) throw RouteSelectionFailed(ConnectFailure.Other, IllegalStateException("Connection was cancelled"))
                 // Identity verified: the bearer goes to this route only.
                 val session = try { authorizedFetch(environment, "GET", base.resolve("/api/auth/session")!!) }
                 catch (error: CancellationException) { throw error }
-                catch (error: HttpFailure) { if (error.status == 401 || error.status == 403) throw error; failures[index] = error; continue }
-                catch (error: DpopKeyUnavailable) { throw error }
-                catch (error: TokenRenewalRejected) { throw error }
-                catch (error: Exception) { failures[index] = error; continue }
-                require(session["authenticated"]?.jsonPrimitive?.booleanOrNull == true) { "Authorization expired; pair again" }
+                catch (error: HttpFailure) {
+                    if (error.status == 401 || error.status == 403) throw RouteSelectionFailed(ConnectFailure.AuthRejected, error)
+                    failures[index] = error; kinds[index] = ConnectFailure.Unreachable; continue
+                }
+                catch (error: DpopKeyUnavailable) { throw RouteSelectionFailed(ConnectFailure.AuthRejected, error) }
+                catch (error: TokenRenewalRejected) { throw RouteSelectionFailed(ConnectFailure.AuthRejected, error) }
+                catch (error: Exception) { failures[index] = error; kinds[index] = ConnectFailure.Unreachable; continue }
+                if (session["authenticated"]?.jsonPrimitive?.booleanOrNull != true)
+                    throw RouteSelectionFailed(ConnectFailure.AuthRejected, IllegalArgumentException("Authorization expired; pair again"))
                 return@coroutineScope SelectedRoute(routes[index], base, session)
             }
-            routes.indices.forEach { if (failures[it] == null) failures[it] = preflights.get(it) as? Exception }
-            throw failures.lastOrNull { it != null } ?: PairingException("No address to reach this machine. Pair it again.")
+            routes.indices.forEach { index ->
+                if (failures[index] == null) (preflights.get(index) as? RouteFailure)?.let { failures[index] = it.error; kinds[index] = it.kind }
+            }
+            val last = failures.indexOfLast { it != null }
+            if (last < 0) throw RouteSelectionFailed(ConnectFailure.Other, PairingException("No address to reach this machine. Pair it again."))
+            // Unreachable only when every route failed that way: a refused address or another machine needs the user.
+            val kind = kinds.lastOrNull { it != null && it != ConnectFailure.Unreachable } ?: ConnectFailure.Unreachable
+            throw RouteSelectionFailed(kind, failures[last]!!)
         } finally { coroutineContext.cancelChildren() }
     }
 
@@ -451,8 +475,11 @@ class T3Client(
             update { retained.copy(environment = environment, connection = ConnectionStatus.Connecting, canWrite = false, canWriteThreads = false, canRead = false, shellLive = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = null, settlementUndo = null, threadActionsConfigured = false, activeRoute = null,
                 localServers = LocalServerCatalog(), previewTunnelSetting = null, previewTunnelDisabled = false, portForwards = emptyList()) }
         }
+        // Set once the session check succeeded: any later failure is [ConnectFailure.AfterSession].
+        var sessionChecked = false
         try {
             val (route, base, session) = selectRoute(environment, routes, epoch)
+            sessionChecked = true
             suspend fun ticketRequest(path: String) = authorizedFetch(environment, "POST", base.resolve(path)!!)
             val permissions = (session["permissions"] ?: session["scopes"]) as? JsonArray
             val mayOperate = permissions?.any { it.jsonPrimitive.content == "orchestration:operate" } == true
@@ -547,13 +574,19 @@ class T3Client(
             if (error is TimeoutCancellationException && currentCoroutineContext().isActive) {
                 val message = "T3 connection timed out. Check the server and network, then try again."
                 fail(epoch, message)
-                throw PairingException(message)
+                throw PairingException(message, if (sessionChecked) ConnectFailure.AfterSession else ConnectFailure.Other)
             }
             // Superseded, paused or cancelled by the user: close, but never silently.
             synchronized(lifecycleLock) { if (epoch == generation) disconnectNow("Connection attempt was cancelled. Reconnect to continue.") }
             throw error
         }
-        catch (error: Exception) {
+        catch (thrown: Exception) {
+            val kind = when {
+                thrown is RouteSelectionFailed -> thrown.kind
+                sessionChecked -> ConnectFailure.AfterSession
+                else -> ConnectFailure.Other
+            }
+            val error = (thrown as? RouteSelectionFailed)?.error ?: thrown
             val message = when (error) {
                 is PairingException -> error.message ?: "Connection failed"
                 is HttpFailure, is DpopKeyUnavailable, is TokenRenewalRejected, is TokenRenewalUnavailable -> error.message ?: "Connection failed"
@@ -561,7 +594,7 @@ class T3Client(
                 else -> "Connection failed. Check the network and server, or pair again."
             }
             fail(epoch, message)
-            throw PairingException(message)
+            throw PairingException(message, kind)
         }
     }
 
