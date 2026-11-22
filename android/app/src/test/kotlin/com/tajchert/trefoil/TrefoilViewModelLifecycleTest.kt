@@ -219,6 +219,42 @@ class TrefoilViewModelLifecycleTest {
         assertTrue(model.connectionAttempt.value.id > 0)
     }
 
+    /** Connected on the public address of a machine that also has a learned LAN address; returns the preflighted routes. */
+    private fun connectedWithALanRouteAbove(): List<String> {
+        val preflights = mutableListOf<String>()
+        model.routePreflight = { _, route, _, _ -> preflights += route.baseUrl; false }
+        armLiveConnection()
+        val withLan = environment.copy(routes = listOf(EnvironmentRoute(RouteKind.Lan, "https://192.168.1.5/", RouteSource.Learned)))
+        @Suppress("UNCHECKED_CAST")
+        (field("_environments").get(model) as MutableStateFlow<List<SavedEnvironment>>).value = listOf(withLan)
+        mutable.value = mutable.value.copy(activeRoute = EnvironmentRoute(RouteKind.Public, environment.baseUrl, RouteSource.Paired))
+        advance(0)
+        return preflights
+    }
+    private fun watching() = (field("routeMonitor").get(model) as RouteMonitor).watching
+
+    @Test fun wifiAfterPlainCellularChecksTheLanRouteAtOnceInsteadOfAfterTheInterval() {
+        val preflights = connectedWithALanRouteAbove()
+        assertNotNull(watching())
+        model.onDefaultNetwork(1); model.onDefaultNetworkTransports(1, plainCellular = true); advance(0)
+        assertNull("On plain cellular the LAN route is not watched", watching())
+        // Wi-Fi becomes the default network; its transports arrive after the network itself.
+        model.onDefaultNetwork(2); advance(100)
+        assertNotNull(watching())
+        assertEquals(listOf("https://192.168.1.5/"), preflights)
+        model.onDefaultNetworkTransports(2, plainCellular = false); advance(100)
+        assertEquals("The transports callback does not check a second time", 1, preflights.size)
+    }
+
+    @Test fun theSameNetworkLeavingPlainCellularChecksTheLanRouteAtOnce() {
+        val preflights = connectedWithALanRouteAbove()
+        model.onDefaultNetwork(1); model.onDefaultNetworkTransports(1, plainCellular = true); advance(0)
+        assertNull(watching())
+        model.onDefaultNetworkTransports(1, plainCellular = false); advance(100)
+        assertNotNull(watching())
+        assertEquals(listOf("https://192.168.1.5/"), preflights)
+    }
+
     @Test fun answeredLinkCheckKeepsTheConnectionAndLaterDropsWaitTheBackoff() {
         armLiveConnection()
         model.onDefaultNetwork(1); model.onDefaultNetwork(2); advance(0)

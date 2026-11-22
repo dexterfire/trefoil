@@ -253,8 +253,11 @@ class TrefoilViewModel internal constructor(
     private var networkChangeEpoch: Long? = null
     /** Route hints for a machine that is not saved yet (SSH pairing saves after connecting); applied when it is saved. */
     private val unsavedHints = mutableMapOf<String, List<RouteHints>>()
+    /** The better-route watch's credential-free check; replaced only by tests. */
+    internal var routePreflight: suspend (String, EnvironmentRoute, Boolean, Long) -> Boolean =
+        { id, route, insecure, timeout -> client.preflight(id, route, insecure, timeout) }
     private val routeMonitor = RouteMonitor(viewModelScope,
-        preflight = { id, route, insecure, timeout -> client.preflight(id, route, insecure, timeout) },
+        preflight = { id, route, insecure, timeout -> routePreflight(id, route, insecure, timeout) },
         canSwitch = ::idleForRouteSwitch,
         onBetterRoute = ::switchRoute,
     )
@@ -1119,13 +1122,18 @@ class TrefoilViewModel internal constructor(
         // Network callbacks can be the first thing the app runs after deep sleep.
         portForwards.checkDeadlines()
         val changed = networkKnown && defaultNetwork != handle
+        val wasCellular = cellularOnly
         if (defaultNetwork != handle) cellularOnly = null
         networkKnown = true; defaultNetwork = handle; networkAvailable = true
         if (!(foreground || keepAlive)) return
         reconnectWhenOnline?.let { scheduleAutoReconnect(it, immediate = true); return }
         if (changed && state.value.connection == ConnectionStatus.Connected) {
             verifyLink()
-            if (foreground) routeMonitor.requestCheck(networkChanged = true)
+            if (foreground) {
+                // Plain cellular stopped the watch; rebuild it before asking, or the check waits for the next interval.
+                if (wasCellular == true) refreshRouteMonitor()
+                routeMonitor.requestCheck(networkChanged = true)
+            }
         }
     }
 
@@ -1149,8 +1157,11 @@ class TrefoilViewModel internal constructor(
     /** The transports of the default network [handle]: plain cellular leaves out routes that cannot work there. */
     fun onDefaultNetworkTransports(handle: Long, plainCellular: Boolean) {
         if (defaultNetwork != handle || cellularOnly == plainCellular) return
+        val wasCellular = cellularOnly
         cellularOnly = plainCellular
         refreshRouteMonitor()
+        // The same network gained a local transport (or VPN): its private routes may answer now.
+        if (wasCellular == true && foreground && state.value.connection == ConnectionStatus.Connected) routeMonitor.requestCheck(networkChanged = true)
     }
 
     /** Coalesces keep-alive checks to after the current main-thread work, so transient states never stop the service. */
