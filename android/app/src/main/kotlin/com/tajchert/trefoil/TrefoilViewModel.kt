@@ -990,7 +990,15 @@ class TrefoilViewModel internal constructor(
             // The service keeps the connection, auto-reconnect and a running attempt going; interactive SSH prompts still
             // wait for the foreground, as without it.
             if (_sshHostKey.value != null || (_sshLogin.value != null && !sshFilePickerActive)) cancelSsh()
-        } else releaseInBackground()
+        } else {
+            // The cold-start connect is cancelled below before it published Connecting (e.g. during SSH discovery), so
+            // nothing above records it: re-arm it, and the next foreground runs it again (through connectLastUsedNow, which
+            // skips a machine forgotten meanwhile) instead of only probing. A connection the user started moved the epoch on
+            // or took the attempt over (quietAttemptEpoch null) and is not re-armed; each re-arm needs another pause.
+            val startupCancelled = resumeEnvironment == null && _working.value && quietAttemptEpoch == connectionEpoch
+            releaseInBackground()
+            if (startupCancelled) { quietAttemptEpoch = null; autoConnectPending = true }
+        }
     }
 
     /**

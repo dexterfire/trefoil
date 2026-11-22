@@ -301,6 +301,58 @@ class ColdStartConnectTest {
         assertEquals(1L, connects())
     }
 
+    private fun sshMachine(id: String, server: HangingServer) = SavedEnvironment(id, id.replaceFirstChar { it.uppercase() }, "", "$id-token",
+        tokenType = AccessTokenType.Bearer, ssh = SshProfile("127.0.0.1", server.port, "fixture", "SHA256:fixture", "ssh-ed25519", password = "fixture-password"))
+
+    @Test(timeout = 30_000) fun backgroundingDuringTheColdStartSshDiscoveryConnectsAgainOnTheNextForeground() {
+        // The SSH server never sends its banner: the cold-start connect is still in SSH discovery, before Connecting.
+        val sshServer = HangingServer()
+        start(MemoryStore(listOf(sshMachine("alpha", sshServer))), lastUsed = "alpha", probes = emptyMap())
+        awaitTrue { sshServer.accepted.get() >= 1 }
+        assertTrue(model.working.value)
+        assertEquals(1L, connects())
+        model.pause()
+        awaitTrue { !model.working.value }
+        idleFor(200)
+        assertEquals("Nothing connects in the background", 1, sshServer.accepted.get())
+        model.resume()
+        awaitTrue { sshServer.accepted.get() >= 2 }
+        assertTrue("The cold-start connect runs again", model.working.value)
+        assertNull("Still quiet: no login prompt", model.sshLogin.value)
+        // Exactly one more attempt, not a loop.
+        idleFor(500)
+        assertEquals(2, sshServer.accepted.get())
+    }
+
+    @Test(timeout = 30_000) fun aMachineForgottenWhileBackgroundedIsNotConnectedOnTheNextForeground() {
+        val sshServer = HangingServer()
+        val alpha = sshMachine("alpha", sshServer)
+        val store = MemoryStore(listOf(alpha))
+        start(store, lastUsed = "alpha", probes = emptyMap())
+        awaitTrue { sshServer.accepted.get() >= 1 }
+        model.pause()
+        awaitTrue { !model.working.value }
+        model.forget(alpha)
+        awaitTrue { model.environments.value.isEmpty() }
+        model.resume()
+        idleFor(500)
+        assertEquals(1, sshServer.accepted.get())
+        assertFalse(model.working.value)
+    }
+
+    @Test(timeout = 30_000) fun aConnectionTheUserStartedIsNotReplacedByTheColdStartAfterBackgrounding() {
+        val alphaServer = HangingServer(); val betaServer = HangingServer()
+        start(MemoryStore(listOf(sshMachine("alpha", alphaServer), sshMachine("beta", betaServer))), lastUsed = "alpha", probes = emptyMap())
+        awaitTrue { alphaServer.accepted.get() >= 1 }
+        model.connect(model.environments.value.first { it.id == "beta" })
+        awaitTrue { betaServer.accepted.get() >= 1 }
+        model.pause()
+        awaitTrue { !model.working.value }
+        model.resume()
+        idleFor(500)
+        assertEquals("The cold start is not re-armed once the user picked a machine", 1, alphaServer.accepted.get())
+    }
+
     @Test fun aUrlPolicyRefusalAtColdStartIsShown() {
         // Public plain HTTP is blocked by the shared URL policy; the real prober reports it as needing attention.
         val blocked = SavedEnvironment("alpha", "Alpha", "http://203.0.113.7:3773", "alpha-token", tokenType = AccessTokenType.Bearer)
