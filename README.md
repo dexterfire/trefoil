@@ -39,6 +39,24 @@ A native Android client for [T3 Code](https://github.com/pingdotgg/t3code): chec
   </tr>
 </table>
 
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/tablet.png" width="780" alt="Tablet layout with the navigation rail, the thread list and a conversation waiting for a command approval side by side"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>Tablets: rail, threads and conversation together</b></sub></td>
+  </tr>
+</table>
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/foldable.png" width="410" alt="Unfolded foldable with the thread list beside the threads that need you"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>Foldables: two panes when unfolded</b></sub></td>
+  </tr>
+</table>
+
 </div>
 
 ## ✨ Highlights
@@ -50,7 +68,7 @@ A native Android client for [T3 Code](https://github.com/pingdotgg/t3code): chec
 - 🖥️ **Remote screens.** Watch and control browser tabs and attached devices, with an immersive full-screen mode.
 - 🌐 **Dev servers.** Open servers running on the host in an in-app browser, or forward them to your phone's `localhost`.
 - 📊 **Limits and usage.** Provider limits, cost and token usage, plus a home-screen widget.
-- 🌗 **Made for Android.** Phone and wide layouts, light and dark themes, encrypted drafts and credentials.
+- 🌗 **Made for Android.** Phone, tablet and foldable layouts, keyboard shortcuts, light and dark themes, encrypted drafts and credentials.
 
 > [!NOTE]
 > **Early release.** Attachment uploads, full Markdown, diffs, shell terminals, notifications, T3 Connect relay sign-in and iOS are still planned. Some provider requests need another T3 client. See [current limits](docs/IMPLEMENTATION_STATUS.md).

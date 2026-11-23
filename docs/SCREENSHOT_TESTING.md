@@ -58,13 +58,15 @@ Known gaps: the background is flat, and widgets that use a Glance `LazyColumn` (
 
 ### README screenshots
 
-`ReadmeScreenshots.kt` (data in `ReadmeFixtures.kt`) renders the README images as full 400x880 dp screens. After re-recording, copy them into `docs/screenshots/` at 540 px wide (run from the repo root):
+`ReadmeScreenshots.kt` (data in `ReadmeFixtures.kt`) renders the README images: five full 400x880 dp phone screens, and the whole app at 1280x800 dp (tablet) and 673x841 dp (unfolded foldable). After re-recording, copy them into `docs/screenshots/` at about twice the width the README shows them: 540 px for the phones, 1560 px for the tablet and 820 px for the foldable (run from the repo root):
 
 ```sh
 D=android/app/src/screenshotTestDefaultDebug/reference/com/tajchert/trefoil/screenshots/ReadmeScreenshotsKt
 for n in Threads Orchestration Agents Approval Usage; do
   sips --resampleWidth 540 $D/Readme_${n}_*.png --out docs/screenshots/$(echo $n | tr A-Z a-z).png
 done
+sips --resampleWidth 1560 $D/Readme_Tablet_*.png --out docs/screenshots/tablet.png
+sips --resampleWidth 820 $D/Readme_Foldable_*.png --out docs/screenshots/foldable.png
 ```
 
 ## Adding a preview test

@@ -24,14 +24,16 @@ import com.tajchert.trefoil.ui.LocalFixedClock
 import com.tajchert.trefoil.ui.Tf
 import com.tajchert.trefoil.ui.ThreadAgentsSheetContent
 import com.tajchert.trefoil.ui.ThreadList
+import com.tajchert.trefoil.ui.TrefoilApp
 import com.tajchert.trefoil.ui.TrefoilTheme
 import com.tajchert.trefoil.ui.UsageScreen
 import com.tajchert.trefoil.ui.agentRows
 import com.tajchert.trefoil.ui.subagentRoster
 
 /*
- * The README screenshots. Each preview is a full 400x880 dp phone screen (20:9); docs/screenshots/ holds the
- * same renders scaled to 540 px wide. See docs/SCREENSHOT_TESTING.md, "README screenshots".
+ * The README screenshots. Each phone preview is a full 400x880 dp screen (20:9); docs/screenshots/ holds the
+ * same renders scaled to 540 px wide. The two large-screen previews at the end are the whole app at a tablet's and an
+ * unfolded foldable's size. See docs/SCREENSHOT_TESTING.md, "README screenshots".
  */
 
 private val rx = ReadmeFixtures
@@ -105,3 +107,29 @@ fun Readme_Usage_Dark() {
         UsageScreen(rx.usageState(), UsageFixtures.usage(), onBack = {}, onRefresh = {}, onSelectRange = {}, onRetry = {}, initialTab = 0)
     }
 }
+
+/**
+ * The whole app around the full thread list: the README's tablet and foldable images. The selected thread is one without a live
+ * timer: the list counts from the real clock and the conversation from the frozen one, and one thread cannot satisfy both.
+ */
+@Composable
+private fun ReadmeShell(state: ClientState) {
+    CompositionLocalProvider(LocalFixedClock provides rx.now) {
+        TrefoilApp(
+            state.copy(threads = rx.threads), listOf(ScreenshotFixtures.workstation),
+            { _, _, _ -> }, {}, {}, {}, {}, { _, _, _ -> }, null, {}, {}, {}, {}, {}, {}, {},
+        )
+    }
+}
+
+/** Tablet landscape, 1280x800 dp: rail, thread list and the approval conversation side by side. */
+@PreviewTest
+@Preview(showBackground = true, widthDp = 1280, heightDp = 800, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun Readme_Tablet_Dark() = ReadmeShell(rx.approvalState())
+
+/** Unfolded foldable, 673x841 dp: the thread list beside the threads that need you. */
+@PreviewTest
+@Preview(showBackground = true, widthDp = 673, heightDp = 841, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun Readme_Foldable_Dark() = ReadmeShell(rx.threadListState())
