@@ -32,7 +32,9 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshots.SnapshotStateMap
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,6 +73,12 @@ import com.tajchert.trefoil.core.model.ModelOptionValues
 import com.tajchert.trefoil.core.model.ModelPreferences
 import com.tajchert.trefoil.core.model.ProviderInstance
 import com.tajchert.trefoil.core.model.resolvedOptionValue
+import com.tajchert.trefoil.ui.adaptive.AdaptiveSpec
+import com.tajchert.trefoil.ui.adaptive.TfAdaptiveSheet
+import com.tajchert.trefoil.ui.adaptive.TfIconButton
+import com.tajchert.trefoil.ui.adaptive.TfTooltip
+import com.tajchert.trefoil.ui.adaptive.handPointer
+import com.tajchert.trefoil.ui.adaptive.focusRing
 
 // ---------- Presentation helpers (pure, unit-tested) ----------
 
@@ -125,7 +133,7 @@ internal fun modelPickerLoading(models: List<ModelOption>, connection: Connectio
 /** Provider tab key of the favourites tab; instance ids key the others. */
 internal const val FAVOURITES_TAB = "★favourites"
 
-@OptIn(ExperimentalMaterial3Api::class)
+/** Bottom sheet below 600dp window width, a centred 680x560dp dialog (the two-pane [TabletPickerBody]) from 600dp. */
 @Composable
 internal fun ModelPickerSheet(
     models: List<ModelOption>, providers: List<ProviderInstance>, current: ModelOption?, explicit: ModelOptionValues, enabled: Boolean,
@@ -133,14 +141,8 @@ internal fun ModelPickerSheet(
     preferences: ModelPreferences = ModelPreferences(), canWriteSettings: Boolean = false, onToggleFavorite: (ModelKey, Boolean) -> Unit = { _, _ -> },
     showFast: Boolean = true, loading: Boolean = false,
 ) {
-    val c = Tf.colors
-    ModalBottomSheet(
-        onDismissRequest = dismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = c.sheet, contentColor = c.text, scrimColor = c.scrim, tonalElevation = 0.dp,
-        sheetMaxWidth = 680.dp,
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        contentWindowInsets = { WindowInsets(0) },
-        dragHandle = { Box(Modifier.padding(top = 12.dp, bottom = 8.dp).size(36.dp, 4.dp).background(c.s3, RoundedCornerShape(2.dp))) },
+    TfAdaptiveSheet(
+        onDismiss = dismiss, dialogMaxWidth = AdaptiveSpec.DialogModelPickerWidth.dp, dialogMaxHeight = AdaptiveSpec.DialogModelPickerHeight.dp, insetContent = false,
     ) {
         ModelPickerContent(
             models, providers, current, explicit, enabled, { dismiss() }, onSetModel, onSetModelOption, Modifier, threadSelection,
@@ -190,7 +192,7 @@ internal fun ModelPickerContent(
     }
     var tab by rememberSaveable { mutableStateOf<String?>(null) }
     val activeTab = tab?.takeIf { it == FAVOURITES_TAB || catalog.sections.any { s -> s.instanceId == it } } ?: initialTab
-    val expandedFamilies = remember { mutableStateMapOf<String, Boolean>() }
+    val expandedFamilies = rememberSaveable(saver = FamilyExpansionSaver) { mutableStateMapOf<String, Boolean>() }
     // Above the width switch, so crossing 600 dp (a fold, a resized window) keeps the user's place in the list.
     val listState = rememberLazyListState()
 
@@ -209,6 +211,12 @@ internal fun ModelPickerContent(
     if (LocalConfiguration.current.screenWidthDp >= TABLET_MIN_WIDTH.value) TabletPickerBody(ui, closeSheet, loading, modifier) { tab = it; query = "" }
     else PhonePickerBody(ui, closeSheet, loading, modifier) { tab = it }
 }
+
+/** Saves which model families the user expanded or collapsed (key to flag) across recreation. */
+private val FamilyExpansionSaver = Saver<SnapshotStateMap<String, Boolean>, ArrayList<String>>(
+    save = { map -> ArrayList(map.entries.map { (if (it.value) "1" else "0") + it.key }) },
+    restore = { saved -> mutableStateMapOf<String, Boolean>().apply { saved.forEach { put(it.substring(1), it[0] == '1') } } },
+)
 
 /** Width from which the picker lays out as rail + list + options panes. */
 internal val TABLET_MIN_WIDTH = 600.dp
@@ -268,7 +276,7 @@ internal fun PickerTitleRow(closeSheet: () -> Unit) {
     val c = Tf.colors
     Row(Modifier.padding(start = 20.dp, end = 8.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Text("Model", Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall, color = c.text)
-        IconButton(onClick = closeSheet, Modifier.size(48.dp)) { Icon(TfIcons.Close, "Close", tint = c.text) }
+        TfIconButton(TfIcons.Close, "Close", closeSheet, Modifier.size(48.dp), tint = c.text)
     }
 }
 
@@ -281,7 +289,7 @@ internal fun PickerSearchField(ui: PickerUi) {
     OutlinedTextField(
         ui.query, ui.setQuery, singleLine = true, placeholder = { Text("Search models…") }, shape = TfFieldShape, colors = tfFieldColors(),
         leadingIcon = { Icon(TfIcons.Search, null, Modifier.size(18.dp), tint = c.muted) },
-        trailingIcon = { if (ui.query.isNotEmpty()) IconButton(onClick = { ui.setQuery("") }) { Icon(TfIcons.Close, "Clear search", Modifier.size(18.dp), tint = c.muted) } },
+        trailingIcon = { if (ui.query.isNotEmpty()) TfIconButton(TfIcons.Close, "Clear search", { ui.setQuery("") }, iconSize = 18.dp, tint = c.muted) },
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { focus.clearFocus() }),
         modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp).semantics { contentDescription = "Search models" },
     )
@@ -526,7 +534,7 @@ private fun ModelRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Row(
-            Modifier.weight(1f).heightIn(min = 52.dp).clip(shape).selectable(selected, enabled, Role.RadioButton, onClick = onClick)
+            Modifier.weight(1f).heightIn(min = 52.dp).clip(shape).focusRing().handPointer().selectable(selected, enabled, Role.RadioButton, onClick = onClick)
                 .padding(start = 12.dp, top = 4.dp, bottom = 4.dp).semantics { contentDescription = description },
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -553,7 +561,7 @@ private fun VersionPill(pill: VersionPillSpec, selected: Boolean, enabled: Boole
     val c = Tf.colors
     val rotation by animateFloatAsState(if (pill.expanded) 180f else 0f, tween(180), label = "versionChevron")
     Box(
-        Modifier.minimumInteractiveComponentSize().clickable(role = Role.Button, onClick = pill.toggle).semantics { contentDescription = pill.description; stateDescription = if (pill.expanded) "Expanded" else "Collapsed" },
+        Modifier.minimumInteractiveComponentSize().focusRing().handPointer().clickable(role = Role.Button, onClick = pill.toggle).semantics { contentDescription = pill.description; stateDescription = if (pill.expanded) "Expanded" else "Collapsed" },
         contentAlignment = Alignment.Center,
     ) {
         val pillShape = RoundedCornerShape(8.dp)
@@ -577,18 +585,20 @@ private fun StarButton(star: StarSpec) {
     val scope = rememberCoroutineScope()
     val haptics = LocalHapticFeedback.current
     val animationsOff = rememberAnimationsOff()
+    TfTooltip(description) {
     IconToggleButton(
         star.starred, {
             haptics.performHapticFeedback(if (star.starred) HapticFeedbackType.ToggleOff else HapticFeedbackType.ToggleOn)
             if (!animationsOff) scope.launch { scale.snapTo(.6f); scale.animateTo(1f, spring(dampingRatio = 0.55f, stiffness = 600f)) }
             star.toggle()
         },
-        Modifier.size(48.dp).semantics { contentDescription = if (star.enabled) description else "$description, unavailable" }, enabled = star.enabled,
+        Modifier.size(48.dp).focusRing().handPointer(star.enabled).semantics { contentDescription = if (star.enabled) description else "$description, unavailable" }, enabled = star.enabled,
     ) {
         Icon(
             if (star.starred) TfIcons.StarFilled else TfIcons.Star, null, Modifier.size(18.dp).graphicsLayer { scaleX = scale.value; scaleY = scale.value }.alpha(if (star.enabled) 1f else .3f),
             tint = if (star.starred) c.amber else c.muted,
         )
+    }
     }
 }
 
@@ -680,7 +690,7 @@ private fun ControlsDock(
             }
         } else if (fast != null) {
             Row(
-                Modifier.fillMaxWidth().heightIn(min = 52.dp).selectable(on, optionsEnabled, Role.Switch) { onSetModelOption(fast.id, !on) }.padding(horizontal = 16.dp).semantics { contentDescription = fast.label.ifBlank { "Fast mode" } },
+                Modifier.fillMaxWidth().heightIn(min = 52.dp).focusRing().handPointer().selectable(on, optionsEnabled, Role.Switch) { onSetModelOption(fast.id, !on) }.padding(horizontal = 16.dp).semantics { contentDescription = fast.label.ifBlank { "Fast mode" } },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f).padding(vertical = 8.dp)) {

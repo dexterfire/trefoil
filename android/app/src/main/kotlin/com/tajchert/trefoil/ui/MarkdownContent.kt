@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -17,6 +18,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -38,6 +42,8 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.tajchert.trefoil.ui.adaptive.TfIconButton
+import kotlin.math.roundToInt
 
 internal data class MarkdownBlock(val text: String, val code: Boolean = false, val language: String = "")
 internal fun markdownBlocks(text: String): List<MarkdownBlock> {
@@ -238,27 +244,34 @@ internal fun MarkdownContent(text: String, modifier: Modifier = Modifier) {
 private fun MdNodeView(node: MdNode) {
     val c = Tf.colors
     val clipboard = LocalClipboardManager.current
+    // Wide column: prose-like nodes read at prose width, start-aligned; code and tables keep the whole column (same start edge).
+    val layout = LocalConversationLayout.current
+    val prose = Modifier.proseWidth(layout)
     when (node) {
         is MdNode.Code -> Surface(shape = RoundedCornerShape(14.dp), color = c.s1, contentColor = c.text, border = BorderStroke(1.dp, c.line)) {
             Column(Modifier.fillMaxWidth()) {
-                Row(Modifier.fillMaxWidth().padding(start = 14.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                // Wide pane: a 48dp hit area for Copy (the header row grows by 12dp, the end inset shrinks so the glyph stays put).
+                Row(Modifier.fillMaxWidth().padding(start = 14.dp, end = if (layout.wide) 2.dp else 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(node.language.ifBlank { "Code" }, Modifier.weight(1f), style = TrefoilType.mono.copy(fontSize = 11.sp), color = c.muted)
-                    IconButton(onClick = { clipboard.setText(AnnotatedString(node.text)) }, modifier = Modifier.size(36.dp)) { Icon(Icons.Default.ContentCopy, "Copy code", Modifier.size(15.dp), tint = c.muted) }
+                    TfIconButton(Icons.Default.ContentCopy, "Copy code", { clipboard.setText(AnnotatedString(node.text)) }, Modifier.size(if (layout.wide) 48.dp else 36.dp), iconSize = 15.dp, tint = c.muted)
                 }
-                Text(node.text, Modifier.horizontalScroll(rememberScrollState()).padding(start = 14.dp, end = 14.dp, bottom = 12.dp), style = TrefoilType.code, color = c.text)
+                val codeScroll = rememberScrollState()
+                // Wide pane: a long line fades out at the edge it can still scroll towards.
+                Text(node.text, Modifier.then(if (layout.wide) Modifier.scrollEdgeFades(codeScroll, c.s1, CodeFadeWidth) else Modifier)
+                    .horizontalScroll(codeScroll).padding(start = 14.dp, end = 14.dp, bottom = 12.dp), style = TrefoilType.code, color = c.text)
             }
         }
         is MdNode.Heading -> {
             val size = when (node.level) { 1 -> 21; 2 -> 19; 3 -> 17; else -> 15 }
-            Text(rememberInline(node.text, (size - 2).sp), style = TrefoilType.message.copy(fontSize = size.sp, lineHeight = (size + 7).sp, fontWeight = FontWeight.SemiBold), color = c.text)
+            Text(rememberInline(node.text, (size - 2).sp), prose, style = TrefoilType.message.copy(fontSize = size.sp, lineHeight = (size + 7).sp, fontWeight = FontWeight.SemiBold), color = c.text)
         }
-        is MdNode.Paragraph -> Text(rememberInline(node.text), style = TrefoilType.message, color = c.text)
-        MdNode.Rule -> Box(Modifier.fillMaxWidth().padding(vertical = 4.dp).height(1.dp).background(c.line))
-        is MdNode.Quote -> Row(Modifier.height(IntrinsicSize.Min)) {
+        is MdNode.Paragraph -> Text(rememberInline(node.text), prose, style = TrefoilType.message, color = c.text)
+        MdNode.Rule -> Box(prose.fillMaxWidth().padding(vertical = 4.dp).height(1.dp).background(c.line))
+        is MdNode.Quote -> Row(prose.height(IntrinsicSize.Min)) {
             Box(Modifier.width(3.dp).fillMaxHeight().background(c.line, RoundedCornerShape(2.dp)))
             Text(rememberInline(node.text), Modifier.padding(start = 12.dp), style = TrefoilType.message, color = c.muted)
         }
-        is MdNode.ListBlock -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        is MdNode.ListBlock -> Column(prose, verticalArrangement = Arrangement.spacedBy(4.dp)) {
             node.items.forEach { item ->
                 Row(Modifier.padding(start = (item.depth * 20).dp), verticalAlignment = Alignment.Top) {
                     if (item.checked != null) {
@@ -278,6 +291,31 @@ private fun MdNodeView(node: MdNode) {
 
 private val TableMinColumn = 64.dp
 private val TableMaxColumn = 280.dp
+private val TableMaxColumnWide = 520.dp
+private const val TableMaxColumnWideFraction = .65f
+private val CodeFadeWidth = 24.dp
+
+/**
+ * Widest a single table column may get, in px. Phone panes keep [TableMaxColumn]; a wide pane lets one column grow to
+ * min([TableMaxColumnWide], 65% of the width the table has) so a long unbroken token is not split mid-word.
+ * Many columns still shrink or scroll through [tableColumnWidths]; only this per-column cap moves.
+ */
+internal fun tableMaxColumnPx(wide: Boolean, availablePx: Int, density: Float): Int {
+    val narrow = (TableMaxColumn.value * density).roundToInt()
+    if (!wide || availablePx == Constraints.Infinity) return narrow
+    return minOf((TableMaxColumnWide.value * density).roundToInt(), (availablePx * TableMaxColumnWideFraction).toInt())
+}
+
+/**
+ * Draws a [width]-wide fade to [color] at each end of the scrolling viewport that can still scroll towards that end.
+ * Apply it OUTSIDE the scrolling modifier so the fade sits on the viewport edge, not on the scrolled content.
+ */
+internal fun Modifier.scrollEdgeFades(state: ScrollState, color: Color, width: Dp): Modifier = drawWithContent {
+    drawContent()
+    val w = width.toPx().coerceAtMost(size.width / 2f)
+    if (state.canScrollBackward) drawRect(Brush.horizontalGradient(listOf(color, Color.Transparent), startX = 0f, endX = w), size = Size(w, size.height))
+    if (state.canScrollForward) drawRect(Brush.horizontalGradient(listOf(Color.Transparent, color), startX = size.width - w, endX = size.width), topLeft = Offset(size.width - w, 0f), size = Size(w, size.height))
+}
 
 @Composable
 private fun MdTable(table: MdNode.Table) {
@@ -286,6 +324,7 @@ private fun MdTable(table: MdNode.Table) {
     val shape = RoundedCornerShape(10.dp)
     val cellStyle = TrefoilType.message.copy(fontSize = 13.5.sp, lineHeight = 19.sp)
     val rowCount = table.rows.size + 1
+    val wide = LocalConversationLayout.current.wide
     BoxWithConstraints {
     val available = constraints.maxWidth
     Box(Modifier.clip(shape).border(1.dp, c.line, shape).horizontalScroll(rememberScrollState())) {
@@ -308,7 +347,7 @@ private fun MdTable(table: MdNode.Table) {
                 }
             }
         }) { measurables, _ ->
-            val minW = TableMinColumn.roundToPx(); val maxW = TableMaxColumn.roundToPx()
+            val minW = TableMinColumn.roundToPx(); val maxW = tableMaxColumnPx(wide, available, density).coerceAtLeast(minW)
             val natural = IntArray(cols) { col ->
                 (0 until rowCount).maxOf { r -> measurables[r * cols + col].maxIntrinsicWidth(Int.MAX_VALUE) }.coerceIn(minW, maxW)
             }

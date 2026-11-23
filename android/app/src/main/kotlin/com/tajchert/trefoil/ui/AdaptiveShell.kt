@@ -22,16 +22,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tajchert.trefoil.core.model.*
+import com.tajchert.trefoil.ui.adaptive.TfIconButton
 import kotlinx.coroutines.delay
-
-/** Width classes used by the shell: phone, two panes (foldable / tablet portrait), two panes + machine rail. */
-internal enum class ShellLayout { Phone, TwoPane, Rail }
-
-internal fun shellLayout(widthDp: Float): ShellLayout = when {
-    widthDp >= 1200f -> ShellLayout.Rail
-    widthDp >= 600f -> ShellLayout.TwoPane
-    else -> ShellLayout.Phone
-}
 
 /** App-level destinations reachable from the list header / rail settings menu. Null hides an entry. */
 internal data class ShellActions(
@@ -45,6 +37,12 @@ internal data class ShellActions(
     /** Opt-in foreground service that keeps the connection alive in the background; null hides the entry. */
     val keepConnected: Boolean = false,
     val onKeepConnectedChange: ((Boolean) -> Unit)? = null,
+    /**
+     * "Dock beside thread": moves the open in-app browser from the Servers destination into the side panel's Preview tab in one state
+     * change (destination Threads and tab Preview together), keeping the page. Null without dev servers. Windows too narrow to dock show
+     * the Preview tab as the Servers destination, so the call is harmless there; callers offer it only where the panel docks (840dp+).
+     */
+    val onDockBrowserBesideThread: (() -> Unit)? = null,
 )
 
 /** Live states (Online … Failed) describe the active connection; the rest come from background probes. */
@@ -100,14 +98,10 @@ internal fun MachineStatusIndicator(status: MachineStatus, modifier: Modifier = 
 internal fun ShellMenuButton(state: ClientState, actions: ShellActions, tint: Color) {
     var open by remember { mutableStateOf(false) }
     Box {
-        IconButton(onClick = { open = true }) { Icon(TfIcons.More, "More", Modifier.size(22.dp), tint = tint) }
+        TfIconButton(TfIcons.More, "More", { open = true }, iconSize = 22.dp, tint = tint, tooltip = "App menu")
         DropdownMenu(open, { open = false }) { ShellMenuItems(state, actions) { open = false } }
     }
 }
-
-/** Short rail label: the first word of the machine name, at most 8 characters. */
-internal fun railLabel(name: String): String =
-    name.trim().split(Regex("\\s+")).firstOrNull { it.isNotBlank() }?.take(8) ?: "Machine"
 
 /** Items of the overflow menu; split out so previews can render them without a popup window. */
 @Composable
@@ -130,51 +124,6 @@ internal fun ColumnScope.ShellMenuItems(state: ClientState, actions: ShellAction
     }
     if (actions.onDisconnect != null) DropdownMenuItem(text = { Text("Disconnect machine") },
         leadingIcon = { Icon(TfIcons.Disconnect, null, Modifier.size(20.dp)) }, onClick = { close(); actions.onDisconnect.invoke() })
-}
-
-/** 80dp machine rail (≥1200dp): Trefoil mark, one item per saved environment, add, settings. */
-@Composable
-internal fun MachineRail(state: ClientState, saved: List<SavedEnvironment>, needsYou: Int, onSelect: (SavedEnvironment) -> Unit, actions: ShellActions, modifier: Modifier = Modifier,
-    probes: Map<String, MachineProbe> = emptyMap()) {
-    val c = Tf.colors
-    Column(modifier.width(80.dp).fillMaxHeight().background(c.rail).windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Vertical + WindowInsetsSides.Start))
-        .padding(top = 16.dp, bottom = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        TrefoilMark(Modifier.padding(bottom = 18.dp).size(40.dp), color = c.accent)
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            val active = state.environment
-            val list = if (active != null && saved.none { it.id == active.id }) listOf(active) + saved else saved
-            list.forEach { environment ->
-                val current = environment.id == state.environment?.id
-                RailItem(environment, current, if (current) needsYou else 0, if (current) machineStatus(state) else machineStatus(environment, state, probes), enabled = !state.busy || current) {
-                    if (current) actions.onMachines() else onSelect(environment)
-                }
-            }
-            IconButton(onClick = actions.onConnectMachine, enabled = !state.busy) { Icon(TfIcons.Plus, "Add machine", Modifier.size(22.dp), tint = c.muted) }
-        }
-        ShellMenuButton(state, actions, c.muted)
-    }
-}
-
-@Composable
-private fun RailItem(environment: SavedEnvironment, current: Boolean, badge: Int, status: MachineStatus, enabled: Boolean, onClick: () -> Unit) {
-    val c = Tf.colors
-    Surface(onClick = onClick, enabled = enabled, color = Color.Transparent, contentColor = if (current) c.text else c.muted, shape = RoundedCornerShape(16.dp),
-        modifier = Modifier.width(72.dp).semantics {
-            contentDescription = environment.name; selected = current; role = Role.Tab
-            stateDescription = listOfNotNull(status.label, badge.takeIf { it > 0 }?.let { "$it need you" }).joinToString(", ")
-        }) {
-        Column(Modifier.padding(vertical = 4.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Box(Modifier.size(56.dp, 32.dp).background(if (current) c.accentSoft else Color.Transparent, RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) {
-                Icon(if (environment.ssh != null) TfIcons.Server else TfIcons.Desktop, null, Modifier.size(22.dp), tint = if (current) c.text else c.muted)
-                if (badge > 0) Text(badge.toString(), Modifier.align(Alignment.TopEnd).offset(x = (-6).dp, y = (-2).dp).background(c.amber, RoundedCornerShape(8.dp))
-                    .defaultMinSize(minWidth = 16.dp).padding(horizontal = 4.dp), color = Color(0xFF1A1205), fontFamily = InterFamily, fontWeight = FontWeight.Bold,
-                    fontSize = 10.sp, lineHeight = 16.sp, maxLines = 1, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                else MachineStatusIndicator(status, Modifier.align(Alignment.TopEnd).offset(x = if (status.inProgress) (-8).dp else (-10).dp, y = if (status.inProgress) 2.dp else 4.dp), size = 7.dp)
-            }
-            Text(railLabel(environment.name), fontFamily = InterFamily, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, lineHeight = 14.sp,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-    }
 }
 
 /** Slim connection notice under the list header: amber while connecting/offline, red on errors. */

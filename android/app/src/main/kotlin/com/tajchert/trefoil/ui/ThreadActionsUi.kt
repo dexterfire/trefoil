@@ -8,6 +8,7 @@ import android.app.TimePickerDialog
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -16,6 +17,7 @@ import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.core.session.canSnoozeThread
+import com.tajchert.trefoil.ui.adaptive.TfIconButton
 import java.net.URLEncoder
 import java.time.*
 
@@ -32,13 +34,18 @@ internal fun settleLeavesConversation(action: ThreadAction, twoPane: Boolean): B
 
 /** Overflow button for a thread (conversation header). List rows open [ThreadActionsDropdown] on long-press instead. */
 @Composable
-internal fun ThreadActionsMenu(state: ClientState, thread: ThreadSummary, onOpenAgents: (() -> Unit)? = null, onAction: (ThreadTarget, ThreadAction, String?) -> Unit) {
+internal fun ThreadActionsMenu(
+    state: ClientState, thread: ThreadSummary, onOpenAgents: (() -> Unit)? = null,
+    /** Items the shell demotes from a narrow conversation header, shown first; call `close` before acting. */
+    leadingItems: (@Composable ColumnScope.(close: () -> Unit) -> Unit)? = null,
+    onAction: (ThreadTarget, ThreadAction, String?) -> Unit,
+) {
     val environmentId = state.environment?.id ?: return
     key(environmentId, thread.id) {
         var open by remember { mutableStateOf(false) }
         Box {
-            IconButton(onClick = { open = true }) { Icon(TfIcons.More, "Thread actions for ${thread.title}", Modifier.size(22.dp)) }
-            ThreadActionsDropdown(state, thread, onAction, open, { open = it }, onOpenAgents = onOpenAgents)
+            TfIconButton(TfIcons.More, "Thread actions for ${thread.title}", { open = true }, iconSize = 22.dp, tooltip = "Thread actions")
+            ThreadActionsDropdown(state, thread, onAction, open, { open = it }, onOpenAgents = onOpenAgents, leadingItems = leadingItems)
         }
     }
 }
@@ -50,13 +57,14 @@ internal fun ThreadActionsDropdown(
     expanded: Boolean, onExpandedChange: (Boolean) -> Unit, offset: DpOffset = DpOffset.Zero,
     /** Opens the Agents sheet; null hides the item (no agents in the selected thread). */
     onOpenAgents: (() -> Unit)? = null,
+    leadingItems: (@Composable ColumnScope.(close: () -> Unit) -> Unit)? = null,
 ) {
     val environmentId = state.environment?.id ?: return
     val target = ThreadTarget(environmentId, thread.id)
     key(target) {
-        var rename by remember { mutableStateOf(false) }
-        var title by remember(thread.title) { mutableStateOf(thread.title) }
-        var snooze by remember { mutableStateOf(false) }
+        var rename by rememberSaveable { mutableStateOf(false) }
+        var title by rememberSaveable(thread.title) { mutableStateOf(thread.title) }
+        var snooze by rememberSaveable { mutableStateOf(false) }
         val clipboard = LocalClipboardManager.current
         val context = LocalContext.current
         val writable = state.canWriteThreads && state.connection == ConnectionStatus.Connected && !state.busy && thread.deletedAt == null && !thread.archived && thread.archivedAt == null
@@ -64,6 +72,7 @@ internal fun ThreadActionsDropdown(
         fun close() = onExpandedChange(false)
         fun act(action: ThreadAction, value: String? = null) { close(); onAction(target, action, value) }
         DropdownMenu(expanded, { close() }, offset = offset) {
+            if (leadingItems != null) { leadingItems { close() }; HorizontalDivider() }
             if (onOpenAgents != null) {
                 DropdownMenuItem(text = { Text("Agents") }, leadingIcon = { Icon(TfIcons.Agents, null, Modifier.size(18.dp)) }, onClick = { close(); onOpenAgents() })
                 HorizontalDivider()

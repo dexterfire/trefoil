@@ -1,6 +1,7 @@
 package com.tajchert.trefoil.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -9,7 +10,12 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusTarget
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -29,14 +35,81 @@ import com.tajchert.trefoil.ui.screens.ScreenViewerState
 import com.tajchert.trefoil.ui.screens.ScreenSessionsScreen
 import com.tajchert.trefoil.ui.ports.PortBrowserState
 import com.tajchert.trefoil.ui.ports.PortsActions
-import com.tajchert.trefoil.ui.ports.PortsScreen
+import com.tajchert.trefoil.ui.ports.DevServersPane
 import com.tajchert.trefoil.ui.ports.StoppedForwardNotice
 import com.tajchert.trefoil.ui.ports.PortsUiState
 import com.tajchert.trefoil.ui.ports.ThreadPortsChip
-import com.tajchert.trefoil.ui.ports.TunnelBrowserScreen
+import com.tajchert.trefoil.ui.adaptive.LocalCompactHeight
+import com.tajchert.trefoil.ui.adaptive.LocalFold
+import com.tajchert.trefoil.ui.adaptive.TfIconButton
+import com.tajchert.trefoil.ui.adaptive.ThreadListChrome
+import com.tajchert.trefoil.ui.adaptive.WindowSpec
+import com.tajchert.trefoil.ui.adaptive.resolvePanes
+import com.tajchert.trefoil.ui.adaptive.shellPolicy
+import androidx.compose.ui.focus.FocusRequester
+import com.tajchert.trefoil.ui.adaptive.HingeAt
+import com.tajchert.trefoil.ui.adaptive.SidePanelMode
+import com.tajchert.trefoil.ui.ports.chipPorts
+import com.tajchert.trefoil.ui.shell.SidePanel
+import com.tajchert.trefoil.ui.shell.SidePanelAgents
+import com.tajchert.trefoil.ui.shell.SidePanelTab
+import com.tajchert.trefoil.ui.shell.SidePanelHost
+import com.tajchert.trefoil.ui.shell.SidePanelToggle
+import com.tajchert.trefoil.ui.shell.headerBudget
+import com.tajchert.trefoil.ui.shell.navEntries
+import com.tajchert.trefoil.ui.shell.rememberMovableSurface
+import com.tajchert.trefoil.ui.shell.resolveSidePanelTab
+import com.tajchert.trefoil.ui.shell.serversMenuLabel
+import com.tajchert.trefoil.ui.shell.sidePanelOpenTarget
+import com.tajchert.trefoil.ui.shell.sidePanelPresentation
+import com.tajchert.trefoil.ui.shell.effectiveSidePanelMode
+import com.tajchert.trefoil.ui.shell.sidePanelTabs
+import com.tajchert.trefoil.ui.shell.BrandPanel
+import com.tajchert.trefoil.ui.shell.EmptyDetail
+import com.tajchert.trefoil.ui.shell.LocalImeHeightOverride
+import com.tajchert.trefoil.ui.shell.NavChrome
+import com.tajchert.trefoil.ui.shell.PaneFocus
+import com.tajchert.trefoil.ui.shell.PaneOrder
+import com.tajchert.trefoil.ui.shell.ParentBackButton
+import com.tajchert.trefoil.ui.shell.detailPaneTitle
+import com.tajchert.trefoil.ui.shell.paneGroup
+import com.tajchert.trefoil.ui.shell.transientList
+import com.tajchert.trefoil.ui.shell.ShellBack
+import com.tajchert.trefoil.ui.shell.ShellDestination
+import com.tajchert.trefoil.ui.shell.ShellDrawerSheet
+import com.tajchert.trefoil.ui.shell.ShellNavModel
+import com.tajchert.trefoil.ui.shell.ShellNavigationRail
+import com.tajchert.trefoil.ui.shell.ShellPanes
+import com.tajchert.trefoil.ui.shell.ShowThreadListButton
+import com.tajchert.trefoil.ui.shell.destination
+import com.tajchert.trefoil.ui.shell.navChrome
+import com.tajchert.trefoil.ui.shell.rememberShellListState
+import com.tajchert.trefoil.ui.shell.shellBack
+import com.tajchert.trefoil.ui.shell.KeyboardShortcutsDialog
+import com.tajchert.trefoil.ui.shell.ShortcutHost
+import com.tajchert.trefoil.ui.shell.ShortcutId
+import com.tajchert.trefoil.ui.shell.LocalShortcutRegistry
+import com.tajchert.trefoil.ui.shell.registeredShortcutVisible
+import com.tajchert.trefoil.ui.shell.adjacentThreadId
+import com.tajchert.trefoil.ui.shell.listedThreadIds
+import com.tajchert.trefoil.ui.shell.nextNeedsYouId
+import com.tajchert.trefoil.ui.adaptive.handPointer
+import com.tajchert.trefoil.ui.adaptive.focusRing
 
 /** Detail-pane bottom insets: the composer rides above the navigation bar and the keyboard. */
 private val BottomBarsAndIme @Composable get() = WindowInsets.navigationBars.union(WindowInsets.ime).only(WindowInsetsSides.Bottom)
+
+/** Initial navigation state for previews and tests: opens destinations that otherwise need UI interaction. */
+data class ShellStart(
+    val showThread: Boolean = false, val showUsage: Boolean = false, val usageTab: Int = 0,
+    val showScreens: Boolean = false, val showPorts: Boolean = false, val choosingEnvironment: Boolean = false,
+    /** Opens the navigation drawer (two panes without a rail); ignored where there is no drawer. */
+    val navigationOpen: Boolean = false,
+    /** Starts with the thread list collapsed where the window allows collapsing. */
+    val listCollapsed: Boolean = false,
+    /** Opens this side panel tab by name ("Preview", "Screens", "Agents"); docked or mapped as the window allows. */
+    val sidePanelTab: String? = null,
+)
 
 @Composable
 fun TrefoilApp(
@@ -92,19 +165,62 @@ fun TrefoilApp(
     onClosePortBrowser: () -> Unit = {},
     stoppedForwards: Map<String, StoppedForwardNotice> = emptyMap(),
     onDismissStoppedForwards: (environmentId: String) -> Unit = {},
+    start: ShellStart = ShellStart(),
 ) {
     TrefoilTheme {
         val conversationState = rememberSaveableStateHolder()
-        var adding by remember { mutableStateOf(false) }
+        val shellContentState = rememberSaveableStateHolder()
+        var adding by rememberSaveable { mutableStateOf(false) }
+        var shortcutsOpen by rememberSaveable { mutableStateOf(false) }
+        // The root key handler reads this at key time; the bindings are rebuilt after each composition (below) from the same actions the buttons call.
+        val shortcutHost = remember { ShortcutHost() }
+        // Key events only reach a window whose Compose tree holds focus, so the root takes focus once when nothing else has (a tap, Tab or a field keeps its own).
+        val rootFocus = remember { FocusRequester() }
+        var rootHasFocus by remember { mutableStateOf(false) }
+        val backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
         val snackbar = remember { SnackbarHostState() }
         LaunchedEffect(state.settlementUndo) {
             state.settlementUndo?.let { undo ->
                 if (snackbar.showSnackbar("Thread settled", "Undo", duration = SnackbarDuration.Long) == SnackbarResult.ActionPerformed) onUndoSettlement(undo)
             }
         }
-        var sshConnecting by remember { mutableStateOf(false) }
+        var sshConnecting by rememberSaveable { mutableStateOf(false) }
         var pairing by rememberSaveable { mutableStateOf(false) }
-        var choosingEnvironment by rememberSaveable { mutableStateOf(false) }
+        // One saved destination. Screens and Dev servers belong to the environment they were opened for and fall back to Threads on a switch.
+        val environmentId = state.environment?.id
+        var savedDestination by rememberSaveable { mutableStateOf(start.destination()) }
+        var destinationEnvironment by rememberSaveable { mutableStateOf(environmentId) }
+        val destination = if (savedDestination.environmentScoped && destinationEnvironment != environmentId) ShellDestination.Threads else savedDestination
+        var screenFullscreen by rememberSaveable { mutableStateOf(false) }
+        // The side panel beside the conversation: the open tab and the last used one, saved by enum name only. It belongs to one machine.
+        var sidePanelTabName by rememberSaveable { mutableStateOf(start.sidePanelTab) }
+        var lastPanelTabName by rememberSaveable { mutableStateOf(start.sidePanelTab) }
+        var panelEnvironment by rememberSaveable { mutableStateOf(environmentId) }
+        if (environmentId != null && panelEnvironment != environmentId) { panelEnvironment = environmentId; sidePanelTabName = null }
+        val savedPanelTab = SidePanelTab.entries.firstOrNull { it.name == sidePanelTabName }
+        // Closing the panel ends what only the panel showed, whichever tab is in front: a page in Preview and a viewer in Screens.
+        // Nothing live (a tunnel page, a screen stream) stays open behind a closed panel; switching tabs keeps both.
+        val closePanel: () -> Unit = {
+            if (portBrowser != null) onClosePortBrowser()
+            screenFullscreen = false; onCloseScreen()
+            sidePanelTabName = null
+        }
+        // Every destination change (rail, drawer, menus, Back out of a destination) closes the side panel.
+        val navigate: (ShellDestination) -> Unit = { if (sidePanelTabName != null) closePanel(); savedDestination = it; destinationEnvironment = environmentId }
+        val openPanel: (SidePanelTab) -> Unit = { sidePanelTabName = it.name; lastPanelTabName = it.name; panelEnvironment = environmentId }
+        // "Dock beside thread": the open browser leaves the Servers destination for the Preview tab in one state change (same composition).
+        val dockBrowserBesideThread: () -> Unit = {
+            savedDestination = ShellDestination.Threads; destinationEnvironment = environmentId; openPanel(SidePanelTab.Preview)
+        }
+        // No environment (restoring, reconnecting) keeps the owner, as the side panel does: the same machine coming back restores its destination.
+        LaunchedEffect(environmentId) {
+            if (environmentId != null && destinationEnvironment != environmentId) { if (savedDestination.environmentScoped) savedDestination = ShellDestination.Threads; destinationEnvironment = environmentId }
+        }
+        val choosingEnvironment = destination == ShellDestination.Machines
+        val showUsage = destination == ShellDestination.Usage
+        val showScreens = destination == ShellDestination.Screens
+        val showPorts = destination == ShellDestination.Servers
+        val drawerState = rememberDrawerState(if (start.navigationOpen) DrawerValue.Open else DrawerValue.Closed)
         // A t3code: link opens the pair dialog pre-filled and never submits. Plain remember: the link is not persisted.
         var pairLink by remember { mutableStateOf<Pair<Long, String>?>(null) }
         LaunchedEffect(pairing) { if (!pairing) pairLink = null }
@@ -119,20 +235,17 @@ fun TrefoilApp(
         }
         // First prompt typed in the new-thread sheet; the draft conversation sends it via its composer.
         var seedPrompt by rememberSaveable { mutableStateOf<String?>(null) }
-        var showScreens by rememberSaveable(state.environment?.id) { mutableStateOf(false) }
-        var showPorts by rememberSaveable(state.environment?.id) { mutableStateOf(false) }
-        var showUsage by rememberSaveable { mutableStateOf(false) }
         // A widget request picks the tab; the header chip and menu always open Limits.
-        var usageTab by rememberSaveable { mutableIntStateOf(0) }
+        var usageTab by rememberSaveable { mutableIntStateOf(start.usageTab) }
         LaunchedEffect(usageOpenRequest) {
-            if (usageOpenRequest != null) { usageTab = usageOpenRequest.second.ordinal; showUsage = true; choosingEnvironment = false; if (state.canReadUsage) onOpenUsage() }
+            if (usageOpenRequest != null) { usageTab = usageOpenRequest.second.ordinal; navigate(ShellDestination.Usage); if (state.canReadUsage) onOpenUsage() }
         }
         LaunchedEffect(state.environment?.id, state.canReadUsage) {
             if (showUsage && state.canReadUsage) onOpenUsage()
         }
         // Dev servers need a live environment whose server answers discovery; an older server hides the feature.
         val portsAvailable = state.environment != null && state.localServers.supported
-        LaunchedEffect(portsAvailable) { if (!portsAvailable) showPorts = false }
+        LaunchedEffect(portsAvailable) { if (!portsAvailable && savedDestination == ShellDestination.Servers) savedDestination = ShellDestination.Threads }
         // Leaving for the machine list drops the browser page; the forward itself stays open until stopped or disconnected.
         LaunchedEffect(choosingEnvironment) { if (choosingEnvironment) onClosePortBrowser() }
         val portsUi = PortsUiState(
@@ -141,10 +254,10 @@ fun TrefoilApp(
             live = state.localServers.live, supported = state.localServers.supported, tunnelsDisabled = state.previewTunnelDisabled,
             canWrite = state.canWrite && state.connection == ConnectionStatus.Connected, selectedThreadId = state.selectedThreadId,
             stoppedNotice = state.environment?.id?.let { stoppedForwards[it] }?.message)
-        val portsActions = PortsActions({ showPorts = false }, onOpenPortInApp, onOpenPortExternal, onStopPortForward, onForwardPort) { state.environment?.id?.let(onDismissStoppedForwards) }
-        var screenFullscreen by rememberSaveable { mutableStateOf(false) }
+        // "Back to conversations" can sit beside an open page (a wide window without a rail), so leaving closes the page too.
+        val portsActions = PortsActions({ if (portBrowser != null) onClosePortBrowser(); navigate(ShellDestination.Threads) }, onOpenPortInApp, onOpenPortExternal, onStopPortForward, onForwardPort) { state.environment?.id?.let(onDismissStoppedForwards) }
         LaunchedEffect(state.environment?.id, screenViewer.target) { if (screenViewer.target == null) screenFullscreen = false }
-        var showThread by rememberSaveable { mutableStateOf(false) }
+        var showThread by rememberSaveable { mutableStateOf(start.showThread) }
         LaunchedEffect(state.selectedThreadId, draft) {
             if (state.selectedThreadId == null && draft == null) showThread = false
         }
@@ -156,13 +269,13 @@ fun TrefoilApp(
                 // other SSH prompts keep the screen and the pair dialog waits behind them (nothing is cancelled).
                 adding = false
                 if (sshConnecting && !submittedSsh && !state.busy && sshLogin == null && sshHostKey == null) { sshConnecting = false; submittedSsh = false; onCancelSsh() }
-                pairLink = pairLinkRequest; submittedPair = false; pairing = true; choosingEnvironment = true; showThread = false
+                pairLink = pairLinkRequest; submittedPair = false; pairing = true; navigate(ShellDestination.Machines); showThread = false
             }
         }
         LaunchedEffect(connectionAttempt) {
             if (connectionAttempt.phase == ConnectionPhase.Succeeded) {
-                if (connectionAttempt.kind == ConnectionKind.Ssh && submittedSsh) { sshConnecting = false; submittedSsh = false; choosingEnvironment = false }
-                if (connectionAttempt.kind == ConnectionKind.Pairing && submittedPair) { pairing = false; submittedPair = false; choosingEnvironment = false }
+                if (connectionAttempt.kind == ConnectionKind.Ssh && submittedSsh) { sshConnecting = false; submittedSsh = false; if (choosingEnvironment) navigate(ShellDestination.Threads) }
+                if (connectionAttempt.kind == ConnectionKind.Pairing && submittedPair) { pairing = false; submittedPair = false; if (choosingEnvironment) navigate(ShellDestination.Threads) }
             }
         }
         val cancelDraft: () -> Unit = { if (draft != null) onCancelDraft() }
@@ -186,22 +299,26 @@ fun TrefoilApp(
             state.selectedThreadId?.let { id -> state.localServers.servers.filter { it.threadId == id } }.orEmpty()
         }
         val shell = ShellActions(
-            onMachines = { choosingEnvironment = true; showThread = false },
+            onMachines = { navigate(ShellDestination.Machines); showThread = false },
             onConnectMachine = { adding = true },
-            onScreens = if (connected) ({ showScreens = true }) else null,
-            onDevServers = if (portsAvailable) ({ showPorts = true }) else null,
+            onScreens = if (connected) ({ navigate(ShellDestination.Screens) }) else null,
+            onDevServers = if (portsAvailable) ({ navigate(ShellDestination.Servers) }) else null,
             // Offline the screen shows cached limits; only a connection that can read usage fetches (the effect above covers a later connect).
-            onUsage = if (connected) ({ usageTab = 0; showUsage = true; if (state.canReadUsage) onOpenUsage() }) else null,
-            onDisconnect = if (connected) ({ onDisconnect(); choosingEnvironment = true; showThread = false }) else null,
+            onUsage = if (connected) ({ usageTab = 0; navigate(ShellDestination.Usage); if (state.canReadUsage) onOpenUsage() }) else null,
+            onDisconnect = if (connected) ({ onDisconnect(); navigate(ShellDestination.Machines); showThread = false }) else null,
             keepConnected = keepConnected,
             onKeepConnectedChange = onKeepConnectedChange,
+            onDockBrowserBesideThread = if (portsAvailable) dockBrowserBesideThread else null,
         )
         val needsYouThreads = remember(state.threads) { needsYouThreads(state.threads) }
         val needsYou = needsYouThreads.size
         // The conversation counts as open only while it is on screen; the list, machines, usage and screens hide it.
         var wideLayout by remember { mutableStateOf(false) }
+        // Set by the layout below: a tab mapped onto a destination, or a browser page, covers the conversation; a page docked in Preview does not.
+        var conversationCovered by remember { mutableStateOf<Boolean?>(null) }
         val openThreadId = state.selectedThreadId.takeIf {
-            draft == null && it != null && (wideLayout || showThread) && connected && !choosingEnvironment && !showUsage && !showScreens && !showPorts && portBrowser == null
+            draft == null && it != null && (wideLayout || showThread) && connected &&
+                !(conversationCovered ?: (destination != ShellDestination.Threads || portBrowser != null))
         }
         // Visit tracking follows what is on screen, not merely which thread is selected.
         LaunchedEffect(openThreadId != null) { onThreadShown(openThreadId != null) }
@@ -217,7 +334,7 @@ fun TrefoilApp(
             attentionMessage(step.announce)?.let { attention.trySend(it) }
         }
         val openAttention by rememberUpdatedState<(String?) -> Unit> { id ->
-            choosingEnvironment = false; showUsage = false; showScreens = false; showPorts = false; onClosePortBrowser()
+            navigate(ShellDestination.Threads); onClosePortBrowser()
             if (id != null && state.threads.any { it.id == id }) select(id) else { cancelDraft(); showThread = false }
         }
         val attentionRelevant by rememberUpdatedState<(AttentionMessage) -> Boolean> {
@@ -237,108 +354,317 @@ fun TrefoilApp(
                 }
             }
         }
+        // The dev-servers and screen-sessions surfaces exist once each: the destination or the side panel calls the same composition,
+        // so moving between them (dock, undock, rotate, fold) never rebuilds the browser's WebView or reconnects a screen stream.
+        // Beside the rail or in the docked panel these screens have no leave arrow: the rail, the panel's close button and the shell's Back leave them.
+        var besideChrome by remember { mutableStateOf(false) }
+        // "Dock beside thread" is offered where the panel docks, a conversation is open and the page is not in the panel already.
+        var canDockBrowser by remember { mutableStateOf(false) }
+        // Inside the docked panel these surfaces hand their one header action (Forward a port, Refresh) to the panel's tab bar.
+        val panelHost = remember { SidePanelHost() }
+        var inPanel by remember { mutableStateOf(false) }
+        val devServersSurface = rememberMovableSurface { m ->
+            DevServersPane(portsUi, portsActions, portBrowser, onClosePortBrowser, { portBrowser?.let { onOpenPortExternal(it.remotePort) } }, hosted = besideChrome, modifier = m,
+                browserActions = if (canDockBrowser) ({ TfIconButton(TfIcons.PanelRight, "Dock beside thread", dockBrowserBesideThread, tint = Tf.colors.text, iconSize = 22.dp) }) else null,
+                panel = if (inPanel) panelHost else null)
+        }
+        val screensSurface = rememberMovableSurface { m ->
+            ScreenSessionsScreen(state, screenViewer, screenFullscreen, { screenFullscreen = it }, onRefreshScreens, onOpenScreen,
+                { screenFullscreen = false; onCloseScreen() },
+                if (besideChrome) null else ({ if (sidePanelTabName != null) closePanel() else { screenFullscreen = false; navigate(ShellDestination.Threads); onCloseScreen() } }),
+                m, isAccessCurrent = isScreenAccessCurrent, panel = if (inPanel) panelHost else null)
+        }
+        val toggleFocus = remember { FocusRequester() }
+        val panelTabsFocus = remember { FocusRequester() }
+        // Opening the panel moves focus to its tab row, closing returns it to the header toggle (after the frame that composes it).
+        var focusRequest by remember { mutableStateOf<FocusRequester?>(null) }
+        LaunchedEffect(focusRequest) {
+            val target = focusRequest ?: return@LaunchedEffect
+            // The target may not be attached yet (or at all, like a toggle the header leaves out): keep the request for a few frames, never throw.
+            var attempts = 0
+            do {
+                withFrameNanos { }
+                val focused = runCatching { target.requestFocus() }.getOrDefault(false)
+            } while (!focused && ++attempts < 3)
+            focusRequest = null
+        }
         val c = Tf.colors
         // The host wraps the snackbar unscaled; its bounds count only while a message is current, so floating actions start back down as it fades.
         var snackbarHostBounds by remember { mutableStateOf<Rect?>(null) }
         val snackbarBounds = remember { derivedStateOf { snackbarHostBounds?.takeIf { snackbar.currentSnackbarData != null } } }
-        CompositionLocalProvider(LocalSnackbarBounds provides snackbarBounds) {
-        Scaffold(containerColor = c.bg, contentColor = c.text, contentWindowInsets = WindowInsets(0),
-            snackbarHost = { SnackbarHost(snackbar, Modifier.navigationBarsPadding().imePadding().onGloballyPositioned { snackbarHostBounds = it.boundsInRoot() }) }) { padding ->
-            BoxWithConstraints(Modifier.padding(padding).fillMaxSize().windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal))) {
-                val layout = shellLayout(maxWidth.value)
-                val twoPane = layout != ShellLayout.Phone
+        CompositionLocalProvider(LocalSnackbarBounds provides snackbarBounds, LocalShortcutRegistry provides shortcutHost.registry) {
+        // The snackbar host is drawn inside the window box below, last, so it can follow a hinge.
+        Scaffold(containerColor = c.bg, contentColor = c.text, contentWindowInsets = WindowInsets(0)) { padding ->
+            // The window decides how many panes exist; every screen sizes itself from the container it is given.
+            BoxWithConstraints(Modifier.padding(padding).fillMaxSize().onPreviewKeyEvent(shortcutHost::dispatch)
+                .onFocusChanged { rootHasFocus = it.hasFocus }.focusRequester(rootFocus).focusTarget()) {
+                // Without a machine there is no rail, so a split window's start region begins at the window edge (the hinge itself does not move).
+                // The target is attached once this subcomposition lays out; a field, Tab or a tap that took focus first keeps it.
+                LaunchedEffect(Unit) { withFrameNanos { }; if (!rootHasFocus) rootFocus.requestFocus() }
+                val policy = shellPolicy(WindowSpec(maxWidth.value, maxHeight.value, LocalFold.current)).let { if (!connected && it.splitFold != null) it.copy(rail = false) else it }
+                val twoPane = policy.twoPane
                 SideEffect { wideLayout = twoPane }
+                val listState = rememberShellListState(policy, environmentId, start.listCollapsed)
+                // Side panel tabs: Preview with dev servers, Screens with the rail's Screens entry (disabled with it), Agents with a roster.
+                val entries = navEntries(state, shell)
+                val panelTabs = sidePanelTabs(portsAvailable, entries.screens, roster != null)
+                val panelDisabled = if (entries.screensEnabled) emptySet() else setOf(SidePanelTab.Screens)
+                val panelTab = resolveSidePanelTab(savedPanelTab, panelTabs, panelDisabled)
+                // A saved tab that went away (roster gone, servers unsupported) is replaced by what is shown, so the toggle and Back agree with the screen.
+                LaunchedEffect(panelTab, savedPanelTab, connected) { if (connected && panelTab != savedPanelTab) sidePanelTabName = panelTab?.name }
+                val panelMode = effectiveSidePanelMode(policy)
+                val canDock = panelMode != SidePanelMode.FullScreen
+                val presentation = sidePanelPresentation(destination, panelTab, panelMode, screenFullscreen)
+                val hasConversation = draft != null || state.selectedThreadId != null
+                val docked = canDock && presentation.docked && hasConversation && connected
+                // Without a thread the detail is the empty state: no header, no toggle, so an open docked panel closes.
+                LaunchedEffect(presentation.docked && canDock && connected && !hasConversation) { if (presentation.docked && canDock && connected && !hasConversation) closePanel() }
+                @Suppress("NAME_SHADOWING") val destination = presentation.destination
+                @Suppress("NAME_SHADOWING") val showScreens = destination == ShellDestination.Screens
+                @Suppress("NAME_SHADOWING") val showPorts = destination == ShellDestination.Servers
+                // A docked panel hosts the browser itself (Preview); otherwise an open page takes the window as it does today.
+                val browserHosted = portBrowser != null && !docked
+                SideEffect { conversationCovered = destination != ShellDestination.Threads || browserHosted }
+                val panes = resolvePanes(policy, listState.startWidth.value, listState.collapsed, sidePanelOpen = docked)
+                val split = policy.splitFold != null
+                val nav = navChrome(policy.rail, twoPane, policy.compactHeight, connected)
+                val besideRail = nav == NavChrome.Rail
+                SideEffect { besideChrome = besideRail || docked; inPanel = docked; canDockBrowser = canDock && !docked && hasConversation && connected }
                 val machines = !connected || choosingEnvironment
-                BackHandler(showUsage) { showUsage = false }
-                BackHandler(!showUsage && !showScreens && !showPorts && portBrowser == null && ((choosingEnvironment && connected) || (showThread && !twoPane && !machines) || (backParent != null && !machines && (twoPane || showThread)))) {
-                    if (choosingEnvironment) choosingEnvironment = false
-                    else if (backParent != null) select(backParent.id)
-                    else { cancelDraft(); showThread = false }
-                }
-                val listWidth: Dp = if (layout == ShellLayout.Rail) 360.dp else (maxWidth * 0.5f).coerceIn(320.dp, 420.dp)
-                Row(Modifier.fillMaxSize()) {
-                    if (layout == ShellLayout.Rail && connected) {
-                        MachineRail(state, savedEnvironments, needsYou, { choosingEnvironment = false; showThread = false; onConnect(it) }, shell, probes = machineProbes)
+                val closePanelToToggle: () -> Unit = { closePanel(); focusRequest = toggleFocus }
+                val openPanelTab: (SidePanelTab) -> Unit = { openPanel(it); focusRequest = panelTabsFocus }
+                val back = shellBack(destination, connected, browserHosted, twoPane, showThread, backParent != null, panelDocked = docked, besideRail = besideRail)
+                BackHandler(back != null) {
+                    when (back) {
+                        ShellBack.ToThreads -> navigate(ShellDestination.Threads)
+                        ShellBack.ClosePanel -> closePanelToToggle()
+                        ShellBack.ToParent -> backParent?.let { select(it.id) }
+                        ShellBack.ToList -> { cancelDraft(); showThread = false }
+                        null -> Unit
                     }
-                    Box(Modifier.weight(1f).fillMaxHeight()) {
-                        when {
-                            showUsage -> key(usageOpenRequest?.first) {
-                                UsageScreen(state, usage, { showUsage = false }, onRefreshUsage, onUsageRange, onRetryUsage,
-                                    Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars), initialTab = usageTab)
-                            }
-                            machines -> Column(Modifier.fillMaxSize().statusBarsPadding()) {
-                                ConnectionBanner(state, onReconnect)
-                                MachinesScreen(state, savedEnvironments, { choosingEnvironment = false; onConnect(it) }, onForget, { pairing = true }, { sshConnecting = true },
-                                    { onDisconnect(); choosingEnvironment = true; showThread = false },
-                                    onBack = if (connected) ({ choosingEnvironment = false }) else null,
-                                    modifier = Modifier.weight(1f).windowInsetsPadding(BottomBarsAndIme), probes = machineProbes,
-                                    onAllowLocalHttp = { environment, allowed -> onAllowLocalNetworkHttp(environment.id, allowed) })
-                            }
-                            portBrowser != null -> Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Vertical))) {
-                                ConnectionBanner(state, onReconnect)
-                                TunnelBrowserScreen(portBrowser.url, portBrowser.title, onClosePortBrowser, { onOpenPortExternal(portBrowser.remotePort) }, Modifier.weight(1f))
-                            }
-                            showPorts && portsAvailable -> Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Vertical))) {
-                                ConnectionBanner(state, onReconnect)
-                                PortsScreen(portsUi, portsActions, Modifier.weight(1f))
-                            }
-                            showScreens -> Column(Modifier.fillMaxSize().then(if (screenFullscreen) Modifier else Modifier.windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Vertical)))) {
-                                if (!screenFullscreen) ConnectionBanner(state, onReconnect)
-                                ScreenSessionsScreen(state, screenViewer, screenFullscreen, { screenFullscreen = it }, onRefreshScreens, onOpenScreen,
-                                    { screenFullscreen = false; onCloseScreen() }, { screenFullscreen = false; showScreens = false; onCloseScreen() },
-                                    Modifier.weight(1f), isAccessCurrent = isScreenAccessCurrent)
-                            }
-                            else -> {
-                                val list: @Composable (Modifier) -> Unit = { modifier ->
-                                    Box(modifier.statusBarsPadding()) {
-                                        conversationState.SaveableStateProvider("thread-list:${state.environment?.id}") {
-                                            ThreadList(state, select, { creatingProject = null; creating = true }, onThreadAction,
-                                                selectedId = if (twoPane && draft == null) state.selectedThreadId else null,
-                                                shell = shell, railLayout = layout == ShellLayout.Rail,
-                                                isRefreshing = isRefreshing, onRefresh = onRefresh,
-                                                composerDrafts = composerDrafts, onOpenDraft = { creatingProject = it; creating = true }, onDiscardDraft = discardDraft,
-                                                banner = { ConnectionBanner(state, onReconnect) })
+                }
+                val navModel = ShellNavModel(state, savedEnvironments, machineProbes, shell, destination, browserHosted, needsYou,
+                    onThreads = { navigate(ShellDestination.Threads); onClosePortBrowser() },
+                    onNewThread = { creatingProject = null; creating = true },
+                    onShortcuts = { shortcutsOpen = true },
+                    onSelectMachine = { navigate(ShellDestination.Threads); showThread = false; onConnect(it) })
+                val listHidden = twoPane && panes.list == 0f
+                // "Show thread list": a list the panel replaced comes back by closing the panel; a collapsed one by expanding it.
+                val showList: () -> Unit = {
+                    if (docked && (panelMode == SidePanelMode.ReplacesList || !listState.collapsed)) closePanelToToggle() else listState.collapsed = false
+                }
+                // Compact height with the keyboard open: the pane holding focus takes the full width, only while the keyboard is up.
+                var paneFocus by remember { mutableStateOf(PaneFocus.None) }
+                val density = LocalDensity.current
+                val imeDp = LocalImeHeightOverride.current ?: (WindowInsets.ime.getBottom(density) / density.density)
+                val transient = transientList(twoPane, split, policy.compactHeight, imeDp > 0f, maxHeight.value - imeDp, paneFocus,
+                    panelReplacesList = docked && panelMode == SidePanelMode.ReplacesList)
+                // Header budget (spec 3.2): which chips stay beside the title, from the conversation pane's own width.
+                val threadPorts = remember(threadServers) { chipPorts(threadServers) }
+                val dockable = canDock && panelTabs.isNotEmpty()
+                val budget = headerBudget(maxWidth.value, panes.conversation, density.fontScale, pill != null, portsAvailable && threadPorts.isNotEmpty(), dockable, panelOpen = docked)
+                val openAgents: () -> Unit = if (canDock) ({ openPanelTab(SidePanelTab.Agents) }) else ({ showAgents = true })
+                val openServers: () -> Unit = if (canDock) ({ openPanelTab(SidePanelTab.Preview) }) else ({ navigate(ShellDestination.Servers) })
+                val toggleOpen: () -> Unit = { if (docked) closePanelToToggle() else sidePanelOpenTarget(SidePanelTab.entries.firstOrNull { it.name == lastPanelTabName }, panelTabs, panelDisabled)?.let(openPanelTab) }
+                val trackFocus: (PaneFocus) -> Modifier = { pane ->
+                    Modifier.onFocusChanged { if (it.hasFocus) paneFocus = pane else if (paneFocus == pane) paneFocus = PaneFocus.None }
+                }
+                val detailTitle = if (draft != null) "New thread" else selectedThread?.title
+                // Destinations that are not the thread list and conversation; the full-window screen viewer stays full-window even beside a hinge.
+                val secondaryHosted = showUsage || machines || browserHosted || (showPorts && portsAvailable) || showScreens
+                val fullscreenViewer = showScreens && screenFullscreen && !showUsage && !machines && !browserHosted && !(showPorts && portsAvailable)
+                // Keyboard shortcuts (ui/shell/Shortcuts.kt): each calls the function its button calls, under the button's enabled rule; a shortcut whose
+                // target is absent or disabled has no binding and does nothing. Allow and Deny of an approval are deliberately not reachable from here.
+                val live = state.connection == ConnectionStatus.Connected
+                // The threads are on screen in every layout of this destination: both panes, the conversation alone, or a narrow window's list alone.
+                val threadsVisible = destination == ShellDestination.Threads && !secondaryHosted && draft == null && live
+                val conversationActions = selectedThreadActionsVisible(twoPane, showThread, draft, state.selectedThreadId) && !secondaryHosted
+                val railOrDrawer = nav == NavChrome.Rail || nav == NavChrome.Drawer
+                val showThreadList: Boolean = twoPane && !secondaryHosted && (listHidden || (nav != NavChrome.Header && policy.listCollapsible))
+                val stepThread: (Int) -> Boolean = { step ->
+                    val target = if (threadsVisible) adjacentThreadId(listedThreadIds(state.threads), state.selectedThreadId, step) else null
+                    if (target != null && target != state.selectedThreadId) { select(target); true } else false
+                }
+                SideEffect {
+                    val bindings = mutableMapOf<ShortcutId, () -> Boolean>()
+                    bindings[ShortcutId.ShowShortcuts] = { shortcutsOpen = true; true }
+                    // Escape is system Back: the same dispatcher, so the same stack. With nothing enabled the activity would finish, so Escape stays unhandled.
+                    bindings[ShortcutId.Dismiss] = { backDispatcher?.takeIf { it.hasEnabledCallbacks() }?.let { it.onBackPressed(); true } ?: false }
+                    if (navModel.entries.newThreadEnabled) bindings[ShortcutId.NewThread] = { creatingProject = null; creating = true; true }
+                    bindings[ShortcutId.NextThread] = { stepThread(1) }
+                    bindings[ShortcutId.PreviousThread] = { stepThread(-1) }
+                    if (live) bindings[ShortcutId.NextNeedsYou] = {
+                        nextNeedsYouId(needsYouThreads.map { it.id }, openThreadId)?.let { openAttention(it); true } ?: false
+                    }
+                    if (railOrDrawer) {
+                        bindings[ShortcutId.GoThreads] = { navModel.onThreads(); true }
+                        if (entries.screens && entries.screensEnabled) shell.onScreens?.let { go -> bindings[ShortcutId.GoScreens] = { go(); true } }
+                        if (entries.servers && entries.serversEnabled) shell.onDevServers?.let { go -> bindings[ShortcutId.GoServers] = { go(); true } }
+                        if (entries.usage) shell.onUsage?.let { go -> bindings[ShortcutId.GoUsage] = { go(); true } }
+                    }
+                    if (showThreadList) bindings[ShortcutId.ToggleThreadList] = { if (listHidden) showList() else listState.collapsed = true; true }
+                    if (budget.toggle && hasConversation && live && conversationActions) bindings[ShortcutId.ToggleSidePanel] = { toggleOpen(); true }
+                    if (roster != null && live && conversationActions) bindings[ShortcutId.OpenAgents] = { openAgents(); true }
+                    // Refresh follows the screen in front and the same enabled rule as its refresh button.
+                    when {
+                        machines || browserHosted || (showPorts && portsAvailable) -> Unit
+                        showUsage -> if (usageOfflineNotice(state.connection, state.canReadUsage) == null) bindings[ShortcutId.Refresh] = { onRefreshUsage(); true }
+                        showScreens -> if (!screenFullscreen && live && (state.canRead || state.canWrite) && !state.screens.loading) bindings[ShortcutId.Refresh] = { onRefreshScreens(); true }
+                        live && !isRefreshing && (twoPane || !showThread) -> bindings[ShortcutId.Refresh] = { onRefresh(); true }
+                    }
+                    shortcutHost.bindings = bindings
+                    shortcutHost.visible = { id -> registeredShortcutVisible(id, listHidden, transient) }
+                    shortcutHost.modalOpen = {
+                        creating || adding || sshConnecting || sshLogin != null || sshHostKey != null || pairing || shortcutsOpen || showAgents ||
+                            (presentation.agentsSheet && roster != null) || !drawerState.isClosed
+                    }
+                }
+                val listChrome = if (nav == NavChrome.Header) ThreadListChrome() else ThreadListChrome(
+                    onCollapse = if (policy.listCollapsible) ({ listState.collapsed = true }) else null,
+                    onOpenNavigation = if (nav == NavChrome.Drawer) ({ uiScope.launch { drawerState.open() } }) else null,
+                    railPresent = policy.rail)
+                // A pick from the list beside another destination goes to Threads with that thread, as the rail's Threads entry does.
+                val listSelect: (String) -> Unit = if (secondaryHosted) ({ id -> navigate(ShellDestination.Threads); onClosePortBrowser(); select(id) }) else select
+                val list: @Composable (Modifier) -> Unit = { modifier ->
+                    Box(modifier.statusBarsPadding().then(if (twoPane) Modifier.paneGroup("Thread list", PaneOrder.List).then(trackFocus(PaneFocus.List)) else Modifier)) {
+                        conversationState.SaveableStateProvider("thread-list:${state.environment?.id}") {
+                            ThreadList(state, listSelect, { creatingProject = null; creating = true }, onThreadAction,
+                                selectedId = if (twoPane && draft == null) state.selectedThreadId else null,
+                                shell = shell,
+                                isRefreshing = isRefreshing, onRefresh = onRefresh,
+                                composerDrafts = composerDrafts, onOpenDraft = { creatingProject = it; creating = true }, onDiscardDraft = discardDraft,
+                                // Two panes show one banner above both panes (ShellPanes); the phone keeps it in the list.
+                                banner = { if (!twoPane) ConnectionBanner(state, onReconnect) }, chrome = listChrome)
+                        }
+                    }
+                }
+                val detail: @Composable (Modifier) -> Unit = { modifier ->
+                    Column(modifier.statusBarsPadding().windowInsetsPadding(BottomBarsAndIme)
+                        .then(if (twoPane) Modifier.paneGroup(detailPaneTitle(destination, detailTitle), PaneOrder.Detail).then(trackFocus(PaneFocus.Conversation)) else Modifier)) {
+                        if (!twoPane || split) ConnectionBanner(state, onReconnect)
+                        Box(Modifier.weight(1f)) {
+                            conversationState.SaveableStateProvider("${state.environment?.id}:${if (draft != null) draftComposerKey(draft) else state.selectedThreadId}") {
+                                if (twoPane && draft == null && state.selectedThreadId == null) EmptyDetail(
+                                    needsYou = if (state.connection == ConnectionStatus.Connected) needsYouThreads else emptyList(),
+                                    newThreadEnabled = navModel.entries.newThreadEnabled, onOpenThread = select, onNewThread = { creatingProject = null; creating = true },
+                                    leading = if (listHidden) ({ ShowThreadListButton(otherNeedsYou, showList) }) else null,
+                                ) else Conversation(state, onSend, onStop, onRespond, submitMessage = onSubmitMessage, sendOutcomes = sendOutcomes, sendsInFlight = sendsInFlight, onConsumeSendOutcome = onConsumeSendOutcome, stopPendingKeys = stopPendingKeys, queueOperationKeys = queueOperationKeys, onCancelQueued = onCancelQueued, onSteerQueued = onSteerQueued, onResumeQueue = onResumeQueue, onLoadActivity = onLoadActivity, composerDrafts = composerDrafts, fileDownloadUi = fileDownloadUi,
+                                    draft = draft, onSetRuntimeMode = onSetRuntimeMode, onSetModel = onSetModel, onSetModelOption = onSetModelOption, onSetModelFavorite = onSetModelFavorite, sendFailed = sendFailed,
+                                    onBack = if (backParent != null) ({ select(backParent.id) }) else if (twoPane) null else ({ cancelDraft(); showThread = false }),
+                                    onOpenParent = parentThread?.let { p -> { select(p.id) } },
+                                    onOpenAgents = if (roster != null) openAgents else null,
+                                    onOpenThread = openAgent,
+                                    otherNeedsYou = otherNeedsYou,
+                                    subtitle = selectedThread?.takeIf { draft == null && it.relationshipToParent == "subagent" }?.let { t -> parentThread?.let { "Subagent of ${it.title}" } ?: "Subagent" },
+                                    actions = {
+                                        if (selectedThreadActionsVisible(twoPane, showThread, draft, state.selectedThreadId)) {
+                                            if (pill != null && budget.agentsChip) AgentsChip(pill, openAgents)
+                                            if (portsAvailable && budget.serversChip) ThreadPortsChip(threadServers, onClick = openServers)
+                                            if (budget.toggle) SidePanelToggle(docked, toggleOpen, toggleFocus)
+                                            // Chips that do not fit lead the thread menu and do exactly what the chip would do.
+                                            val demoted: (@Composable ColumnScope.(() -> Unit) -> Unit)? = if (!budget.menuAgents && !budget.menuServers) null else ({ close ->
+                                                if (budget.menuAgents && pill != null) DropdownMenuItem(text = { Text("Agents (${pill.label})") },
+                                                    leadingIcon = { Icon(TfIcons.Agents, null, Modifier.size(18.dp)) }, onClick = { close(); openAgents() })
+                                                if (budget.menuServers) DropdownMenuItem(text = { Text(serversMenuLabel(threadPorts)) },
+                                                    leadingIcon = { Icon(TfIcons.Globe, null, Modifier.size(18.dp)) }, onClick = { close(); openServers() })
+                                            })
+                                            state.threads.firstOrNull { it.id == state.selectedThreadId }?.let { ThreadActionsMenu(state, it, leadingItems = demoted,
+                                                onOpenAgents = if (roster != null && !budget.menuAgents) openAgents else null, onAction = { target, operation, value ->
+                                                onThreadAction(target, operation, value)
+                                                if (settleLeavesConversation(operation, twoPane)) showThread = false
+                                            }) }
                                         }
-                                    }
-                                }
-                                val detail: @Composable (Modifier) -> Unit = { modifier ->
-                                    Column(modifier.statusBarsPadding().windowInsetsPadding(BottomBarsAndIme)) {
-                                        if (!twoPane) ConnectionBanner(state, onReconnect)
-                                        Box(Modifier.weight(1f)) {
-                                            conversationState.SaveableStateProvider("${state.environment?.id}:${if (draft != null) draftComposerKey(draft) else state.selectedThreadId}") {
-                                                Conversation(state, onSend, onStop, onRespond, submitMessage = onSubmitMessage, sendOutcomes = sendOutcomes, sendsInFlight = sendsInFlight, onConsumeSendOutcome = onConsumeSendOutcome, stopPendingKeys = stopPendingKeys, queueOperationKeys = queueOperationKeys, onCancelQueued = onCancelQueued, onSteerQueued = onSteerQueued, onResumeQueue = onResumeQueue, onLoadActivity = onLoadActivity, composerDrafts = composerDrafts, fileDownloadUi = fileDownloadUi,
-                                                    draft = draft, onSetRuntimeMode = onSetRuntimeMode, onSetModel = onSetModel, onSetModelOption = onSetModelOption, onSetModelFavorite = onSetModelFavorite, sendFailed = sendFailed,
-                                                    onBack = if (backParent != null) ({ select(backParent.id) }) else if (twoPane) null else ({ cancelDraft(); showThread = false }),
-                                                    onOpenParent = parentThread?.let { p -> { select(p.id) } },
-                                                    onOpenAgents = if (roster != null) ({ showAgents = true }) else null,
-                                                    onOpenThread = openAgent,
-                                                    otherNeedsYou = otherNeedsYou,
-                                                    subtitle = selectedThread?.takeIf { draft == null && it.relationshipToParent == "subagent" }?.let { t -> parentThread?.let { "Subagent of ${it.title}" } ?: "Subagent" },
-                                                    actions = {
-                                                        if (selectedThreadActionsVisible(twoPane, showThread, draft, state.selectedThreadId)) {
-                                                            if (pill != null) AgentsChip(pill) { showAgents = true }
-                                                            if (portsAvailable) ThreadPortsChip(threadServers, onClick = { showPorts = true })
-                                                            state.threads.firstOrNull { it.id == state.selectedThreadId }?.let { ThreadActionsMenu(state, it, onOpenAgents = if (roster != null) ({ showAgents = true }) else null, onAction = { target, operation, value ->
-                                                                onThreadAction(target, operation, value)
-                                                                if (settleLeavesConversation(operation, twoPane)) showThread = false
-                                                            }) }
-                                                        }
-                                                    },
-                                                    seedPrompt = seedPrompt.takeIf { draft != null }, onSeedConsumed = { seedPrompt = null })
-                                            }
-                                        }
-                                    }
-                                }
-                                if (twoPane) Row(Modifier.fillMaxSize()) {
-                                    list(Modifier.width(listWidth).fillMaxHeight())
-                                    VerticalDivider(color = c.line)
-                                    detail(Modifier.weight(1f).fillMaxHeight())
-                                } else if (showThread && (state.selectedThreadId != null || draft != null)) detail(Modifier.fillMaxSize())
-                                else list(Modifier.fillMaxSize())
+                                    },
+                                    seedPrompt = seedPrompt.takeIf { draft != null }, onSeedConsumed = { seedPrompt = null },
+                                    // A collapsed list: "Show thread list" first, then the parent arrow of a subagent child.
+                                    navigationIcon = if (listHidden) ({ Row(verticalAlignment = Alignment.CenterVertically) {
+                                        ShowThreadListButton(otherNeedsYou, showList)
+                                        if (backParent != null) ParentBackButton(otherNeedsYou) { select(backParent.id) }
+                                    } }) else null)
                             }
                         }
                     }
                 }
+                // Every destination but the thread list and the conversation; each fills the modifier it is given.
+                val secondary: @Composable (Modifier) -> Unit = { m ->
+                    when {
+                        showUsage -> key(usageOpenRequest?.first) {
+                            UsageScreen(state, usage, if (besideRail) null else ({ navigate(ShellDestination.Threads) }), onRefreshUsage, onUsageRange, onRetryUsage,
+                                m.windowInsetsPadding(WindowInsets.systemBars), initialTab = usageTab)
+                        }
+                        machines -> Column(m.statusBarsPadding()) {
+                            ConnectionBanner(state, onReconnect)
+                            MachinesScreen(state, savedEnvironments, { navigate(ShellDestination.Threads); onConnect(it) }, onForget, { pairing = true }, { sshConnecting = true },
+                                { onDisconnect(); navigate(ShellDestination.Machines); showThread = false },
+                                onBack = if (connected && !besideRail) ({ navigate(ShellDestination.Threads) }) else null,
+                                modifier = Modifier.weight(1f).windowInsetsPadding(BottomBarsAndIme), probes = machineProbes,
+                                onAllowLocalHttp = { environment, allowed -> onAllowLocalNetworkHttp(environment.id, allowed) }, onOpenUsage = shell.onUsage)
+                        }
+                        // The browser page, or the server list: one surface shared with the side panel's Preview tab.
+                        browserHosted || (showPorts && portsAvailable) -> Column(m.windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Vertical))) {
+                            ConnectionBanner(state, onReconnect)
+                            devServersSurface(Modifier.weight(1f))
+                        }
+                        showScreens -> Column(m.then(if (screenFullscreen) Modifier else Modifier.windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Vertical)))) {
+                            if (!screenFullscreen) ConnectionBanner(state, onReconnect)
+                            screensSurface(Modifier.weight(1f))
+                        }
+                        else -> Unit
+                    }
+                }
+                // A destination beside the rail is the detail pane of the TalkBack order, named after the destination.
+                val secondaryModifier = Modifier.fillMaxSize().then(if (twoPane) Modifier.paneGroup(detailPaneTitle(destination, null), PaneOrder.Detail) else Modifier)
+                val content: @Composable (Modifier) -> Unit = { modifier -> Box(modifier) { shellContentState.SaveableStateProvider("shell-content") {
+                    when {
+                        // A separating hinge splits every destination: Threads' start region on the left (a brand panel without a machine), the destination on the right.
+                        secondaryHosted && split && !fullscreenViewer -> ShellPanes(policy, panes, listState, banner = {},
+                            list = { if (connected) list(Modifier.fillMaxSize()) else BrandPanel(Modifier.fillMaxSize()) }, detail = { secondary(secondaryModifier) })
+                        secondaryHosted -> secondary(secondaryModifier)
+                        twoPane -> ShellPanes(policy, panes, listState, banner = { ConnectionBanner(state, onReconnect) },
+                            list = { list(Modifier.fillMaxSize()) }, detail = { detail(Modifier.fillMaxSize()) }, transient = transient,
+                            sidePanel = if (docked && panelTab != null) ({
+                                SidePanel(panelTabs, panelTab, panelDisabled, openPanelTab, closePanelToToggle, panelTabsFocus,
+                                    Modifier.statusBarsPadding().windowInsetsPadding(BottomBarsAndIme), action = panelHost.action) { tab ->
+                                    when (tab) {
+                                        SidePanelTab.Preview -> devServersSurface(Modifier.fillMaxSize())
+                                        SidePanelTab.Screens -> screensSurface(Modifier.fillMaxSize())
+                                        // Opening a child keeps the roster beside it; the tab follows the new thread's roster.
+                                        SidePanelTab.Agents -> roster?.let { SidePanelAgents(it, state.providers, state.models, steadyWrite, select, onStopSubagent, Modifier.fillMaxSize()) }
+                                    }
+                                }
+                            }) else null)
+                        showThread && (state.selectedThreadId != null || draft != null) -> detail(Modifier.fillMaxSize())
+                        else -> list(Modifier.fillMaxSize())
+                    }
+                } } }
+                CompositionLocalProvider(LocalCompactHeight provides policy.compactHeight) {
+                    when (nav) {
+                        // The rail takes the start, top and bottom insets; content beside it must not apply the start side again.
+                        NavChrome.Rail -> Row(Modifier.fillMaxSize()) {
+                            ShellNavigationRail(navModel)
+                            content(Modifier.weight(1f).fillMaxHeight().consumeWindowInsets(PaddingValues(start = panes.rail.dp))
+                                .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.End)))
+                        }
+                        NavChrome.Drawer -> ModalNavigationDrawer(drawerContent = { ShellDrawerSheet(navModel, drawerState) { uiScope.launch { drawerState.close() } } },
+                            drawerState = drawerState, scrimColor = c.scrim) {
+                            // A split window keeps the hinge at its window position: no start inset may shift the panes.
+                            content(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.displayCutout.only(if (split) WindowInsetsSides.End else WindowInsetsSides.Horizontal)))
+                        }
+                        NavChrome.Header -> content(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.displayCutout.only(if (split) WindowInsetsSides.End else WindowInsetsSides.Horizontal)))
+                    }
+                }
+                // Beside a hinge the snackbar belongs to the region of the destination, not to the window centre.
+                val snackbarRegion = when {
+                    !split -> PaddingValues()
+                    panes.hingeAt == HingeAt.BeforeSidePanel -> PaddingValues(start = panes.rail.dp, end = (panes.hinge + panes.sidePanel).dp)
+                    else -> PaddingValues(start = (panes.rail + panes.list + panes.hinge).dp)
+                }
+                Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(snackbarRegion), contentAlignment = Alignment.BottomCenter) {
+                    SnackbarHost(snackbar, Modifier.navigationBarsPadding().imePadding().onGloballyPositioned { snackbarHostBounds = it.boundsInRoot() })
+                }
+                // The agents sheet: opened from the header where no panel can dock, or an Agents tab shown in a window too narrow to dock it.
+                if ((showAgents || presentation.agentsSheet) && roster != null) ThreadAgentsSheet(roster, state.providers, state.models, steadyWrite,
+                    { showAgents = false; if (presentation.agentsSheet) closePanel() }, { id -> showAgents = false; if (presentation.agentsSheet) closePanel(); select(id) }, onStopSubagent)
             }
         }
         }
@@ -351,7 +677,7 @@ fun TrefoilApp(
         if (sshConnecting || sshLogin != null) key(sshLogin?.savedEnvironmentId) {
             SshConnectionDialog(state.busy, sshLogin, { sshConnecting = false; submittedSsh = false; onCancelSsh() }, onSshKeyPickerActive, connectionAttempt.takeIf { it.kind == ConnectionKind.Ssh } ?: ConnectionAttempt()) {
                 submittedSsh = true
-                choosingEnvironment = false
+                if (choosingEnvironment) navigate(ShellDestination.Threads)
                 showThread = false
                 onSshConnect(it)
             }
@@ -360,7 +686,7 @@ fun TrefoilApp(
         if (pairing && !sshConnecting && sshLogin == null && sshHostKey == null) key(pairLink?.first) {
             PairDialog(state.busy, { pairing = false; submittedPair = false; onCancelSsh() }, connectionAttempt.takeIf { it.kind == ConnectionKind.Pairing } ?: ConnectionAttempt(), pairLink?.second.orEmpty()) { url, name, insecure -> submittedPair = true; onPair(url, name, insecure) }
         }
-        if (showAgents && roster != null) ThreadAgentsSheet(roster, state.providers, state.models, steadyWrite, { showAgents = false }, openAgent, onStopSubagent)
+        if (shortcutsOpen) KeyboardShortcutsDialog { shortcutsOpen = false }
         if (creating) NewThreadSheet(state, { creating = false }, { newDraft, prompt ->
             seedPrompt = prompt.trim().takeIf { it.isNotEmpty() }
             onStartDraft(newDraft); creating = false; showThread = true
@@ -373,7 +699,7 @@ fun TrefoilApp(
 internal fun AgentsChip(pill: SubagentPill, onClick: () -> Unit) {
     val c = Tf.colors
     Surface(onClick = onClick, shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp), color = c.s2, contentColor = c.text,
-        modifier = Modifier.padding(end = 2.dp).semantics { contentDescription = pill.accessibilityLabel; role = Role.Button }) {
+        modifier = Modifier.padding(end = 2.dp).focusRing(androidx.compose.foundation.shape.RoundedCornerShape(16.dp)).handPointer().semantics { contentDescription = pill.accessibilityLabel; role = Role.Button }) {
         Row(Modifier.height(32.dp).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Icon(TfIcons.Agents, null, Modifier.size(16.dp))
             Text(pill.label, style = TrefoilType.meta.copy(color = c.text), maxLines = 1)

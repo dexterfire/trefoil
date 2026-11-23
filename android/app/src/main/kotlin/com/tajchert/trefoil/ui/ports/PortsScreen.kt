@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
@@ -17,6 +18,10 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -44,6 +49,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -57,39 +64,79 @@ import com.tajchert.trefoil.ui.SectionLabel
 import com.tajchert.trefoil.ui.Tf
 import com.tajchert.trefoil.ui.TfIcons
 import com.tajchert.trefoil.ui.TrefoilType
+import com.tajchert.trefoil.ui.adaptive.AdaptiveSpec
+import com.tajchert.trefoil.ui.adaptive.LocalCompactHeight
+import com.tajchert.trefoil.ui.adaptive.TfIconButton
 
 /**
  * Full-pane list of the dev servers T3 found on the connected machine, with forward state and the Open,
- * Open in browser and Stop forward actions. Stateless apart from the manual-port dialog.
+ * Open in browser and Stop forward actions. Stateless apart from the manual-port dialog. [hosted] drops the back arrow and
+ * leaves Back to the host (a navigation rail or a side panel is beside it).
  */
 @Composable
-fun PortsScreen(state: PortsUiState, actions: PortsActions, modifier: Modifier = Modifier) {
-    val c = Tf.colors
+fun PortsScreen(state: PortsUiState, actions: PortsActions, modifier: Modifier = Modifier, hosted: Boolean = false) {
     var manualDialog by rememberSaveable { mutableStateOf(false) }
-    BackHandler(onBack = actions.onBack)
-    Column(modifier.fillMaxSize().background(c.bg)) {
-        Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(start = 4.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = actions.onBack) { Icon(TfIcons.Back, stringResource(R.string.ports_back), Modifier.size(22.dp), tint = c.text) }
-            Column(Modifier.weight(1f).padding(start = 4.dp)) {
-                Text(stringResource(R.string.ports_title), style = TrefoilType.rowTitle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(
-                    stringResource(if (state.live || !state.supported) R.string.ports_subtitle_live else R.string.ports_subtitle_scanning),
-                    style = TrefoilType.meta, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                )
-            }
-            if (state.supported) IconButton(onClick = { manualDialog = true }, enabled = state.canForward) {
-                Icon(TfIcons.Plus, stringResource(R.string.ports_forward_port_action), Modifier.size(22.dp), tint = if (state.canForward) c.text else c.muted)
-            }
-        }
-        HorizontalDivider(color = c.line)
-        state.stoppedNotice?.let { message -> StoppedNotice(message, actions.onDismissStoppedNotice) }
-        Box(Modifier.weight(1f).fillMaxWidth()) { PortsBody(state, actions) { manualDialog = true } }
-    }
+    PortsList(state, actions, modifier, hosted = hosted, onManual = { manualDialog = true })
     if (manualDialog) ForwardPortDialog(onDismiss = { manualDialog = false }, onConfirm = { port -> manualDialog = false; actions.onForwardManual(port) })
 }
 
+/** Cards per row for a list [widthDp] wide: one below 600dp (today's column), two from 600 to 839, then as many 280dp columns as fit. */
+internal fun portGridColumns(widthDp: Float): Int = when {
+    widthDp < AdaptiveSpec.MediumMinWidth -> 1
+    widthDp < AdaptiveSpec.ExpandedMinWidth -> 2
+    else -> ((widthDp - 2 * GRID_PADDING_DP + GRID_GAP_DP) / (GRID_MIN_COLUMN_DP + GRID_GAP_DP)).toInt().coerceAtLeast(2)
+}
+
+private const val GRID_PADDING_DP = 14f
+private const val GRID_GAP_DP = 10f
+private const val GRID_MIN_COLUMN_DP = 280f
+
+/**
+ * The list with its header. [selectedPort] marks the row whose forward is open in the detail pane (null: nothing is selectable).
+ * [showTitle] false leaves only the status line, for a host that already names the pane. [embedded] drops the header row and its
+ * divider altogether (the docked side panel's tab bar replaces them). The manual-port dialog belongs to the caller.
+ * [takesBack] false while a page is open beside the list: Back belongs to the page first (history, then close), whichever of the two
+ * was composed last.
+ */
 @Composable
-private fun PortsBody(state: PortsUiState, actions: PortsActions, onManual: () -> Unit) {
+internal fun PortsList(
+    state: PortsUiState, actions: PortsActions, modifier: Modifier = Modifier, hosted: Boolean = false, showTitle: Boolean = true,
+    selectedPort: Int? = null, takesBack: Boolean = true, embedded: Boolean = false, onManual: () -> Unit,
+) {
+    val c = Tf.colors
+    val compactHeight = LocalCompactHeight.current
+    BackHandler(enabled = !hosted && takesBack, onBack = actions.onBack)
+    Column(modifier.fillMaxSize().background(c.bg)) {
+        // [embedded]: the docked side panel's tab bar already names the list and carries the forward action, so no header row.
+        if (!embedded) Row(
+            Modifier.fillMaxWidth().heightIn(min = if (compactHeight) 48.dp else 64.dp).padding(start = if (hosted) 12.dp else 4.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (!hosted) TfIconButton(TfIcons.Back, stringResource(R.string.ports_back), actions.onBack, iconSize = 22.dp, tint = c.text)
+            val subtitle = stringResource(if (state.live || !state.supported) R.string.ports_subtitle_live else R.string.ports_subtitle_scanning)
+            if (showTitle) Column(Modifier.weight(1f).padding(start = 4.dp)) {
+                Text(stringResource(R.string.ports_title), style = TrefoilType.rowTitle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(subtitle, style = TrefoilType.meta, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            } else Text(subtitle, Modifier.weight(1f).padding(start = 4.dp), style = TrefoilType.meta, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (state.supported) TfIconButton(TfIcons.Plus, stringResource(R.string.ports_forward_port_action), onManual, enabled = state.canForward, iconSize = 22.dp, tint = if (state.canForward) c.text else c.muted)
+        }
+        if (!embedded) HorizontalDivider(color = c.line)
+        state.stoppedNotice?.let { message -> StoppedNotice(message, actions.onDismissStoppedNotice) }
+        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) { PortsBody(state, actions, selectedPort, portGridColumns(maxWidth.value), onManual) }
+    }
+}
+
+/** One thing in the list, so the single column and the grid draw the same content. */
+private sealed interface Entry {
+    val key: String
+    data class Notice(@StringRes val message: Int, override val key: String) : Entry
+    data class Section(@StringRes val label: Int, val topPadding: Int, override val key: String) : Entry
+    data class Card(val row: PortRow) : Entry { override val key get() = "port:${row.port}" }
+    data object Manual : Entry { override val key get() = "manual" }
+}
+
+@Composable
+private fun PortsBody(state: PortsUiState, actions: PortsActions, selectedPort: Int?, columns: Int, onManual: () -> Unit) {
     val rows = portRows(state)
     when {
         !state.supported -> PortsEmptyState(TfIcons.Alert, R.string.ports_unsupported_title, R.string.ports_unsupported_body)
@@ -103,24 +150,42 @@ private fun PortsBody(state: PortsUiState, actions: PortsActions, onManual: () -
         else -> {
             val mine = rows.filter { it.inSelectedThread }
             val others = rows.filterNot { it.inSelectedThread }
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (state.tunnelsDisabled) item(key = "notice:disabled") { Notice(R.string.ports_disabled_body) }
-                else if (!state.canWrite) item(key = "notice:read-only") { Notice(R.string.ports_read_only) }
+            val entries = buildList {
+                if (state.tunnelsDisabled) add(Entry.Notice(R.string.ports_disabled_body, "notice:disabled"))
+                else if (!state.canWrite) add(Entry.Notice(R.string.ports_read_only, "notice:read-only"))
                 if (mine.isNotEmpty()) {
-                    item(key = "section:thread") { SectionLabel(stringResource(R.string.ports_section_this_thread), Modifier.padding(start = 4.dp, top = 4.dp)) }
-                    items(mine, key = { "port:${it.port}" }) { PortRowCard(it, state, actions) }
+                    add(Entry.Section(R.string.ports_section_this_thread, 4, "section:thread"))
+                    mine.forEach { add(Entry.Card(it)) }
                 }
                 if (others.isNotEmpty()) {
-                    if (mine.isNotEmpty()) item(key = "section:other") { SectionLabel(stringResource(R.string.ports_section_other), Modifier.padding(start = 4.dp, top = 12.dp)) }
-                    items(others, key = { "port:${it.port}" }) { PortRowCard(it, state, actions) }
+                    if (mine.isNotEmpty()) add(Entry.Section(R.string.ports_section_other, 12, "section:other"))
+                    others.forEach { add(Entry.Card(it)) }
                 }
-                if (state.canForward) item(key = "manual") {
-                    OutlinedButton(onClick = onManual, Modifier.fillMaxWidth().padding(top = 6.dp)) {
-                        Icon(TfIcons.Plus, null, Modifier.size(16.dp))
-                        Text(stringResource(R.string.ports_forward_port_action), Modifier.padding(start = 8.dp))
-                    }
+                if (state.canForward) add(Entry.Manual)
+            }
+            if (columns <= 1) LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(entries, key = { it.key }) { EntryContent(it, state, actions, selectedPort, fillWidth = true, onManual) }
+            } else LazyVerticalGrid(
+                GridCells.Fixed(columns), Modifier.fillMaxSize(), contentPadding = PaddingValues(GRID_PADDING_DP.dp),
+                horizontalArrangement = Arrangement.spacedBy(GRID_GAP_DP.dp), verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                items(entries, key = { it.key }, span = { if (it is Entry.Card) GridItemSpan(1) else GridItemSpan(maxLineSpan) }) {
+                    EntryContent(it, state, actions, selectedPort, fillWidth = false, onManual)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun EntryContent(entry: Entry, state: PortsUiState, actions: PortsActions, selectedPort: Int?, fillWidth: Boolean, onManual: () -> Unit) {
+    when (entry) {
+        is Entry.Notice -> Notice(entry.message)
+        is Entry.Section -> SectionLabel(stringResource(entry.label), Modifier.padding(start = 4.dp, top = entry.topPadding.dp))
+        is Entry.Card -> PortRowCard(entry.row, state, actions, selectedPort)
+        Entry.Manual -> OutlinedButton(onClick = onManual, if (fillWidth) Modifier.fillMaxWidth().padding(top = 6.dp) else Modifier.padding(top = 6.dp)) {
+            Icon(TfIcons.Plus, null, Modifier.size(16.dp))
+            Text(stringResource(R.string.ports_forward_port_action), Modifier.padding(start = 8.dp))
         }
     }
 }
@@ -149,7 +214,7 @@ private fun StoppedNotice(message: String, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun PortsEmptyState(
+internal fun PortsEmptyState(
     icon: ImageVector,
     @StringRes title: Int,
     @StringRes body: Int?,
@@ -170,30 +235,37 @@ private fun PortsEmptyState(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun PortRowCard(row: PortRow, state: PortsUiState, actions: PortsActions) {
+private fun PortRowCard(row: PortRow, state: PortsUiState, actions: PortsActions, selectedPort: Int?) {
     val c = Tf.colors
     val forward = row.forward
-    Surface(shape = RoundedCornerShape(16.dp), color = c.s1, border = BorderStroke(1.dp, c.line)) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(stringResource(R.string.ports_port, row.port), style = TrefoilType.rowTitle.copy(fontFamily = TrefoilType.mono.fontFamily), color = c.text, maxLines = 1)
-                Text(
-                    row.server?.processName?.takeIf { it.isNotBlank() }
-                        ?: stringResource(if (row.server == null) R.string.ports_manual_process else R.string.ports_unknown_process),
-                    Modifier.weight(1f), style = TrefoilType.meta, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                )
-            }
-            ownerLabel(row, state)?.let { Text(it, style = TrefoilType.meta, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-            ForwardStateLine(forward)
-            FlowRow(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                FilledTonalButton(onClick = { actions.onOpenInApp(row.port) }, enabled = state.canForward, contentPadding = BUTTON_PADDING) {
-                    Text(stringResource(R.string.ports_action_open))
+    val selected = selectedPort != null && row.port == selectedPort
+    Surface(
+        if (selectedPort != null) Modifier.semantics { this.selected = selected } else Modifier,
+        // Selected like the Machines list's card: same fill, 2dp accent outline (the Open pill is c.s2, so a c.s2 fill swallowed it).
+        shape = RoundedCornerShape(16.dp), color = c.s1, border = if (selected) BorderStroke(2.dp, c.accent) else BorderStroke(1.dp, c.line),
+    ) {
+        Box {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(stringResource(R.string.ports_port, row.port), style = TrefoilType.rowTitle.copy(fontFamily = TrefoilType.mono.fontFamily), color = c.text, maxLines = 1)
+                    Text(
+                        row.server?.processName?.takeIf { it.isNotBlank() }
+                            ?: stringResource(if (row.server == null) R.string.ports_manual_process else R.string.ports_unknown_process),
+                        Modifier.weight(1f), style = TrefoilType.meta, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
                 }
-                OutlinedButton(onClick = { actions.onOpenExternal(row.port) }, enabled = state.canForward, contentPadding = BUTTON_PADDING) {
-                    Text(stringResource(R.string.ports_action_open_browser))
-                }
-                if (forward != null) TextButton(onClick = { actions.onStopForward(row.port) }, contentPadding = BUTTON_PADDING) {
-                    Text(stringResource(R.string.ports_action_stop))
+                ownerLabel(row, state)?.let { Text(it, style = TrefoilType.meta, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                ForwardStateLine(forward)
+                FlowRow(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    FilledTonalButton(onClick = { actions.onOpenInApp(row.port) }, enabled = state.canForward, contentPadding = BUTTON_PADDING) {
+                        Text(stringResource(R.string.ports_action_open))
+                    }
+                    OutlinedButton(onClick = { actions.onOpenExternal(row.port) }, enabled = state.canForward, contentPadding = BUTTON_PADDING) {
+                        Text(stringResource(R.string.ports_action_open_browser))
+                    }
+                    if (forward != null) TextButton(onClick = { actions.onStopForward(row.port) }, contentPadding = BUTTON_PADDING) {
+                        Text(stringResource(R.string.ports_action_stop))
+                    }
                 }
             }
         }
@@ -243,7 +315,7 @@ internal fun PortForwardError.messageRes(): Int = when (this) {
 }
 
 @Composable
-private fun ForwardPortDialog(onDismiss: () -> Unit, onConfirm: (Int) -> Unit) {
+internal fun ForwardPortDialog(onDismiss: () -> Unit, onConfirm: (Int) -> Unit) {
     var text by rememberSaveable { mutableStateOf("") }
     val port = parsePortInput(text)
     val invalid = text.isNotBlank() && port == null

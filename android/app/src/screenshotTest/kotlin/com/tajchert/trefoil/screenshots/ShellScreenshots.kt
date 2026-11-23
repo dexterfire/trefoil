@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -28,7 +29,6 @@ import com.tajchert.trefoil.core.model.ModelDefault
 import com.tajchert.trefoil.core.model.Project
 import com.tajchert.trefoil.core.model.SavedEnvironment
 import com.tajchert.trefoil.ui.ConnectionBanner
-import com.tajchert.trefoil.ui.MachineRail
 import com.tajchert.trefoil.ui.MachinesScreen
 import com.tajchert.trefoil.ui.NewThreadSheetContent
 import com.tajchert.trefoil.ui.PairDialog
@@ -39,6 +39,16 @@ import com.tajchert.trefoil.ui.Tf
 import com.tajchert.trefoil.ui.ThreadList
 import com.tajchert.trefoil.ui.ThreadListEmpty
 import com.tajchert.trefoil.ui.TrefoilTheme
+import com.tajchert.trefoil.ui.ShellStart
+import com.tajchert.trefoil.ui.TrefoilApp
+import com.tajchert.trefoil.ui.UsageUiState
+import com.tajchert.trefoil.ui.adaptive.Fold
+import com.tajchert.trefoil.ui.adaptive.FoldOrientation
+import com.tajchert.trefoil.ui.adaptive.LocalFold
+import com.tajchert.trefoil.ui.adaptive.ThreadListChrome
+import com.tajchert.trefoil.ui.shell.ShellDestination
+import com.tajchert.trefoil.ui.shell.ShellNavModel
+import com.tajchert.trefoil.ui.shell.ShellNavigationRail
 
 private const val NIGHT = Configuration.UI_MODE_NIGHT_YES
 
@@ -144,8 +154,9 @@ private val manyProjects = listOf("api-gateway", "trefoil", "website", "infra", 
 @Composable fun Tablet_RailAndList_Light() = Phone {
     val state = ShellFixtures.connected()
     Row(Modifier.fillMaxSize()) {
-        MachineRail(state, ShellFixtures.saved, needsYou = 1, onSelect = {}, actions = ShellFixtures.noActions, probes = ShellFixtures.probes)
-        Box(Modifier.width(420.dp)) { ThreadList(state, select = {}, create = {}, shell = ShellFixtures.noActions, railLayout = true) }
+        ShellNavigationRail(ShellNavModel(state, ShellFixtures.saved, ShellFixtures.probes, ShellFixtures.noActions, ShellDestination.Threads,
+            portBrowserOpen = false, needsYou = 1, onThreads = {}, onNewThread = {}, onSelectMachine = {}))
+        Box(Modifier.width(420.dp)) { ThreadList(state, select = {}, create = {}, shell = ShellFixtures.noActions, chrome = ThreadListChrome(railPresent = true)) }
     }
 }
 
@@ -165,3 +176,88 @@ private fun KeepConnectedMenu(dark: Boolean, checked: Boolean) = Phone(dark) {
 
 @PreviewTest @Preview(showBackground = true, widthDp = 400, heightDp = 400, uiMode = NIGHT)
 @Composable fun Shell_KeepConnectedMenu_Off_Dark() = KeepConnectedMenu(dark = true, checked = false)
+
+// Whole-app adaptive shell (TrefoilApp at tablet and foldable sizes): rail, drawer, collapsed list, book posture, reconnecting,
+// and a secondary destination beside the rail.
+
+@Composable
+private fun App(
+    state: ClientState = FormFactorFixtures.conversationState(), start: ShellStart = ShellStart(), fold: Fold? = null,
+    usage: UsageUiState = UsageUiState(),
+) = CompositionLocalProvider(LocalFold provides fold) {
+    TrefoilApp(state, listOf(ScreenshotFixtures.workstation), { _, _, _ -> }, {}, {}, {}, {}, { _, _, _ -> }, null, {}, {}, {}, {}, {}, {}, {},
+        usage = usage, start = start)
+}
+
+@PreviewTest @Preview(showBackground = true, widthDp = 800, heightDp = 1280)
+@Composable fun Tablet_App_RailPortrait_Light() = App()
+
+@PreviewTest @Preview(showBackground = true, widthDp = 1280, heightDp = 800)
+@Composable fun Tablet_App_RailLandscape_Light() = App()
+
+@PreviewTest @Preview(showBackground = true, widthDp = 1280, heightDp = 800, uiMode = NIGHT)
+@Composable fun Tablet_App_RailLandscape_Dark() = App()
+
+@PreviewTest @Preview(showBackground = true, widthDp = 673, heightDp = 841)
+@Composable fun Tablet_App_DrawerOpen_Light() = App(start = ShellStart(navigationOpen = true))
+
+@PreviewTest @Preview(showBackground = true, widthDp = 1280, heightDp = 800)
+@Composable fun Tablet_App_ListCollapsed_Light() = App(start = ShellStart(listCollapsed = true))
+
+@PreviewTest @Preview(showBackground = true, widthDp = 673, heightDp = 841)
+@Composable fun Tablet_App_BookPosture_Light() = App(fold = Fold(FoldOrientation.Vertical, 330f, 343f, separating = true, halfOpened = true))
+
+@PreviewTest @Preview(showBackground = true, widthDp = 1280, heightDp = 800)
+@Composable fun Tablet_App_Offline_Light() = App(FormFactorFixtures.conversationState().copy(connection = ConnectionStatus.Disconnected))
+
+@PreviewTest @Preview(showBackground = true, widthDp = 1280, heightDp = 800)
+@Composable fun Tablet_App_UsageBesideRail_Light() = App(FormFactorFixtures.usageState(), ShellStart(showUsage = true), usage = FormFactorFixtures.usage())
+
+// Round 2 polish: destinations beside a book posture hinge, the empty detail pane, and a large font on the rail.
+
+private val bookFold = Fold(FoldOrientation.Vertical, 330f, 343f, separating = true, halfOpened = true)
+
+@PreviewTest @Preview(showBackground = true, widthDp = 673, heightDp = 841)
+@Composable fun Tablet_App_BookPosture_Usage_Light() = App(FormFactorFixtures.usageState(), ShellStart(showUsage = true), bookFold, FormFactorFixtures.usage())
+
+@PreviewTest @Preview(showBackground = true, widthDp = 673, heightDp = 841)
+@Composable fun Tablet_App_BookPosture_Servers_Light() = App(FormFactorFixtures.portsState(), ShellStart(showPorts = true), bookFold)
+
+@PreviewTest @Preview(showBackground = true, widthDp = 673, heightDp = 841)
+@Composable fun Tablet_App_BookPosture_NotConnected_Light() = App(ShellFixtures.nothingConnected(), fold = bookFold)
+
+@PreviewTest @Preview(showBackground = true, widthDp = 1280, heightDp = 800)
+@Composable fun Tablet_App_EmptyDetail_Light() = App(FormFactorFixtures.listState())
+
+@PreviewTest @Preview(showBackground = true, widthDp = 1280, heightDp = 800, uiMode = NIGHT)
+@Composable fun Tablet_App_EmptyDetail_Dark() = App(FormFactorFixtures.listState())
+
+@PreviewTest @Preview(showBackground = true, widthDp = 841, heightDp = 673)
+@Composable fun Tablet_App_EmptyDetail_FoldLandscape_Light() = App(ShellFixtures.quiet())
+
+@PreviewTest @Preview(showBackground = true, widthDp = 1280, heightDp = 800, fontScale = 2f)
+@Composable fun Tablet_App_RailLandscape_FontScale2_Light() = App(FormFactorFixtures.usageState())
+
+// Side panel beside the conversation (fake data only): Preview, Screens and Agents tabs, docked by width and around a hinge.
+private val bookFoldLandscape = Fold(FoldOrientation.Vertical, 414f, 427f, separating = true, halfOpened = true)
+
+@PreviewTest @Preview(showBackground = true, widthDp = 1280, heightDp = 800)
+@Composable fun Tablet_App_SidePanel_Preview_Light() = App(ShellFixtures.sidePanel(), ShellStart(showThread = true, sidePanelTab = "Preview"))
+
+@PreviewTest @Preview(showBackground = true, widthDp = 1280, heightDp = 800, uiMode = NIGHT)
+@Composable fun Tablet_App_SidePanel_Preview_Dark() = App(ShellFixtures.sidePanel(), ShellStart(showThread = true, sidePanelTab = "Preview"))
+
+@PreviewTest @Preview(showBackground = true, widthDp = 1280, heightDp = 800)
+@Composable fun Tablet_App_SidePanel_Agents_Light() = App(ShellFixtures.sidePanel(), ShellStart(showThread = true, sidePanelTab = "Agents"))
+
+@PreviewTest @Preview(showBackground = true, widthDp = 841, heightDp = 673)
+@Composable fun Tablet_App_SidePanel_Screens_FoldLandscape_Light() = App(ShellFixtures.sidePanel(), ShellStart(showThread = true, sidePanelTab = "Screens"))
+
+@PreviewTest @Preview(showBackground = true, widthDp = 841, heightDp = 673)
+@Composable fun Tablet_App_SidePanel_BookPosture_Light() = App(ShellFixtures.sidePanel(), ShellStart(showThread = true, sidePanelTab = "Agents"), bookFoldLandscape)
+
+@PreviewTest @Preview(showBackground = true, widthDp = 1920, heightDp = 1080)
+@Composable fun Tablet_App_SidePanel_ThreePane_Desktop_Light() = App(ShellFixtures.sidePanel(), ShellStart(showThread = true, sidePanelTab = "Agents"))
+
+@PreviewTest @Preview(showBackground = true, widthDp = 673, heightDp = 841)
+@Composable fun Tablet_App_HeaderBudget_FoldPortrait_Light() = App(ShellFixtures.sidePanel(), ShellStart(showThread = true))

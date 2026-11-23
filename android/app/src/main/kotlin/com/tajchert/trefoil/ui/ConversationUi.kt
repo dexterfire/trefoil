@@ -3,8 +3,13 @@
  */
 package com.tajchert.trefoil.ui
 
+import com.tajchert.trefoil.ui.shell.RegisterShortcut
+import com.tajchert.trefoil.ui.shell.ShortcutId
+import com.tajchert.trefoil.ui.shell.alternateFollowUp
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -23,9 +28,28 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.unit.Constraints
+import com.tajchert.trefoil.ui.adaptive.LocalCompactHeight
+import com.tajchert.trefoil.ui.adaptive.TfIconButton
+import com.tajchert.trefoil.ui.adaptive.TfTooltip
+import com.tajchert.trefoil.ui.adaptive.handPointer
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -44,6 +68,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
+import com.tajchert.trefoil.ui.adaptive.focusRing
 
 /**
  * Saved-state key of a new-thread composer. It names the draft's identity, not only its project: a launched draft's
@@ -62,6 +87,8 @@ internal fun Conversation(
     onBack: (() -> Unit)? = null,
     /** Trailing header actions supplied by the shell (thread actions menu, etc.). */
     actions: @Composable RowScope.() -> Unit = {},
+    /** Leading header control supplied by the shell (e.g. "show thread list" while the list pane is collapsed); replaces the back arrow. */
+    navigationIcon: (@Composable () -> Unit)? = null,
     /** First prompt from the new-thread sheet: put in the composer and submit once, then call [onSeedConsumed]. */
     seedPrompt: String? = null,
     onSeedConsumed: () -> Unit = {},
@@ -281,65 +308,74 @@ internal fun Conversation(
     // One stable callback, so the row does not recompose on every streaming delta.
     val latestLoadEarlier by rememberUpdatedState(::loadEarlier)
     val onLoadEarlier = remember { { latestLoadEarlier() } }
-    CompositionLocalProvider(LocalFileDownloadUi provides fileDownloadUi, LocalContentColor provides c.text) {
-        Column(Modifier.fillMaxSize()) {
-            ConversationHeader(
-                title = if (draft != null) "New thread" else thread?.title?.ifBlank { "Untitled conversation" } ?: "Conversation",
-                projectTitle = project?.title, branch = thread?.branch?.takeIf { it.isNotBlank() },
-                workLabel = workLabel.takeIf { state.activeRunId != null }, onBack = onBack, actions = actions, subtitle = subtitle, otherNeedsYou = otherNeedsYou)
-            HorizontalDivider(color = c.line)
-            Box(Modifier.weight(1f)) {
-                LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    if (state.busy && entries.isEmpty()) item { LinearProgressIndicator(Modifier.fillMaxWidth(), color = c.accent, trackColor = c.s2) }
-                    if (!state.busy && entries.isEmpty() && state.activeRunId == null) item {
-                        Column(Modifier.fillMaxWidth().padding(vertical = 56.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                            TrefoilMark(Modifier.size(40.dp))
-                            Text(if (draft != null) "New thread in ${project?.title ?: "this project"}" else "Nothing here yet", Modifier.padding(top = 18.dp), style = MaterialTheme.typography.titleMedium)
-                            Text(if (draft != null) "Your first message starts the thread." else "Send a message to get started.", Modifier.padding(top = 6.dp), style = TrefoilType.preview, color = c.muted)
+    // The layout follows the width of the pane this conversation is given, never the window: a pane under 600dp is the phone UI.
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val layout = remember(maxWidth) { conversationLayoutFor(maxWidth.value) }
+        val compactHeight = LocalCompactHeight.current
+        CompositionLocalProvider(LocalFileDownloadUi provides fileDownloadUi, LocalContentColor provides c.text, LocalConversationLayout provides layout) {
+            Column(Modifier.fillMaxSize()) {
+                ConversationHeader(
+                    title = if (draft != null) "New thread" else thread?.title?.ifBlank { "Untitled conversation" } ?: "Conversation",
+                    projectTitle = project?.title, branch = thread?.branch?.takeIf { it.isNotBlank() },
+                    workLabel = workLabel.takeIf { state.activeRunId != null }, onBack = onBack, actions = actions, subtitle = subtitle, otherNeedsYou = otherNeedsYou, navigationIcon = navigationIcon, compact = compactHeight)
+                HorizontalDivider(color = c.line)
+                Box(Modifier.weight(1f)) {
+                    // Wide: the list spans the pane (scrolling and the scrollbar work anywhere) and centres the reading column with its side padding.
+                    val sidePadding = if (layout.wide) layout.contentPadding.dp else 16.dp
+                    LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(start = sidePadding, end = sidePadding, top = if (compactHeight) 8.dp else 16.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        if (state.busy && entries.isEmpty()) item { LinearProgressIndicator(Modifier.fillMaxWidth(), color = c.accent, trackColor = c.s2) }
+                        if (!state.busy && entries.isEmpty() && state.activeRunId == null) item {
+                            Column(Modifier.fillMaxWidth().padding(vertical = 56.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                TrefoilMark(Modifier.size(40.dp))
+                                Text(if (draft != null) "New thread in ${project?.title ?: "this project"}" else "Nothing here yet", Modifier.padding(top = 18.dp), style = MaterialTheme.typography.titleMedium)
+                                Text(if (draft != null) "Your first message starts the thread." else "Send a message to get started.", Modifier.padding(top = 6.dp), style = TrefoilType.preview, color = c.muted)
+                            }
+                        }
+                        val entryRow: @Composable (ConversationEntry) -> Unit = { entry ->
+                            when (entry) {
+                                is ConversationEntry.Message -> MessageRow(entry.message, entry.stacked,
+                                    showMetadata = if (entry.message.role == "user") {
+                                        (entries.getOrNull(entries.indexOf(entry) + 1) as? ConversationEntry.Message)?.message?.role != "user"
+                                    } else !entry.message.streaming && (state.activeRunId == null || (entry.message.runId != null && entry.message.runId != state.activeRunId)) &&
+                                        entry.message.id == state.messages.lastOrNull { it.role == "assistant" && it.runId == entry.message.runId }?.id)
+                                is ConversationEntry.Activities -> ProseBlock {
+                                    if (entry.isSubagentGroup) SubagentActivityRows(entry.activities, state.subagents, onOpenThread, onOpenAgents)
+                                    else WorkGroup(entry.activities, live = state.activeRunId != null && entry.activities.first().runId == state.activeRunId, canLoadActivity = canLoadActivity, onLoadActivity = onLoadActivity)
+                                }
+                                is ConversationEntry.HtmlRender -> HtmlRenderRow(entry.activity)
+                                is ConversationEntry.Work -> ProseBlock { CompletedWork(entry, canLoadActivity, onLoadActivity, subagents = state.subagents, onOpenThread = onOpenThread, onOpenAgents = onOpenAgents) }
+                            }
+                        }
+                        if (window.hasEarlier) item(key = LOAD_EARLIER_KEY) { ProseBlock { LoadEarlierTurnsRow(onLoadEarlier) } }
+                        // The active turn opens with its "Working for" header, right after the prompt that started it.
+                        // The window always keeps the header's turn, so its index maps into the visible tail.
+                        val headerAt = liveTurn.headerIndex?.minus(window.hiddenCount)?.coerceIn(0, shown.size)
+                        items(if (headerAt == null) shown else shown.subList(0, headerAt), key = { it.key }) { entryRow(it) }
+                        if (headerAt != null) {
+                            val headerKey = state.activeRunId?.let(::workingHeaderKey)?.takeIf { key -> entries.none { it.key == key } } ?: "working-header"
+                            item(key = headerKey) { ProseBlock { WorkingTurnHeader(turnStartedAt) } }
+                            items(shown.subList(headerAt, shown.size), key = { it.key }) { entryRow(it) }
+                        }
+                        items(liveTurn.orphanSubagents, key = { "subagent:${it.id}" }) { ProseBlock { SubagentTimelineRow(it, onOpenThread, onOpenAgents) } }
+                        liveTurn.thinkingLabel?.let { label -> item(key = "thinking") { ProseBlock { ThinkingRow(label) } } }
+                        backgroundWork?.let { work -> item(key = "background-work") { ProseBlock { BackgroundWorkRow(work, onOpenThread, onOpenAgents, live = state.canRead && state.connection == ConnectionStatus.Connected) } } }
+                        items(state.requests, key = { "request:${it.id}" }) { ProseBlock { RequestCard(it, canSend, respond) } }
+                        item(key = "bottom") { Spacer(Modifier.height(1.dp)) }
+                    }
+                    if (!nearBottom) Surface(onClick = { following = true; scope.launch { list.animateScrollToItem(list.layoutInfo.totalItemsCount - 1) } },
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp).focusRing(RoundedCornerShape(16.dp)).handPointer(), shape = RoundedCornerShape(16.dp), color = c.s2, contentColor = c.text, border = BorderStroke(1.dp, c.line), shadowElevation = 2.dp) {
+                        Row(Modifier.height(32.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Icon(TfIcons.ChevronDown, null, Modifier.size(16.dp)); Text("Latest", style = TrefoilType.meta.copy(color = c.text))
                         }
                     }
-                    val entryRow: @Composable (ConversationEntry) -> Unit = { entry ->
-                        when (entry) {
-                            is ConversationEntry.Message -> MessageRow(entry.message, entry.stacked,
-                                showMetadata = if (entry.message.role == "user") {
-                                    (entries.getOrNull(entries.indexOf(entry) + 1) as? ConversationEntry.Message)?.message?.role != "user"
-                                } else !entry.message.streaming && (state.activeRunId == null || (entry.message.runId != null && entry.message.runId != state.activeRunId)) &&
-                                    entry.message.id == state.messages.lastOrNull { it.role == "assistant" && it.runId == entry.message.runId }?.id)
-                            is ConversationEntry.Activities -> if (entry.isSubagentGroup) SubagentActivityRows(entry.activities, state.subagents, onOpenThread, onOpenAgents)
-                                else WorkGroup(entry.activities, live = state.activeRunId != null && entry.activities.first().runId == state.activeRunId, canLoadActivity = canLoadActivity, onLoadActivity = onLoadActivity)
-                            is ConversationEntry.HtmlRender -> HtmlRenderRow(entry.activity)
-                            is ConversationEntry.Work -> CompletedWork(entry, canLoadActivity, onLoadActivity, subagents = state.subagents, onOpenThread = onOpenThread, onOpenAgents = onOpenAgents)
-                        }
-                    }
-                    if (window.hasEarlier) item(key = LOAD_EARLIER_KEY) { LoadEarlierTurnsRow(onLoadEarlier) }
-                    // The active turn opens with its "Working for" header, right after the prompt that started it.
-                    // The window always keeps the header's turn, so its index maps into the visible tail.
-                    val headerAt = liveTurn.headerIndex?.minus(window.hiddenCount)?.coerceIn(0, shown.size)
-                    items(if (headerAt == null) shown else shown.subList(0, headerAt), key = { it.key }) { entryRow(it) }
-                    if (headerAt != null) {
-                        val headerKey = state.activeRunId?.let(::workingHeaderKey)?.takeIf { key -> entries.none { it.key == key } } ?: "working-header"
-                        item(key = headerKey) { WorkingTurnHeader(turnStartedAt) }
-                        items(shown.subList(headerAt, shown.size), key = { it.key }) { entryRow(it) }
-                    }
-                    items(liveTurn.orphanSubagents, key = { "subagent:${it.id}" }) { SubagentTimelineRow(it, onOpenThread, onOpenAgents) }
-                    liveTurn.thinkingLabel?.let { label -> item(key = "thinking") { ThinkingRow(label) } }
-                    backgroundWork?.let { work -> item(key = "background-work") { BackgroundWorkRow(work, onOpenThread, onOpenAgents, live = state.canRead && state.connection == ConnectionStatus.Connected) } }
-                    items(state.requests, key = { "request:${it.id}" }) { RequestCard(it, canSend, respond) }
-                    item(key = "bottom") { Spacer(Modifier.height(1.dp)) }
                 }
-                if (!nearBottom) Surface(onClick = { following = true; scope.launch { list.animateScrollToItem(list.layoutInfo.totalItemsCount - 1) } },
-                    modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp), shape = RoundedCornerShape(16.dp), color = c.s2, contentColor = c.text, border = BorderStroke(1.dp, c.line), shadowElevation = 2.dp) {
-                    Row(Modifier.height(32.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Icon(TfIcons.ChevronDown, null, Modifier.size(16.dp)); Text("Latest", style = TrefoilType.meta.copy(color = c.text))
-                    }
+                // The composer owns its bottom insets: it rides above the keyboard, or above the navigation bar when closed.
+                Column(Modifier.windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))) {
+                    QuickReplies(state.requests, canSend, respond)
+                    if (thread != null && thread.isProviderNativeSubagentThread()) ReadOnlySubagentBar(thread, clock, onOpenParent)
+                    else ConversationComposer(state, draft, text, ::editText, submitted != null, stopPending, onSetRuntimeMode, onSetModel, onSetModelOption, onSetModelFavorite,
+                        stop = interrupt, onSend = { mode -> submit(text, mode) }, canWriteNow = rawState.canWrite, queueBusy = stopKey(state.environment?.id, state.selectedThreadId) in queueOperationKeys, onCancelQueued = onCancelQueued, onSteerQueued = onSteerQueued, onResumeQueue = onResumeQueue)
                 }
-            }
-            // The composer owns its bottom insets: it rides above the keyboard, or above the navigation bar when closed.
-            Column(Modifier.windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))) {
-                QuickReplies(state.requests, canSend, respond)
-                if (thread != null && thread.isProviderNativeSubagentThread()) ReadOnlySubagentBar(thread, clock, onOpenParent)
-                else ConversationComposer(state, draft, text, ::editText, submitted != null, stopPending, onSetRuntimeMode, onSetModel, onSetModelOption, onSetModelFavorite,
-                    stop = interrupt, onSend = { mode -> submit(text, mode) }, canWriteNow = rawState.canWrite, queueBusy = stopKey(state.environment?.id, state.selectedThreadId) in queueOperationKeys, onCancelQueued = onCancelQueued, onSteerQueued = onSteerQueued, onResumeQueue = onResumeQueue)
             }
         }
     }
@@ -353,30 +389,82 @@ internal fun HtmlRenderRow(activity: ToolActivity) {
 }
 
 @Composable
-private fun ConversationHeader(title: String, projectTitle: String?, branch: String?, workLabel: String?, onBack: (() -> Unit)?, actions: @Composable RowScope.() -> Unit, subtitle: String? = null, otherNeedsYou: Int = 0) {
+private fun ConversationHeader(title: String, projectTitle: String?, branch: String?, workLabel: String?, onBack: (() -> Unit)?, actions: @Composable RowScope.() -> Unit, subtitle: String? = null, otherNeedsYou: Int = 0, navigationIcon: (@Composable () -> Unit)? = null, compact: Boolean = false) {
     val c = Tf.colors
-    Row(Modifier.fillMaxWidth().heightIn(min = 68.dp).padding(start = if (onBack != null) 4.dp else 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        if (onBack != null) IconButton(onClick = onBack, modifier = Modifier.size(44.dp)) {
-            BadgedBox(badge = {
-                if (otherNeedsYou > 0) Badge(Modifier.clearAndSetSemantics {}, containerColor = c.amber, contentColor = c.onAccent) { Text(if (otherNeedsYou > 9) "9+" else otherNeedsYou.toString()) }
-            }) { Icon(TfIcons.Back, backDescription(otherNeedsYou), Modifier.size(22.dp)) }
-        }
-        Column(Modifier.weight(1f).padding(start = if (onBack != null) 2.dp else 0.dp)) {
-            Text(title, style = TrefoilType.rowTitle, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (subtitle != null) Text(subtitle, style = TrefoilType.meta, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (projectTitle != null || workLabel != null) Row(Modifier.padding(top = 3.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (projectTitle != null) {
-                    ProjectTile(projectTitle, size = 20.dp)
-                    Text(projectTitle, style = TrefoilType.meta, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                    if (branch != null) BranchLabel(branch, Modifier.weight(1f, fill = false))
-                }
-                if (workLabel != null) {
-                    WorkingSpinner(size = 14.dp)
-                    Text(workLabel, style = TrefoilType.meta, color = c.blue, maxLines = 1)
+    val leading = onBack != null || navigationIcon != null
+    // Wide pane: a 64dp header like the thread list's, and a 48dp Back target (its start inset shrinks so the glyph and the title stay put).
+    val wide = LocalConversationLayout.current.wide
+    val backSize = if (wide) 48.dp else 44.dp
+    HeaderLayout(
+        Modifier.fillMaxWidth().heightIn(min = if (compact) 48.dp else if (wide) 64.dp else 68.dp)
+            .padding(start = if (leading) (if (wide && navigationIcon == null) 2.dp else 4.dp) else 16.dp, end = 4.dp, top = if (compact) 0.dp else if (wide) 4.dp else 6.dp, bottom = if (compact) 0.dp else if (wide) 4.dp else 6.dp),
+        navigation = {
+            if (navigationIcon != null) navigationIcon()
+            else if (onBack != null) TfTooltip(backDescription(otherNeedsYou)) {
+                IconButton(onClick = onBack, modifier = Modifier.size(backSize).focusRing().handPointer()) {
+                    BadgedBox(badge = {
+                        if (otherNeedsYou > 0) Badge(Modifier.clearAndSetSemantics {}, containerColor = c.amber, contentColor = c.onAccent) { Text(if (otherNeedsYou > 9) "9+" else otherNeedsYou.toString()) }
+                    }) { Icon(TfIcons.Back, backDescription(otherNeedsYou), Modifier.size(22.dp)) }
                 }
             }
+        },
+        title = {
+            Column(Modifier.fillMaxWidth().padding(start = if (leading) 2.dp else 0.dp), verticalArrangement = Arrangement.Center) {
+                if (compact) {
+                    // One line: the title, then the (capped) project name and work status; the title takes whatever they leave.
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(title, Modifier.weight(1f, fill = false), style = TrefoilType.rowTitle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (projectTitle != null) Text(projectTitle, Modifier.widthIn(max = 120.dp), style = TrefoilType.meta, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (workLabel != null) {
+                            WorkingSpinner(size = 14.dp)
+                            Text(workLabel, style = TrefoilType.meta, color = c.blue, maxLines = 1)
+                        }
+                    }
+                } else {
+                    Text(title, style = TrefoilType.rowTitle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (subtitle != null) Text(subtitle, style = TrefoilType.meta, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (projectTitle != null || workLabel != null) Row(Modifier.padding(top = 3.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (projectTitle != null) {
+                            ProjectTile(projectTitle, size = 20.dp)
+                            Text(projectTitle, style = TrefoilType.meta, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                            if (branch != null) BranchLabel(branch, Modifier.weight(1f, fill = false))
+                        }
+                        if (workLabel != null) {
+                            WorkingSpinner(size = 14.dp)
+                            Text(workLabel, style = TrefoilType.meta, color = c.blue, maxLines = 1)
+                        }
+                    }
+                }
+            }
+        },
+        actions = { Row(verticalAlignment = Alignment.CenterVertically) { actions() } },
+    )
+}
+
+/** Narrowest the header title may be squeezed to by trailing actions before the actions give way instead. */
+private val HeaderTitleMinWidth = 160.dp
+
+/**
+ * Navigation icon, title, trailing actions. The title fills what the others leave, but the actions can never take more than the
+ * width that keeps [HeaderTitleMinWidth] for it (the actions clip first), so a crowded header never shrinks the title to nothing.
+ */
+@Composable
+private fun HeaderLayout(modifier: Modifier, navigation: @Composable () -> Unit, title: @Composable () -> Unit, actions: @Composable () -> Unit) {
+    Layout(content = { Box { navigation() }; Box { title() }; Box { actions() } }, modifier = modifier) { measurables, constraints ->
+        val loose = Constraints(maxWidth = constraints.maxWidth, maxHeight = constraints.maxHeight)
+        val nav = measurables[0].measure(loose)
+        val titleReserve = minOf(HeaderTitleMinWidth.roundToPx(), (constraints.maxWidth - nav.width).coerceAtLeast(0))
+        val trailing = measurables[2].measure(Constraints(maxWidth = (constraints.maxWidth - nav.width - titleReserve).coerceAtLeast(0), maxHeight = constraints.maxHeight))
+        val titleWidth = (constraints.maxWidth - nav.width - trailing.width).coerceAtLeast(0)
+        val titlePlaceable = measurables[1].measure(Constraints(minWidth = titleWidth, maxWidth = titleWidth, maxHeight = constraints.maxHeight))
+        val height = maxOf(nav.height, titlePlaceable.height, trailing.height).coerceIn(constraints.minHeight, constraints.maxHeight)
+        layout(constraints.maxWidth, height) {
+            // Same rounding as Row(verticalAlignment = CenterVertically), so the phone header stays pixel-identical.
+            val centre = Alignment.CenterVertically
+            nav.placeRelative(0, centre.align(nav.height, height))
+            titlePlaceable.placeRelative(nav.width, centre.align(titlePlaceable.height, height))
+            trailing.placeRelative(constraints.maxWidth - trailing.width, centre.align(trailing.height, height))
         }
-        actions()
     }
 }
 
@@ -388,18 +476,47 @@ internal fun ConversationComposer(
     onCancelQueued: (String) -> Unit, onSteerQueued: (String) -> Unit, onResumeQueue: () -> Unit,
 ) {
     val c = Tf.colors
+    val compactHeight = LocalCompactHeight.current
+    val layout = LocalConversationLayout.current
     val noticeStyle = TrefoilType.meta.copy(fontSize = 12.sp, color = c.muted)
     val button = resolveComposerButton(state, draft != null, text, waiting, stopPending)
-    Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 16.dp, top = 4.dp)) {
+    // The field edits a TextFieldValue (selection, IME composition) that follows the caller's text: a change made elsewhere
+    // (a settled send clears it, a restored draft fills it) replaces the value and puts the cursor at the end.
+    // Only the caret is saved, never the text (that is the caller's draft), so a rotation or fold keeps the cursor where it was.
+    var caretStart by rememberSaveable { mutableIntStateOf(text.length) }
+    var caretEnd by rememberSaveable { mutableIntStateOf(text.length) }
+    var edit by remember { mutableStateOf(TextFieldValue(text, TextRange(caretStart.coerceIn(0, text.length), caretEnd.coerceIn(0, text.length)))) }
+    val value = if (edit.text == text) edit else TextFieldValue(text, TextRange(text.length))
+    fun edited(next: TextFieldValue) { edit = next; caretStart = next.selection.start; caretEnd = next.selection.end; if (next.text != text) onText(next.text) }
+    // Hardware keyboard: Enter sends exactly as the primary button would, Shift/Alt+Enter breaks the line. See composerEnterDecision.
+    val enterKeys = Modifier.onPreviewKeyEvent { event ->
+        val native = event.nativeKeyEvent
+        val key = ComposerEnterKey(
+            isEnter = event.key == Key.Enter || event.key == Key.NumPadEnter, isDown = event.type == KeyEventType.KeyDown, repeatCount = native.repeatCount,
+            shift = event.isShiftPressed, alt = event.isAltPressed, ctrl = event.isCtrlPressed, meta = event.isMetaPressed,
+            hardware = isHardwareKeyboardEvent(native.deviceId, native.flags), composing = value.composition != null,
+        )
+        when (composerEnterDecision(key, canSend = button.enabled && button.action != ComposerPrimary.Stop)) {
+            ComposerEnterDecision.Ignore -> false
+            ComposerEnterDecision.Swallow -> true
+            // Ctrl+Shift+Enter while a turn runs sends the way the primary button does not (Steer <-> Queue); with no alternate it is the primary send.
+            ComposerEnterDecision.Send -> { onSend((if (key.ctrl && key.shift) alternateFollowUp(button, state.canSteer) else null) ?: button.action.followUp); true }
+            ComposerEnterDecision.Newline -> {
+                if (key.isDown) edited(value.withLineBreak())
+                true
+            }
+        }
+    }
+    ReadingDock(phoneHorizontal = 12.dp, top = if (compactHeight) 2.dp else 4.dp, bottom = if (compactHeight) 8.dp else 16.dp) {
         if (!state.canWrite) Text("Read only · reconnect to continue", Modifier.padding(start = 6.dp, bottom = 6.dp), style = noticeStyle)
         if (waiting) Text("Waiting for server confirmation…", Modifier.padding(start = 6.dp, bottom = 6.dp), style = noticeStyle)
         if (draft == null && (state.queuedMessages.isNotEmpty() || state.queueHeld)) QueuedMessagesStrip(state, canWriteNow && !queueBusy, onCancelQueued, onSteerQueued, onResumeQueue)
         Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = c.s1, contentColor = c.text, border = BorderStroke(1.dp, c.line)) {
             Column {
                 BasicTextField(
-                    value = text, onValueChange = onText, maxLines = 6,
+                    value = value, onValueChange = ::edited, maxLines = if (compactHeight) 2 else 6,
                     textStyle = MaterialTheme.typography.bodyLarge.copy(color = c.text), cursorBrush = SolidColor(c.accent),
-                    modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 2.dp),
+                    modifier = enterKeys.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = if (compactHeight) 10.dp else 14.dp, bottom = 2.dp),
                     decorationBox = { inner ->
                         Box {
                             if (text.isEmpty()) Text(composerPlaceholder(state, draft != null), style = MaterialTheme.typography.bodyLarge, color = c.muted)
@@ -407,11 +524,40 @@ internal fun ConversationComposer(
                         }
                     },
                 )
-                Row(Modifier.fillMaxWidth().padding(start = 10.dp, end = 6.dp, top = 4.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                // Wide pane: the 48dp button and pill targets are paid for out of this row's own top and bottom padding, so the composer keeps its height.
+                Row(Modifier.fillMaxWidth().padding(start = 10.dp, end = 6.dp, top = if (layout.wide) 2.dp else 4.dp, bottom = if (layout.wide) 4.dp else 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     ComposerPickers(state, draft, onSetRuntimeMode, onSetModel, onSetModelOption, onSetModelFavorite, Modifier.weight(1f))
+                    // Wide: the two follow-up deliveries are visible next to the button instead of behind its long press.
+                    if (layout.wide && button.offersAlternate && text.isNotBlank()) FollowUpChoice(button.action, state.canSteer, button.enabled, onSend)
                     PrimaryComposerButton(button, state.canSteer, stop, onSend)
                 }
             }
+        }
+    }
+}
+
+/**
+ * `Steer | Queue` for wide layouts while a turn runs and the field has text: each segment sends that delivery, built on the same
+ * [onSend] the primary button and its long-press menu use. [selected] is what the primary button does; Steer is left out when the
+ * agent cannot be steered right now (then only Queue remains). Every segment is a 48dp touch target around a 32dp pill.
+ */
+@Composable
+private fun FollowUpChoice(selected: ComposerPrimary, canSteer: Boolean, enabled: Boolean, onSend: (FollowUpMode?) -> Unit) {
+    Row(Modifier.testTag("follow-up-choice")) {
+        if (canSteer) FollowUpSegment("Steer", TfIcons.Steer, selected == ComposerPrimary.Steer, enabled,
+            RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp)) { onSend(FollowUpMode.Steer) }
+        FollowUpSegment("Queue", TfIcons.Queue, selected == ComposerPrimary.Queue || !canSteer, enabled,
+            if (canSteer) RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp) else RoundedCornerShape(16.dp)) { onSend(FollowUpMode.Queue) }
+    }
+}
+
+@Composable
+private fun FollowUpSegment(label: String, icon: ImageVector, selected: Boolean, enabled: Boolean, shape: Shape, onClick: () -> Unit) {
+    val c = Tf.colors
+    Box(Modifier.minimumInteractiveComponentSize().alpha(if (enabled) 1f else .4f).focusRing().handPointer(enabled).clickable(enabled = enabled, role = Role.Button, onClick = onClick), contentAlignment = Alignment.Center) {
+        Row(Modifier.height(32.dp).clip(shape).background(if (selected) c.text else c.s2).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            Icon(icon, null, Modifier.size(14.dp), tint = if (selected) c.bg else c.muted)
+            Text(label, style = TrefoilType.meta, color = if (selected) c.bg else c.text, maxLines = 1)
         }
     }
 }
@@ -432,9 +578,9 @@ private fun PrimaryComposerButton(button: ComposerButton, canSteer: Boolean, sto
     LaunchedEffect(button.offersAlternate, button.enabled) { if (!button.offersAlternate || !button.enabled) menu = false }
     Box {
         Surface(shape = CircleShape, color = container, contentColor = content,
-            modifier = Modifier.size(44.dp).alpha(if (button.enabled) 1f else .4f)
+            modifier = Modifier.size(if (LocalConversationLayout.current.wide) 48.dp else 44.dp).alpha(if (button.enabled) 1f else .4f)
                 .semantics { contentDescription = button.action.description; role = Role.Button }
-                .combinedClickable(
+                .focusRing().handPointer().combinedClickable(
                     enabled = button.enabled,
                     onLongClickLabel = if (button.offersAlternate) "Choose steer or queue" else null,
                     onLongClick = if (button.offersAlternate) ({ menu = true }) else null,
@@ -476,9 +622,7 @@ internal fun QueuedMessagesStrip(state: ClientState, canWrite: Boolean, onCancel
                         Icon(TfIcons.Queue, null, Modifier.size(16.dp), tint = c.muted)
                         Text(queued.text, Modifier.weight(1f).padding(horizontal = 8.dp), style = TrefoilType.preview, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         TextButton(onClick = { onSteer(queued.runId) }, enabled = canWrite && queued.canSendNow) { Text("Send now") }
-                        IconButton(onClick = { onCancel(queued.runId) }, enabled = canWrite, modifier = Modifier.size(40.dp)) {
-                            Icon(TfIcons.Close, "Remove queued message", Modifier.size(18.dp))
-                        }
+                        TfIconButton(TfIcons.Close, "Remove queued message", { onCancel(queued.runId) }, Modifier.size(40.dp), enabled = canWrite, iconSize = 18.dp)
                     }
                 }
             }
@@ -489,8 +633,15 @@ internal fun QueuedMessagesStrip(state: ClientState, canWrite: Boolean, onCancel
 /** Provider-native children cannot receive messages: model, status and a way back to the parent replace the composer. */
 @Composable
 internal fun ReadOnlySubagentBar(thread: ThreadSummary, now: Long, onOpenParent: (() -> Unit)?) {
+    // Stateless, so the phone path may keep exactly the old modifiers (the bar then sits directly under its parent's constraints).
+    if (LocalConversationLayout.current.wide) ReadingDock(top = 4.dp, bottom = 16.dp) { ReadOnlySubagentBarCard(thread, now, onOpenParent, Modifier) }
+    else ReadOnlySubagentBarCard(thread, now, onOpenParent, Modifier.padding(start = 12.dp, end = 12.dp, bottom = 16.dp, top = 4.dp))
+}
+
+@Composable
+private fun ReadOnlySubagentBarCard(thread: ThreadSummary, now: Long, onOpenParent: (() -> Unit)?, modifier: Modifier) {
     val c = Tf.colors
-    Surface(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 16.dp, top = 4.dp).fillMaxWidth().testTag("readonly-subagent-bar"),
+    Surface(modifier.fillMaxWidth().testTag("readonly-subagent-bar"),
         shape = RoundedCornerShape(24.dp), color = c.s1, contentColor = c.text, border = BorderStroke(1.dp, c.line)) {
         Row(Modifier.padding(start = 16.dp, end = 8.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Column(Modifier.weight(1f)) {
@@ -510,7 +661,11 @@ private fun ComposerPickers(state: ClientState, draft: ThreadDraft?, onSetRuntim
     val model = if (draft != null) draft.model else state.selectedModel
     val enabled = state.canWrite && !state.busy
     var modeOpen by remember { mutableStateOf(false) }
-    var modelOpen by remember { mutableStateOf(false) }
+    // An explicit key: the picker's saved state must not depend on where the composer sits in the (wide or narrow) layout tree.
+    var modelOpen by rememberSaveable(key = "composer-model-open") { mutableStateOf(false) }
+    // Ctrl+Shift+L opens the picker of the conversation on screen, under the model pill's own enabled rule (and not again while it is open).
+    RegisterShortcut(ShortcutId.ModelPicker, enabled = !modelOpen && (modelPickerLoading(state.models, state.connection) || (enabled && state.models.isNotEmpty()))) { modelOpen = true }
+    // The pills are Material Surfaces with onClick: each already has a 48dp touch area around its 32dp look (see ConversationTargetsTest).
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         Box(Modifier.weight(1f, fill = false)) {
             val shown = catalogModel(model, state.models)

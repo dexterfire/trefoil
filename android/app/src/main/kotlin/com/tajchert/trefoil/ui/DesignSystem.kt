@@ -36,13 +36,16 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
+import com.tajchert.trefoil.ui.adaptive.handPointer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.util.Locale
 import kotlin.math.abs
+import com.tajchert.trefoil.ui.adaptive.focusRing
 
 /* ---------- Icons: the design's 24px stroke set (1.8 stroke, round caps/joins) ---------- */
 
@@ -139,6 +142,14 @@ object TfIcons {
     /** Route kinds: local network, public HTTPS and the T3 Connect tunnel. */
     val Wifi by lazy { strokeIcon("wifi", "M3 9.5a14 14 0 0 1 18 0M6 13a9.5 9.5 0 0 1 12 0M9 16.5a5 5 0 0 1 6 0", "M12 20h.01") }
     val Globe by lazy { strokeIcon("globe", circle(12f, 12f, 9f), "M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z") }
+    /** Rail destination for the thread list. */
+    val Threads by lazy { strokeIcon("threads", "M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-7l-4 3.5V17H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z", "M8 9.5h8M8 13h5") }
+    /** Opens the navigation drawer on medium widths that have no rail. */
+    val Menu by lazy { strokeIcon("menu", "M4 7h16M4 12h16M4 17h16") }
+    /** Hide or show the thread list pane. */
+    val PanelLeft by lazy { strokeIcon("panelLeft", rect(3f, 5f, 18f, 14f, 2.5f), "M9 5v14") }
+    /** Toggle the side panel docked beside the conversation. */
+    val PanelRight by lazy { strokeIcon("panelRight", rect(3f, 5f, 18f, 14f, 2.5f), "M15 5v14") }
     /** Work-log glyphs: reasoning (bulb), generic tool (wrench), mixed group (hammer), severe failure (alert). */
     val Reasoning by lazy { strokeIcon("reasoning", "M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z") }
     val Wrench by lazy { strokeIcon("wrench", "M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z") }
@@ -195,14 +206,18 @@ internal fun projectInitials(title: String): String {
 /** Stable palette slot for a project key (id or title). */
 internal fun projectPaletteIndex(key: String): Int = abs(key.hashCode() % tileDark.size)
 
-/** Rounded-square tile with project initials. 40dp in lists, 20–24dp inline. */
+/**
+ * Rounded-square tile with project initials. 40dp in lists, 20–24dp inline. [capFontScale] stops the monogram growing past 14dp of text
+ * (a fixed tile cannot widen with the font, so "WE" would clip to "W"); it changes nothing up to a font scale of about 1.08.
+ */
 @Composable
-fun ProjectTile(title: String, modifier: Modifier = Modifier, size: Dp = 40.dp, key: String = title) {
+fun ProjectTile(title: String, modifier: Modifier = Modifier, size: Dp = 40.dp, key: String = title, capFontScale: Boolean = false) {
     val (bg, fg) = (if (Tf.colors.isDark) tileDark else tileLight)[projectPaletteIndex(key)]
     val radius = when { size >= 36.dp -> 12.dp; size >= 24.dp -> 7.dp; else -> 6.dp }
-    val fontSize = when { size >= 36.dp -> 13.sp; size >= 24.dp -> 10.sp; else -> 9.sp }
+    val base = when { size >= 36.dp -> 13.sp; size >= 24.dp -> 10.sp; else -> 9.sp }
+    val fontSize = if (capFontScale) with(LocalDensity.current) { minOf(base.toDp(), 14.dp).toSp() } else base
     Box(modifier.size(size).background(Color(bg), RoundedCornerShape(radius)), contentAlignment = Alignment.Center) {
-        Text(projectInitials(title), color = Color(fg), fontSize = fontSize, fontWeight = FontWeight.Bold, fontFamily = InterFamily, letterSpacing = 0.02.sp, maxLines = 1)
+        Text(projectInitials(title), color = Color(fg), fontSize = fontSize, fontWeight = FontWeight.Bold, fontFamily = InterFamily, letterSpacing = 0.02.sp, maxLines = 1, softWrap = !capFontScale)
     }
 }
 
@@ -232,18 +247,19 @@ fun WorkingSpinner(modifier: Modifier = Modifier, size: Dp = 16.dp, color: Color
 
 /* ---------- Chips, pills, labels ---------- */
 
-/** Filter / quick-reply chip: 36dp, outlined; selected = inverted (text colour fill). */
+/** Filter / quick-reply chip: 36dp, outlined; selected = inverted (text colour fill). [dense] tightens the inner padding to 10dp and the gaps to 5dp. */
 @Composable
 fun TfChip(
     label: String, onClick: () -> Unit, modifier: Modifier = Modifier, selected: Boolean = false, count: Int? = null,
-    enabled: Boolean = true, leading: (@Composable () -> Unit)? = null, trailing: (@Composable () -> Unit)? = null,
+    enabled: Boolean = true, leading: (@Composable () -> Unit)? = null, trailing: (@Composable () -> Unit)? = null, dense: Boolean = false,
 ) {
     val c = Tf.colors
     Surface(onClick = onClick, enabled = enabled, shape = RoundedCornerShape(18.dp),
         color = if (selected) c.text else Color.Transparent, contentColor = if (selected) c.bg else c.text,
         border = if (selected) null else BorderStroke(1.dp, c.line),
-        modifier = modifier.semantics { this.selected = selected; role = Role.Tab }) {
-        Row(Modifier.height(36.dp).padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        modifier = modifier.focusRing(RoundedCornerShape(18.dp)).handPointer(enabled).semantics { this.selected = selected; role = Role.Tab }) {
+        Row(Modifier.height(36.dp).padding(horizontal = if (dense) 10.dp else 14.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(if (dense) 5.dp else 8.dp)) {
             leading?.invoke()
             Text(label, fontFamily = InterFamily, fontWeight = FontWeight.Medium, fontSize = 14.sp, maxLines = 1)
             if (count != null) Text(count.toString(), fontFamily = InterFamily, fontWeight = FontWeight.SemiBold, fontSize = 12.sp,
@@ -270,9 +286,11 @@ fun TfPill(label: String, onClick: () -> Unit, modifier: Modifier = Modifier, ic
 @Composable
 fun TfIconPill(icon: ImageVector, onClick: () -> Unit, contentDescription: String, modifier: Modifier = Modifier, enabled: Boolean = true) {
     val c = Tf.colors
-    Surface(onClick = onClick, enabled = enabled, shape = RoundedCornerShape(16.dp), color = c.s2, contentColor = c.text,
-        modifier = modifier.semantics { this.contentDescription = contentDescription }) {
-        Box(Modifier.size(40.dp, 32.dp), contentAlignment = Alignment.Center) { Icon(icon, null, Modifier.size(16.dp)) }
+    com.tajchert.trefoil.ui.adaptive.TfTooltip(contentDescription) {
+        Surface(onClick = onClick, enabled = enabled, shape = RoundedCornerShape(16.dp), color = c.s2, contentColor = c.text,
+            modifier = modifier.focusRing(RoundedCornerShape(16.dp)).handPointer(enabled).semantics { this.contentDescription = contentDescription }) {
+            Box(Modifier.size(40.dp, 32.dp), contentAlignment = Alignment.Center) { Icon(icon, null, Modifier.size(16.dp)) }
+        }
     }
 }
 

@@ -39,6 +39,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tajchert.trefoil.core.model.Subagent
 import com.tajchert.trefoil.core.model.ToolActivity
+import com.tajchert.trefoil.ui.adaptive.handPointer
+import com.tajchert.trefoil.ui.adaptive.focusRing
 
 /**
  * "Working for 1m 11s" at the top of the active turn: the same quiet row and divider as the "Worked for" fold it becomes
@@ -97,7 +99,7 @@ internal fun BackgroundWorkRow(work: BackgroundWorkUi, onOpenThread: ((String) -
                 val open = if (threadId != null && onOpenThread != null) ({ onOpenThread(threadId) }) else null
                 Row(
                     Modifier.fillMaxWidth().heightIn(min = 32.dp).testTag("background-work-item-${item.taskId}")
-                        .then(if (open != null) Modifier.clickable(role = Role.Button, onClickLabel = "Open ${item.label}", onClick = open) else Modifier)
+                        .then(if (open != null) Modifier.focusRing().handPointer().clickable(role = Role.Button, onClickLabel = "Open ${item.label}", onClick = open) else Modifier)
                         .padding(start = 22.dp, end = 10.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
@@ -135,7 +137,7 @@ internal fun SubagentTimelineRowContent(row: SubagentTimelineRowUi, onClick: (()
     val trailing = TrefoilType.meta.copy(fontWeight = FontWeight.Normal, fontFeatureSettings = "tnum")
     Row(
         Modifier.fillMaxWidth().heightIn(min = 44.dp).testTag("subagent-row-${row.id}")
-            .then(if (onClick != null) Modifier.clickable(role = Role.Button, onClickLabel = "Open ${row.title}", onClick = onClick) else Modifier)
+            .then(if (onClick != null) Modifier.focusRing().handPointer().clickable(role = Role.Button, onClickLabel = "Open ${row.title}", onClick = onClick) else Modifier)
             .semantics(mergeDescendants = true) { contentDescription = row.accessibilityLabel }
             .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),

@@ -21,6 +21,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.tajchert.trefoil.core.model.ProviderInstance
 import com.tajchert.trefoil.core.model.UsageLimitWindow
+import com.tajchert.trefoil.ui.adaptive.handPointer
+import com.tajchert.trefoil.ui.adaptive.focusRing
 
 /** Severity of a "% left" value; one set of thresholds for the chip and the Limits tab. */
 internal enum class LimitSeverity { Critical, Low, Healthy }
@@ -63,7 +65,7 @@ internal fun limitChipDescription(percent: Int?): String =
 internal fun LimitChip(percent: Int?, showNumber: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val c = Tf.colors
     Box(modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics(mergeDescendants = true) { contentDescription = limitChipDescription(percent) }
-        .clickable(role = Role.Button, onClick = onClick), contentAlignment = Alignment.Center) {
+        .focusRing().handPointer().clickable(role = Role.Button, onClick = onClick), contentAlignment = Alignment.Center) {
         Row(Modifier.height(32.dp).background(c.s2, RoundedCornerShape(16.dp)).padding(horizontal = 9.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             if (percent == null) Icon(TfIcons.Gauge, null, Modifier.size(18.dp), tint = c.muted)

@@ -23,10 +23,13 @@ import com.tajchert.trefoil.core.model.RuntimeRequest
 import com.tajchert.trefoil.core.model.Subagent
 import com.tajchert.trefoil.core.model.ThreadSummary
 import com.tajchert.trefoil.core.model.ToolActivity
+import com.tajchert.trefoil.core.session.ComposerDraft
+import com.tajchert.trefoil.core.session.ComposerDraftKey
 import com.tajchert.trefoil.downloads.CompletedDownload
 import com.tajchert.trefoil.downloads.DownloadKey
 import com.tajchert.trefoil.downloads.DownloadStatus
 import com.tajchert.trefoil.downloads.FileDownloadState
+import com.tajchert.trefoil.ui.ComposerDraftUi
 import com.tajchert.trefoil.ui.FileDownloadUi
 import com.tajchert.trefoil.ui.SubagentRoster
 
@@ -91,6 +94,47 @@ object ConversationFixtures {
         ),
         activities = listOf(commandActivity, editActivity),
     )
+
+    /** Long enough to wrap at prose width, with a heading, list, wide code line, table and quote: what the reading column has to hold. */
+    val mixedReply = """
+        ## What changed
+
+        The screenshot previews now cover every thread list state in light and dark, and each preview renders from fake data only, so the reference images never depend on a real server, a real project or the time of day the tests run.
+
+        - **Fixtures** live next to the previews and never touch a network
+        - Each state has one light and one dark reference image
+        - The reference images are committed with the change
+
+        ```kotlin
+        @PreviewTest
+        @Preview(showBackground = true, widthDp = 400, heightDp = 800)
+        @Composable
+        fun ThreadList_Populated_Light() = ThreadListFrame(dark = false) { ThreadList(populatedState(), select = {}, create = {}) }
+        ```
+
+        | Suite | Command | Result |
+        | --- | --- | --- |
+        | Unit tests | `:app:testDebugUnitTest` | passing |
+        | Screenshots | `:app:testDebugScreenshotTestDefaultTestSuite` | passing |
+        | Lint | `:app:lintDebug` | 0 errors |
+
+        > Re-record only the previews you changed, then check that git shows new files and nothing else.
+
+        Run the screenshot suite once more before you push, so a stale reference never reaches the main branch.
+    """.trimIndent()
+
+    /** A conversation that shows the whole reading column: short and long user bubbles, a work log, and a long reply with code and a table. */
+    fun mixedState(): ClientState = chatState().copy(
+        messages = listOf(
+            msg("m1", "user", "Can you add dark theme previews for the thread list and then tell me what you changed?", 1),
+            msg("m2", "assistant", mixedReply, 6),
+            msg("m3", "user", "Looks good. Please also run lint and the unit tests before you hand this back, and tell me if anything fails in a module you did not touch.", 7),
+            msg("m4", "assistant", "Both pass: lint reports 0 errors and the unit tests finish in 41 seconds.", 8),
+        ),
+    )
+
+    /** A saved reply in the composer: the conversation starts with [text] already typed. */
+    fun withDraft(text: String) = ComposerDraftUi(listOf(ComposerDraft(ComposerDraftKey.Reply(fx.workstation.id, thread.id), text, updatedAtMillis = 0L)).associateBy { it.key })
 
     private val liveThought = act("a-live-think", "Reasoning", "reasoning", "completed", 2,
         output = "**Checking the theme tokens** before running the unit tests.").copy(runId = "run-2")

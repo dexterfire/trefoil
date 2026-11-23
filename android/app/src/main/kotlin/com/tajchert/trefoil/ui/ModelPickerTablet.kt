@@ -22,16 +22,21 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tajchert.trefoil.core.model.ModelOption
 import com.tajchert.trefoil.core.model.ModelOptionValues
+import com.tajchert.trefoil.ui.adaptive.handPointer
+import com.tajchert.trefoil.ui.adaptive.focusRing
 
 // Two-pane picker for windows >= 600 dp: provider rail | search + list | options. It reuses the phone's rows, trays, stars and search through [PickerUi].
 
 /** Fixed (not content-sized) so switching rail items never resizes the sheet; the list scrolls inside it. */
 private val TABLET_SHEET_HEIGHT = 560.dp
 private val OPTIONS_PANE_WIDTH = 224.dp
+private val OPTIONS_PANE_WIDTH_NARROW = 200.dp
+private val NARROW_DIALOG_WIDTH = 640.dp
 
 @Composable
 internal fun TabletPickerBody(ui: PickerUi, closeSheet: () -> Unit, loading: Boolean, modifier: Modifier, onRail: (String) -> Unit) {
@@ -46,18 +51,22 @@ internal fun TabletPickerBody(ui: PickerUi, closeSheet: () -> Unit, loading: Boo
                 ui.models.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     EmptyState(TfIcons.Sparkle, "No models available", "Reconnect to refresh configuration.")
                 }
-                else -> Row(Modifier.fillMaxSize()) {
-                    if (ui.multiProvider) ProviderRail(ui, onRail)
-                    Column(Modifier.weight(1f).fillMaxHeight().navigationBarsPadding()) {
-                        Spacer(Modifier.height(8.dp))
-                        PickerSearchField(ui)
-                        ui.singleSection?.takeIf { !ui.multiProvider && !ui.searching }?.let { SingleProviderBanner(it, ui.threadSelection) }
-                        Box(Modifier.weight(1f).fillMaxWidth()) { PickerLazyList(ui) }
-                    }
-                    val highlighted = ui.highlighted
-                    if (highlighted != null && ui.hasOptions) {
-                        VerticalDivider(color = c.line)
-                        OptionsPane(highlighted, providerDriver(highlighted.instanceId, ui.providers), ui.values, ui.applied, ui.optionsEnabled, ui.threadSelection, ui.showFast, ui.onSetModelOption)
+                // The options pane is 200dp in a dialog narrower than 640dp (a 673dp window leaves 625dp after the 24dp margins), else 224dp.
+                else -> BoxWithConstraints(Modifier.fillMaxSize()) {
+                    val optionsWidth = if (maxWidth < NARROW_DIALOG_WIDTH) OPTIONS_PANE_WIDTH_NARROW else OPTIONS_PANE_WIDTH
+                    Row(Modifier.fillMaxSize()) {
+                        if (ui.multiProvider) ProviderRail(ui, onRail)
+                        Column(Modifier.weight(1f).fillMaxHeight().navigationBarsPadding()) {
+                            Spacer(Modifier.height(8.dp))
+                            PickerSearchField(ui)
+                            ui.singleSection?.takeIf { !ui.multiProvider && !ui.searching }?.let { SingleProviderBanner(it, ui.threadSelection) }
+                            Box(Modifier.weight(1f).fillMaxWidth()) { PickerLazyList(ui) }
+                        }
+                        val highlighted = ui.highlighted
+                        if (highlighted != null && ui.hasOptions) {
+                            VerticalDivider(color = c.line)
+                            OptionsPane(highlighted, providerDriver(highlighted.instanceId, ui.providers), ui.values, ui.applied, ui.optionsEnabled, ui.threadSelection, ui.showFast, ui.onSetModelOption, optionsWidth)
+                        }
                     }
                 }
             }
@@ -90,7 +99,7 @@ private fun RailButton(selected: Boolean, description: String, onClick: () -> Un
     Box(Modifier.fillMaxWidth().height(48.dp)) {
         if (selected) Box(Modifier.align(Alignment.CenterStart).size(3.dp, 24.dp).background(c.accent, RoundedCornerShape(topEnd = 2.dp, bottomEnd = 2.dp)))
         Box(
-            Modifier.align(Alignment.Center).size(48.dp).selectable(selected, role = Role.Tab, onClick = onClick).semantics { contentDescription = description },
+            Modifier.align(Alignment.Center).size(48.dp).focusRing().handPointer().selectable(selected, role = Role.Tab, onClick = onClick).semantics { contentDescription = description },
             contentAlignment = Alignment.Center,
         ) {
             Box(Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).background(if (selected) c.accentSoft else Color.Transparent), contentAlignment = Alignment.Center) { icon() }
@@ -102,12 +111,12 @@ private fun RailButton(selected: Boolean, description: String, onClick: () -> Un
 @Composable
 private fun OptionsPane(
     model: ModelOption, driver: String, values: ModelOptionValues, applied: Boolean, optionsEnabled: Boolean, threadSelection: Boolean, showFast: Boolean,
-    onSetModelOption: (String, Any) -> Unit,
+    onSetModelOption: (String, Any) -> Unit, width: Dp,
 ) {
     val c = Tf.colors
     val reasoning = model.reasoning
     val fast = model.fastMode?.takeIf { showFast }
-    Column(Modifier.width(OPTIONS_PANE_WIDTH).fillMaxHeight().background(if (c.isDark) c.s1 else c.bg)) {
+    Column(Modifier.width(width).fillMaxHeight().background(if (c.isDark) c.s1 else c.bg)) {
         Row(Modifier.padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             ProviderMark(driver, null, Modifier.size(14.dp))
             Text(model.shortName ?: model.label, Modifier.padding(start = 6.dp).weight(1f), style = TrefoilType.meta.copy(fontWeight = FontWeight.SemiBold), color = if (optionsEnabled) c.text else c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -123,7 +132,7 @@ private fun OptionsPane(
                     val shape = RoundedCornerShape(12.dp)
                     Row(
                         Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(shape).background(if (selected) (if (optionsEnabled) c.accentSoft else c.s2) else Color.Transparent)
-                            .selectable(selected, optionsEnabled, Role.RadioButton) { onSetModelOption(reasoning.id, option.id) }
+                            .focusRing().handPointer().selectable(selected, optionsEnabled, Role.RadioButton) { onSetModelOption(reasoning.id, option.id) }
                             .padding(horizontal = 12.dp, vertical = 6.dp).semantics { contentDescription = "${reasoning.label} ${option.label}" },
                         verticalAlignment = Alignment.CenterVertically,
                     ) {

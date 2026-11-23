@@ -17,6 +17,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tajchert.trefoil.core.model.*
+import com.tajchert.trefoil.ui.adaptive.handPointer
+import com.tajchert.trefoil.ui.adaptive.focusRing
 
 /* Routes: how a machine is reached (local network, Tailscale, HTTPS, SSH, T3 Connect tunnel). Hosts only, never URLs or tokens. */
 
@@ -125,7 +127,7 @@ private fun RouteRowItem(row: RouteRow) {
 private fun LocalHttpConsent(allowed: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
     val c = Tf.colors
     Column(Modifier.fillMaxWidth().background(c.s2, RoundedCornerShape(14.dp)).padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Row(Modifier.toggleable(value = allowed, enabled = enabled, role = Role.Switch, onValueChange = onChange), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(Modifier.focusRing().handPointer(enabled).toggleable(value = allowed, enabled = enabled, role = Role.Switch, onValueChange = onChange), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Use local network (unencrypted HTTP)", Modifier.weight(1f), style = TrefoilType.meta, color = c.text)
             Switch(allowed, null, enabled = enabled)
         }

@@ -54,6 +54,8 @@ android {
         buildTypes.getByName("release").signingConfig = signingConfigs.getByName("release")
     }
 }
+// One screenshot run renders every preview in a single test JVM; Gradle's 512 MB default runs out of heap.
+tasks.withType<Test>().configureEach { if (name.contains("ScreenshotTest")) maxHeapSize = "2g" }
 dependencies {
     implementation(project(":core:model")); implementation(project(":core:session")); implementation(project(":core:ssh"))
     implementation(platform(libs.compose.bom))
@@ -72,6 +74,7 @@ dependencies {
     implementation(libs.webkit)
     implementation(libs.okhttp)
     implementation(libs.profileinstaller)
+    implementation(libs.window)
     baselineProfile(project(":baselineprofile"))
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.runner)

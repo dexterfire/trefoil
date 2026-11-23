@@ -10,6 +10,9 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.content.Intent
+import android.view.KeyboardShortcutGroup
+import android.view.Menu
+import com.tajchert.trefoil.ui.shell.keyboardShortcutGroups
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.tajchert.trefoil.widget.*
@@ -22,6 +25,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import android.net.Uri
 import kotlinx.coroutines.launch
 import androidx.activity.enableEdgeToEdge
+import com.tajchert.trefoil.ui.adaptive.ProvideWindowFold
 import androidx.activity.viewModels
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -50,6 +54,10 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         handleUsageIntent(intent)
         handlePairLinkIntent(intent)
+    }
+    /** The system Keyboard Shortcut Helper (Meta+/) lists the same table the app dispatches from. */
+    override fun onProvideKeyboardShortcuts(data: MutableList<KeyboardShortcutGroup>, menu: Menu?, deviceId: Int) {
+        data += keyboardShortcutGroups()
     }
     private val model: TrefoilViewModel by viewModels()
     private val fileActions by lazy { DownloadFileActions(this) }
@@ -157,7 +165,7 @@ class MainActivity : ComponentActivity() {
                 ComposerDraftUi(newThreadDrafts + replyPreviews, model::composerDraft, model::updateComposerDraft, model::clearComposerDraft,
                     model::discardComposerDraft, model::restoreComposerDraft, model::moveComposerDraft, model::updateComposerDraftText, draftsLoaded)
             }
-            TrefoilApp(
+            ProvideWindowFold { TrefoilApp(
                 onThreadShown = model::setThreadShown,
                 usageOpenRequest = usageRequest,
                 pairLinkRequest = pairLinkRequest,
@@ -231,7 +239,7 @@ class MainActivity : ComponentActivity() {
                 onAllowLocalNetworkHttp = model::allowLocalNetworkHttp,
                 keepConnected = keepConnected,
                 onKeepConnectedChange = ::onKeepConnectedChange,
-            )
+            ) }
         }
     }
 }

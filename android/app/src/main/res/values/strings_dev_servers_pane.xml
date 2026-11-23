@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="ports_detail_empty">Open a dev server to see it here</string>
+</resources>

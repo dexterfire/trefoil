@@ -137,3 +137,56 @@ internal fun usageOfflineNotice(connection: ConnectionStatus, canReadUsage: Bool
     !canReadUsage -> "Usage can't be read on this connection · showing last known data"
     else -> null
 }
+
+/** How Limits & usage lays itself out for the width of its container (never the window). */
+internal enum class UsageLayoutMode {
+    /** Phone column: Limits | Cost | Tokens tabs, edge to edge. */
+    Tabs,
+    /** Medium: the same tabs, Limits as a grid and Cost/Tokens in a centred reading column. */
+    TabsWide,
+    /** Wide: provider limits beside cost/tokens, no tabs. */
+    TwoColumn,
+}
+
+internal object UsageLayoutSpec {
+    /** Container width from which limits and history sit side by side. */
+    const val TwoColumnMinWidth = 1000f
+    const val TwoColumnMaxWidth = 1120f
+    const val LimitsColumnWidth = 380f
+    const val ColumnGap = 24f
+    /** Tabbed layout: smallest limit card, and widest Cost/Tokens column. */
+    const val LimitCellMinWidth = 300f
+    const val HistoryColumnMax = 760f
+    /** Side padding of the tabbed layout from 600dp: 16dp up to [HistoryPaddingRoomyFrom], 20dp beyond (limits grid: always 20dp). */
+    const val TabsWideSidePadding = 20f
+    const val HistoryPaddingRoomyFrom = 700f
+    /** Right column width from which Providers and Models sit side by side. */
+    const val SplitBreakdownMinWidth = 560f
+    const val ChartHeightWide = 148f
+    /** Chart height of the card layout of the tabbed (medium) container. */
+    const val ChartHeightTabsWide = 132f
+    /** Widest a bar of the daily chart grows on a wide container (the 7-day range would otherwise draw blocks). */
+    const val ChartMaxBarWidth = 44f
+    /** Height of the toolbar row (Cost | Tokens and the range chips) and of the matching column heading beside it. */
+    const val ToolbarHeight = 48f
+}
+
+/** Side padding of the Cost/Tokens column in the tabbed layout: 16dp from 600dp, 20dp from 700dp. */
+internal fun usageHistorySidePadding(containerWidthDp: Float): Float =
+    if (containerWidthDp >= UsageLayoutSpec.HistoryPaddingRoomyFrom) 20f else 16f
+
+internal fun usageLayoutMode(containerWidthDp: Float): UsageLayoutMode = when {
+    containerWidthDp >= UsageLayoutSpec.TwoColumnMinWidth -> UsageLayoutMode.TwoColumn
+    containerWidthDp >= com.tajchert.trefoil.ui.adaptive.AdaptiveSpec.MediumMinWidth -> UsageLayoutMode.TabsWide
+    else -> UsageLayoutMode.Tabs
+}
+
+/** Limit-card columns in the tabbed layout: two once two cells of [UsageLayoutSpec.LimitCellMinWidth] fit between the paddings and gap. */
+internal fun usageLimitColumns(containerWidthDp: Float, sidePaddingDp: Float = 16f, gapDp: Float = 12f): Int =
+    if (containerWidthDp - 2 * sidePaddingDp - gapDp >= 2 * UsageLayoutSpec.LimitCellMinWidth) 2 else 1
+
+internal fun usageSplitsBreakdown(rightColumnWidthDp: Float): Boolean = rightColumnWidthDp >= UsageLayoutSpec.SplitBreakdownMinWidth
+
+/** Width of the right (cost/tokens) column of the two-column layout inside a container [containerWidthDp] wide. */
+internal fun usageRightColumnWidth(containerWidthDp: Float, sidePaddingDp: Float = UsageLayoutSpec.ColumnGap): Float =
+    minOf(containerWidthDp, UsageLayoutSpec.TwoColumnMaxWidth) - 2 * sidePaddingDp - UsageLayoutSpec.LimitsColumnWidth - UsageLayoutSpec.ColumnGap

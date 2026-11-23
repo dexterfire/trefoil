@@ -15,8 +15,8 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -33,6 +33,9 @@ import com.tajchert.trefoil.core.model.RemoteFileReference
 import com.tajchert.trefoil.downloads.DownloadKey
 import com.tajchert.trefoil.downloads.DownloadStatus
 import com.tajchert.trefoil.downloads.isInlineImage
+import com.tajchert.trefoil.ui.adaptive.TfIconButton
+import com.tajchert.trefoil.ui.adaptive.handPointer
+import com.tajchert.trefoil.ui.adaptive.focusRing
 
 private sealed interface ImageLoad {
     data object Loading : ImageLoad
@@ -81,22 +84,23 @@ internal fun LoadedImageContent(reference: RemoteFileReference, image: ImageBitm
     val ui = LocalFileDownloadUi.current
     val shape = RoundedCornerShape(14.dp)
     val ratio = (image.width.toFloat() / image.height).coerceIn(0.5f, 3f)
-    var fullScreen by remember { mutableStateOf(false) }
+    var fullScreen by rememberSaveable(reference.identity) { mutableStateOf(false) }
     val key = ui.environmentId?.let { e -> ui.threadId?.let { DownloadKey(e, it, reference.identity) } }
     val state = ui.downloads[key]
     val saved = state?.status == DownloadStatus.Complete
     val saving = state?.status == DownloadStatus.Downloading
     Box(modifier.fillMaxWidth().aspectRatio(ratio).clip(shape).background(Tf.colors.s1).border(1.dp, Tf.colors.line, shape)
-        .clickable(onClickLabel = "Open image full screen") { fullScreen = true }) {
+        .clickable(onClickLabel = "Open image full screen") { fullScreen = true }.focusRing().handPointer()) {
         Image(image, reference.fileName, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
         Box(Modifier.align(Alignment.BottomEnd).padding(8.dp).size(36.dp).clip(CircleShape).background(Color.Black.copy(alpha = .55f)), contentAlignment = Alignment.Center) {
             when {
                 saving -> CircularProgressIndicator(Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
                 saved -> Icon(Icons.Default.Check, "Saved ${reference.fileName} to Downloads", Modifier.size(18.dp), tint = Color.White)
-                else -> IconButton(
+                else -> TfIconButton(
+                    Icons.Default.Download, "Download ${reference.fileName}",
                     onClick = { ui.environmentId?.let { e -> ui.threadId?.let { t -> ui.onDownload(e, t, reference) } } },
-                    enabled = ui.canDownload && key != null,
-                ) { Icon(Icons.Default.Download, "Download ${reference.fileName}", Modifier.size(18.dp), tint = Color.White) }
+                    enabled = ui.canDownload && key != null, iconSize = 18.dp, tint = Color.White,
+                )
             }
         }
     }
@@ -119,9 +123,7 @@ private fun FullScreenImage(name: String, image: ImageBitmap, onClose: () -> Uni
                 }
                 .graphicsLayer(scaleX = scale, scaleY = scale, translationX = offsetX, translationY = offsetY),
                 contentScale = ContentScale.Fit)
-            IconButton(onClose, Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(8.dp)) {
-                Icon(Icons.Default.Close, "Close image", tint = Color.White)
-            }
+            Box(Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(8.dp)) { TfIconButton(Icons.Default.Close, "Close image", onClose, tint = Color.White) }
         }
     }
 }

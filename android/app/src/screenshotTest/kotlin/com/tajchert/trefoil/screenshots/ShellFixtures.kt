@@ -2,11 +2,13 @@ package com.tajchert.trefoil.screenshots
 
 import com.tajchert.trefoil.core.model.ClientState
 import com.tajchert.trefoil.core.model.ConnectionStatus
+import com.tajchert.trefoil.core.model.LocalServerCatalog
 import com.tajchert.trefoil.core.model.MachineProbe
 import com.tajchert.trefoil.core.model.SavedEnvironment
 import com.tajchert.trefoil.core.model.SshHostKey
 import com.tajchert.trefoil.core.model.SshProfile
 import com.tajchert.trefoil.ui.ShellActions
+import com.tajchert.trefoil.ui.threadIndicator
 
 /** Fake data for shell and connection previews. Hosts use the reserved `.example.test` domain. */
 internal object ShellFixtures {
@@ -38,6 +40,22 @@ internal object ShellFixtures {
     )
     fun withConnection(status: ConnectionStatus, error: String? = null): ClientState =
         connected().copy(connection = status, error = error)
+    /** Connected list with no thread waiting for the user, nothing selected. */
+    fun quiet(): ClientState = FormFactorFixtures.listState().let { state ->
+        state.copy(threads = state.threads.filter { threadIndicator(it).kind != "attention" && threadIndicator(it).kind != "input" })
+    }
+    /**
+     * The Add screenshot previews conversation with everything the side panel can show: its dev servers (5173 started by the thread),
+     * the screen catalog and a running subagent roster.
+     */
+    fun sidePanel(): ClientState = FormFactorFixtures.conversationState().copy(
+        subagents = ConversationFixtures.subagents,
+        localServers = LocalServerCatalog(
+            servers = listOf(PortsFixtures.vite.copy(agentThreadId = "t-chat", terminalThreadId = "t-chat"), PortsFixtures.api.copy(terminalThreadId = "t-chat")),
+            live = true, supported = true,
+        ),
+        screens = FormFactorFixtures.screensState().screens,
+    )
     /** Nothing connected: the Machines first-run state. */
     fun nothingConnected(): ClientState = ClientState()
 }

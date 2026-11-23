@@ -5,7 +5,11 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -22,6 +26,11 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerInputScope
+import androidx.compose.ui.input.pointer.isSecondaryPressed
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -35,49 +44,92 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.core.session.ComposerDraft
 import com.tajchert.trefoil.core.session.ComposerDraftKey
+import com.tajchert.trefoil.ui.adaptive.LocalCompactHeight
+import com.tajchert.trefoil.ui.adaptive.TfIconButton
+import com.tajchert.trefoil.ui.shell.ShortcutId
+import com.tajchert.trefoil.ui.shell.tooltipWithShortcut
+import com.tajchert.trefoil.ui.adaptive.TfTooltip
+import com.tajchert.trefoil.ui.adaptive.handPointer
+import com.tajchert.trefoil.ui.adaptive.ThreadListChrome
+import com.tajchert.trefoil.ui.adaptive.focusRing
 
 /* ---------- Header ---------- */
 
+/**
+ * List header. The default [chrome] is the phone header; the rail and navigation variants decide every width-dependent detail
+ * from this header's own width (the list's width), never from the window. [compactHeight] narrows it to 48dp.
+ */
 @Composable
-internal fun ThreadListHeader(state: ClientState, shell: ShellActions?, railLayout: Boolean, canCreate: Boolean, create: () -> Unit, onSearch: () -> Unit) {
+internal fun ThreadListHeader(
+    state: ClientState, shell: ShellActions?, onSearch: () -> Unit,
+    chrome: ThreadListChrome = ThreadListChrome(), compactHeight: Boolean = false,
+) {
     val c = Tf.colors
     BoxWithConstraints {
-        // The machine name has priority: narrow headers show the limit gauge without its number.
-        val limitNumber = maxWidth >= 340.dp
-        Row(Modifier.fillMaxWidth().height(64.dp).padding(start = if (railLayout) 20.dp else 14.dp, end = if (railLayout) 8.dp else 6.dp),
-            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            if (railLayout) {
+        val minHeight = if (compactHeight) 48.dp else 64.dp
+        // The machine name has priority: narrow headers show the limit gauge without its number, and so do large font scales.
+        val listWidth = maxWidth
+        val limitNumber = listWidth >= LimitNumberMinWidth
+        val roomyText = LocalDensity.current.fontScale < 1.3f
+        when {
+            chrome.railPresent -> Row(Modifier.fillMaxWidth().heightIn(min = minHeight).padding(start = 20.dp, end = 8.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(state.environment?.name ?: "Threads", Modifier.weight(1f).semantics { heading() }, style = MaterialTheme.typography.headlineSmall,
                     color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            } else {
+                TfIconButton(TfIcons.Search, "Search", onSearch, iconSize = 22.dp, tint = c.text, tooltip = tooltipWithShortcut("Search threads", ShortcutId.SearchThreads))
+                chrome.onCollapse?.let { collapse -> TfIconButton(TfIcons.PanelLeft, "Hide thread list", collapse, iconSize = 22.dp, tint = c.text, tooltip = tooltipWithShortcut("Hide thread list", ShortcutId.ToggleThreadList)) }
+            }
+            chrome != ThreadListChrome() -> {
+                val navigation = chrome.onOpenNavigation
+                Row(Modifier.fillMaxWidth().heightIn(min = minHeight).padding(start = if (navigation != null) 4.dp else 14.dp, end = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    if (navigation != null) TfIconButton(TfIcons.Menu, "Open navigation", navigation, iconSize = 22.dp, tint = c.text, tooltip = "Navigation menu")
+                    Box(Modifier.weight(1f)) { MachinePill(state, onClick = { shell?.onMachines?.invoke() }, showRoute = listWidth >= RouteIconMinWidth) }
+                    shell?.onUsage?.let { openUsage ->
+                        val percent = remember(state.providers) { tightestLimitPercent(state.providers) }
+                        TfTooltip(limitChipTooltip(percent)) { LimitChip(percent, limitNumber && roomyText, openUsage) }
+                    }
+                    TfIconButton(TfIcons.Search, "Search", onSearch, iconSize = 22.dp, tint = c.text, tooltip = tooltipWithShortcut("Search threads", ShortcutId.SearchThreads))
+                    val collapse = chrome.onCollapse
+                    if (collapse != null && listWidth >= CollapseMinWidth) TfIconButton(TfIcons.PanelLeft, "Hide thread list", collapse, iconSize = 22.dp, tint = c.text, tooltip = tooltipWithShortcut("Hide thread list", ShortcutId.ToggleThreadList))
+                    else if (navigation == null && shell != null) ShellMenuButton(state, shell, c.text)
+                }
+            }
+            else -> Row(Modifier.fillMaxWidth().height(minHeight).padding(start = 14.dp, end = 6.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                 Box(Modifier.weight(1f)) { MachinePill(state, onClick = { shell?.onMachines?.invoke() }) }
                 shell?.onUsage?.let { openUsage -> LimitChip(remember(state.providers) { tightestLimitPercent(state.providers) }, limitNumber, openUsage) }
+                TfIconButton(TfIcons.Search, "Search", onSearch, iconSize = 22.dp, tint = c.text, tooltip = tooltipWithShortcut("Search threads", ShortcutId.SearchThreads))
+                if (shell != null) ShellMenuButton(state, shell, c.text)
             }
-            IconButton(onClick = onSearch) { Icon(TfIcons.Search, "Search", Modifier.size(22.dp), tint = c.text) }
-            if (railLayout) {
-                Surface(onClick = create, enabled = canCreate, shape = RoundedCornerShape(14.dp), color = if (canCreate) c.accent else c.s2,
-                    contentColor = if (canCreate) c.onAccent else c.muted, modifier = Modifier.padding(start = 4.dp).size(44.dp).semantics { contentDescription = "New thread" }) {
-                    Box(contentAlignment = Alignment.Center) { Icon(TfIcons.Plus, null, Modifier.size(22.dp)) }
-                }
-            } else if (shell != null) ShellMenuButton(state, shell, c.text)
         }
     }
 }
 
+/** List widths (dp) at which header details appear; shared with tests. */
+internal val LimitNumberMinWidth = 340.dp
+internal val RouteIconMinWidth = 340.dp
+internal val CollapseMinWidth = 360.dp
+
+private fun limitChipTooltip(percent: Int?) = if (percent == null) "Limits & usage" else "Limits & usage · $percent% left"
+
 /** Current machine: status dot + environment name + chevron. Opens Machines. */
 @Composable
-internal fun MachinePill(state: ClientState, onClick: () -> Unit) {
+internal fun MachinePill(state: ClientState, onClick: () -> Unit, showRoute: Boolean = true) {
     val c = Tf.colors
     val status = machineStatus(state)
     val route = state.activeRoute?.takeIf { state.connection == ConnectionStatus.Connected }
     Surface(onClick = onClick, shape = RoundedCornerShape(20.dp), color = c.s2, contentColor = c.text,
-        modifier = Modifier.semantics {
+        modifier = Modifier.focusRing(RoundedCornerShape(20.dp)).handPointer().semantics {
             contentDescription = "Switch machine"
             stateDescription = listOfNotNull(state.environment?.name ?: "No machine", status.label, route?.let { "via ${routeKindLabel(it.kind)}" }).joinToString(", ")
         }) {
@@ -85,7 +137,7 @@ internal fun MachinePill(state: ClientState, onClick: () -> Unit) {
             StatusDot(status.color(c))
             Text(state.environment?.name ?: "Machines", Modifier.weight(1f, fill = false), fontFamily = InterFamily, fontWeight = FontWeight.SemiBold, fontSize = 15.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (route != null) Icon(routeKindIcon(route.kind), null, Modifier.size(14.dp), tint = c.muted)
+            if (route != null && showRoute) Icon(routeKindIcon(route.kind), null, Modifier.size(14.dp), tint = c.muted)
             Icon(TfIcons.ChevronDown, null, Modifier.size(18.dp))
         }
     }
@@ -108,26 +160,33 @@ internal fun ThreadSearchField(query: String, onQuery: (String) -> Unit, close: 
                     inner()
                 })
         }
-        IconButton(onClick = close) { Icon(TfIcons.Close, if (query.isEmpty()) "Close search" else "Clear search", Modifier.size(18.dp), tint = c.muted) }
+        TfIconButton(TfIcons.Close, if (query.isEmpty()) "Close search" else "Clear search", close, iconSize = 18.dp, tint = c.muted)
     }
 }
 
 /* ---------- Chips ---------- */
 
 @Composable
-internal fun ThreadFilterChips(filter: ThreadFilter, counts: Map<ThreadFilter, Int>, projects: List<Project>, project: Project?, onFilter: (ThreadFilter) -> Unit, onProject: (String?) -> Unit) {
+internal fun ThreadFilterChips(filter: ThreadFilter, counts: Map<ThreadFilter, Int>, projects: List<Project>, project: Project?, onFilter: (ThreadFilter) -> Unit, onProject: (String?) -> Unit,
+                               /** Shell chrome only. Fades the strip where it scrolls, spaces chips 6dp, tightens the chips (10dp inner padding) and the start inset (12dp) so a 336-340dp list peeks the Project chip, and centres them in the 48dp strip. */
+                               tabletChrome: Boolean = false) {
     val c = Tf.colors
     var projectsOpen by remember { mutableStateOf(false) }
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        TfChip("All", { onFilter(ThreadFilter.All) }, selected = filter == ThreadFilter.All, count = counts[ThreadFilter.All])
+    val scroll = rememberScrollState()
+    // The 48dp strip is unchanged (4 + 36 + 8): centring the chips lets their 48dp touch area fit inside it without adding header height.
+    Row(Modifier.fillMaxWidth()
+        .then(if (tabletChrome) Modifier.scrollEdgeFades(scroll, c.bg, ChipFadeWidth) else Modifier)
+        .horizontalScroll(scroll)
+        .padding(start = if (tabletChrome) 12.dp else 16.dp, end = 16.dp, top = if (tabletChrome) 6.dp else 4.dp, bottom = if (tabletChrome) 6.dp else 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(if (tabletChrome) 6.dp else 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        TfChip("All", { onFilter(ThreadFilter.All) }, selected = filter == ThreadFilter.All, count = counts[ThreadFilter.All], dense = tabletChrome)
         TfChip("Needs you", { onFilter(if (filter == ThreadFilter.NeedsYou) ThreadFilter.All else ThreadFilter.NeedsYou) }, selected = filter == ThreadFilter.NeedsYou,
-            count = counts[ThreadFilter.NeedsYou], leading = { StatusDot(c.amber) })
+            count = counts[ThreadFilter.NeedsYou], leading = { StatusDot(c.amber) }, dense = tabletChrome)
         TfChip("Working", { onFilter(if (filter == ThreadFilter.Working) ThreadFilter.All else ThreadFilter.Working) }, selected = filter == ThreadFilter.Working,
-            count = counts[ThreadFilter.Working], leading = { StatusDot(c.blue) })
+            count = counts[ThreadFilter.Working], leading = { StatusDot(c.blue) }, dense = tabletChrome)
         if (projects.isNotEmpty()) Box {
             TfChip(project?.title ?: "Project", { projectsOpen = true }, selected = project != null,
-                trailing = { Icon(TfIcons.ChevronDown, null, Modifier.size(14.dp)) })
+                trailing = { Icon(TfIcons.ChevronDown, null, Modifier.size(14.dp)) }, dense = tabletChrome)
             DropdownMenu(projectsOpen, { projectsOpen = false }) {
                 DropdownMenuItem(text = { Text("All projects") }, onClick = { onProject(null); projectsOpen = false })
                 projects.forEach { item ->
@@ -139,13 +198,15 @@ internal fun ThreadFilterChips(filter: ThreadFilter, counts: Map<ThreadFilter, I
     }
 }
 
+private val ChipFadeWidth = 16.dp
+
 /* ---------- Sections ---------- */
 
 /** Uppercase section label; tapping folds the section. Count + chevron only appear while folded. */
 @Composable
 internal fun ShelfLabel(title: String, count: Int, open: Boolean, dot: Color?, toggle: () -> Unit) {
     val c = Tf.colors
-    Row(Modifier.fillMaxWidth().clickable(onClick = toggle).semantics { contentDescription = "$title shelf"; stateDescription = if (open) "Expanded" else "Collapsed"; heading() }
+    Row(Modifier.fillMaxWidth().focusRing().handPointer().clickable(onClick = toggle).semantics { contentDescription = "$title shelf"; stateDescription = if (open) "Expanded" else "Collapsed"; heading() }
         .padding(start = 20.dp, end = 16.dp, top = 18.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         SectionLabel(title, Modifier.weight(1f), dot = dot)
         if (!open) {
@@ -160,7 +221,7 @@ internal fun ShelfLabel(title: String, count: Int, open: Boolean, dot: Color?, t
 internal fun FoldedShelfRow(title: String, count: Int, open: Boolean, toggle: () -> Unit) {
     val c = Tf.colors
     val angle by animateFloatAsState(if (open) 90f else 0f, label = "fold")
-    Row(Modifier.fillMaxWidth().clickable(onClick = toggle).semantics { contentDescription = "$title shelf"; stateDescription = if (open) "Expanded" else "Collapsed" }
+    Row(Modifier.fillMaxWidth().focusRing().handPointer().clickable(onClick = toggle).semantics { contentDescription = "$title shelf"; stateDescription = if (open) "Expanded" else "Collapsed" }
         .padding(horizontal = 20.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Icon(TfIcons.Settled, null, Modifier.size(18.dp), tint = c.muted)
         Text(title, fontFamily = InterFamily, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = c.muted)
@@ -206,62 +267,106 @@ internal fun threadRowTime(thread: ThreadSummary, now: Long): String {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun ThreadRow(state: ClientState, thread: ThreadSummary, project: Project?, now: Long, selected: Boolean,
-                       onAction: (ThreadTarget, ThreadAction, String?) -> Unit, replyDraft: ComposerDraft? = null, select: () -> Unit) {
+                       onAction: (ThreadTarget, ThreadAction, String?) -> Unit, replyDraft: ComposerDraft? = null, tabletChrome: Boolean = false, select: () -> Unit) {
     val c = Tf.colors
     val indicator = threadIndicator(thread)
     val mark = threadRowMark(thread)
     val title = thread.title.ifBlank { "Untitled conversation" }
+    val compact = LocalCompactHeight.current
     var menu by remember { mutableStateOf(false) }
+    var menuOffset by remember { mutableStateOf(RowMenuOffset) }
     val hasMenu = state.environment != null
+    val hover = remember { MutableInteractionSource() }
+    val hovered by hover.collectIsHoveredAsState()
+    val density = LocalDensity.current
+    fun openMenu(offset: DpOffset = RowMenuOffset) { menuOffset = offset; menu = true }
     Box {
-        Row(Modifier.fillMaxWidth().background(if (selected) c.s2 else Color.Transparent)
+        // Selected and hovered rows are a 12dp container inset 8dp from the list edges; the content keeps its 20dp inset.
+        Box(Modifier.fillMaxWidth()
             .semantics {
                 this.selected = selected
-                if (hasMenu) customActions = listOf(CustomAccessibilityAction("Thread actions for ${thread.title}") { menu = true; true })
+                if (hasMenu) customActions = listOf(CustomAccessibilityAction("Thread actions for ${thread.title}") { openMenu(); true })
             }
-            .combinedClickable(onClickLabel = "Open thread", onLongClickLabel = if (hasMenu) "Thread actions" else null,
-                onLongClick = if (hasMenu) ({ menu = true }) else null, onClick = select)
-            .padding(horizontal = 20.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.Top) {
-            ProjectTile(project?.title ?: "?", size = 40.dp, key = project?.id ?: thread.projectId)
-            Column(Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(title, Modifier.weight(1f), style = TrefoilType.rowTitle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    RowTime(thread, indicator, mark, now)
-                }
-                val preview = thread.latestMessage.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }
-                val needs = indicator.kind in setOf("attention", "input")
-                // An unsent reply replaces the latest message unless the thread is open (its composer shows the text).
-                val draftLine = replyDraft?.takeIf { !selected }?.let(::draftFirstLine)
-                when {
-                    draftLine != null && needs -> Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(indicator.label, style = TrefoilType.preview, color = c.amber, maxLines = 1, softWrap = false)
-                        Text(" · ", style = TrefoilType.preview, color = c.muted, maxLines = 1)
-                        DraftPreview(draftLine, Modifier.weight(1f, fill = false))
+            .hoverable(hover)
+            .then(if (hasMenu) Modifier.pointerInput(density) { openMenuOnSecondaryPress(density) { offset -> openMenu(offset) } } else Modifier)
+            .focusRing().handPointer().combinedClickable(interactionSource = hover, indication = LocalIndication.current, onClickLabel = "Open thread", onLongClickLabel = if (hasMenu) "Thread actions" else null,
+                onLongClick = if (hasMenu) ({ openMenu() }) else null, onClick = select)) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp)
+                .background(when { selected -> c.s2; hovered -> c.s2.copy(alpha = .55f); else -> Color.Transparent }, RoundedCornerShape(12.dp))
+                .padding(horizontal = 12.dp, vertical = if (compact) 8.dp else 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.Top) {
+                ProjectTile(project?.title ?: "?", size = if (compact) 32.dp else 40.dp, key = project?.id ?: thread.projectId, capFontScale = tabletChrome)
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(title, Modifier.weight(1f), style = TrefoilType.rowTitle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        RowTime(thread, indicator, mark, now)
                     }
-                    draftLine != null -> DraftPreview(draftLine)
-                    // A waiting thread always names what it wants; the label keeps its width and the preview gives way.
-                    needs -> Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(indicator.label, style = TrefoilType.preview, color = c.amber, maxLines = 1, softWrap = false)
-                        if (preview != null) Text(" · $preview", Modifier.weight(1f, fill = false), style = TrefoilType.preview, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                    preview != null -> Text(preview, style = TrefoilType.preview, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    indicator.kind == "error" -> Text(indicator.label, style = TrefoilType.preview, color = c.red, maxLines = 1)
-                }
-                // Project name keeps its full width; only the branch gives way. The agent mark sits in a fixed slot at the row's bottom-right.
-                Row(Modifier.padding(top = 6.dp).heightIn(min = 24.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(project?.title ?: "Project", style = TrefoilType.meta, color = c.muted, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                        thread.branch?.takeIf { it.isNotBlank() }?.let { branch ->
-                            Icon(TfIcons.Branch, null, Modifier.size(14.dp), tint = c.muted)
-                            Text(branch, Modifier.weight(1f, fill = false), style = TrefoilType.mono, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    val preview = thread.latestMessage.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }
+                    val needs = indicator.kind in setOf("attention", "input")
+                    // An unsent reply replaces the latest message unless the thread is open (its composer shows the text).
+                    val draftLine = replyDraft?.takeIf { !selected }?.let(::draftFirstLine)
+                    when {
+                        draftLine != null && needs -> Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(indicator.label, style = TrefoilType.preview, color = c.amber, maxLines = 1, softWrap = false)
+                            Text(" · ", style = TrefoilType.preview, color = c.muted, maxLines = 1)
+                            DraftPreview(draftLine, Modifier.weight(1f, fill = false))
                         }
+                        draftLine != null -> DraftPreview(draftLine)
+                        // A waiting thread always names what it wants; the label keeps its width and the preview gives way.
+                        needs -> Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(indicator.label, style = TrefoilType.preview, color = c.amber, maxLines = 1, softWrap = false)
+                            if (preview != null) Text(" · $preview", Modifier.weight(1f, fill = false), style = TrefoilType.preview, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        preview != null -> Text(preview, style = TrefoilType.preview, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        indicator.kind == "error" -> Text(indicator.label, style = TrefoilType.preview, color = c.red, maxLines = 1)
                     }
-                    ThreadProviderStack(threadProviders(thread, state.providers), state.providers)
+                    // Project name keeps its full width; only the branch gives way. The agent mark sits in a fixed slot at the row's bottom-right.
+                    // Compact height drops this meta row: two lines per thread.
+                    if (!compact) Row(Modifier.padding(top = 6.dp).heightIn(min = 24.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(project?.title ?: "Project", style = TrefoilType.meta, color = c.muted, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                            thread.branch?.takeIf { it.isNotBlank() }?.let { branch ->
+                                Icon(TfIcons.Branch, null, Modifier.size(14.dp), tint = c.muted)
+                                Text(branch, Modifier.weight(1f, fill = false), style = TrefoilType.mono, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                        ThreadProviderStack(threadProviders(thread, state.providers), state.providers)
+                    }
                 }
+            }
+            // Round-3a item 15: the bar sits beside the project tile (row padding 12dp + tile 40dp or 32dp), not at the row's vertical centre.
+            if (selected) {
+                val bar = tileBarTop(compact)
+                Box(Modifier.align(Alignment.TopStart).padding(start = 8.dp, top = bar.top).size(width = 3.dp, height = bar.height)
+                    .background(c.accent, RoundedCornerShape(topEnd = 2.dp, bottomEnd = 2.dp)))
             }
         }
-        if (hasMenu) ThreadActionsDropdown(state, thread, onAction, menu, { menu = it }, offset = DpOffset(74.dp, 0.dp))
+        if (hasMenu) ThreadActionsDropdown(state, thread, onAction, menu, { menu = it }, offset = menuOffset)
+    }
+}
+
+internal data class SelectedBar(val top: Dp, val height: Dp)
+
+/** Selected-row accent bar: anchored to the project tile (tile top 12dp, or 8dp compact, plus centring on the tile). */
+internal fun tileBarTop(compact: Boolean) = if (compact) SelectedBar(14.dp, 20.dp) else SelectedBar(20.dp, 24.dp)
+
+/** Where the actions menu opens for a long-press or an accessibility action: below the row, near its text. */
+private val RowMenuOffset = DpOffset(74.dp, 0.dp)
+
+/**
+ * Calls [open] with the pointer position when a secondary (right) mouse button is pressed, and consumes that press so the
+ * row is not also opened. The offset is relative to the row's bottom-start corner, which is where the dropdown anchors.
+ */
+private suspend fun PointerInputScope.openMenuOnSecondaryPress(density: Density, open: (DpOffset) -> Unit) {
+    awaitPointerEventScope {
+        while (true) {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) {
+                val at = event.changes.first().position
+                open(with(density) { DpOffset(at.x.toDp(), (at.y - size.height).toDp()) })
+                event.changes.forEach { it.consume() }
+            }
+        }
     }
 }
 
@@ -283,13 +388,13 @@ internal fun relativeDraftTime(updatedAtMillis: Long, now: Long): String = relat
 
 /** One unsent new-thread prompt: pencil, project tile, first line, "Draft" label and age. Tap reopens the sheet; the trailing button discards. */
 @Composable
-internal fun DraftRow(draft: ComposerDraft, project: Project, now: Long, onOpen: () -> Unit, onDiscard: () -> Unit) {
+internal fun DraftRow(draft: ComposerDraft, project: Project, now: Long, onOpen: () -> Unit, tabletChrome: Boolean = false, onDiscard: () -> Unit) {
     val c = Tf.colors
     val title = draftFirstLine(draft) ?: "Untitled draft"
-    Row(Modifier.fillMaxWidth().clickable(onClickLabel = "Open draft", onClick = onOpen).semantics(mergeDescendants = true) { contentDescription = "Draft in ${project.title}: $title" }
+    Row(Modifier.fillMaxWidth().focusRing().handPointer().clickable(onClickLabel = "Open draft", onClick = onOpen).semantics(mergeDescendants = true) { contentDescription = "Draft in ${project.title}: $title" }
         .padding(start = 20.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.Top) {
-        ProjectTile(project.title, size = 40.dp, key = project.id)
+        ProjectTile(project.title, size = 40.dp, key = project.id, capFontScale = tabletChrome)
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(TfIcons.Edit, null, Modifier.size(15.dp), tint = c.accent)
@@ -302,7 +407,7 @@ internal fun DraftRow(draft: ComposerDraft, project: Project, now: Long, onOpen:
                 Text("· ${project.title}", Modifier.weight(1f, fill = false), style = TrefoilType.meta, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
-        IconButton(onClick = onDiscard, Modifier.size(40.dp)) { Icon(TfIcons.Close, "Discard draft", Modifier.size(18.dp), tint = c.muted) }
+        TfIconButton(TfIcons.Close, "Discard draft", onDiscard, Modifier.size(40.dp), iconSize = 18.dp, tint = c.muted)
     }
 }
 
@@ -331,9 +436,14 @@ private fun RowTime(thread: ThreadSummary, indicator: ThreadIndicator, mark: Row
 internal fun NewThreadFab(enabled: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val c = Tf.colors
     val shape = CircleShape
-    Surface(onClick = onClick, enabled = enabled, shape = shape, color = if (enabled) c.accent else c.s2, contentColor = if (enabled) c.onAccent else c.muted,
-        modifier = modifier.shadow(if (enabled) 8.dp else 0.dp, shape).semantics { contentDescription = "New thread"; role = Role.Button }) {
-        Box(Modifier.size(56.dp), contentAlignment = Alignment.Center) { Icon(TfIcons.Plus, null, Modifier.size(24.dp)) }
+    // The caller's modifier (align, snackbar offset) stays on a wrapper: TooltipBox does not pass parent data through.
+    Box(modifier) {
+        TfTooltip(tooltipWithShortcut("New thread", ShortcutId.NewThread)) {
+            Surface(onClick = onClick, enabled = enabled, shape = shape, color = if (enabled) c.accent else c.s2, contentColor = if (enabled) c.onAccent else c.muted,
+                modifier = Modifier.shadow(if (enabled) 8.dp else 0.dp, shape).focusRing(shape).handPointer(enabled).semantics { contentDescription = "New thread"; role = Role.Button }) {
+                Box(Modifier.size(56.dp), contentAlignment = Alignment.Center) { Icon(TfIcons.Plus, null, Modifier.size(24.dp)) }
+            }
+        }
     }
 }
 

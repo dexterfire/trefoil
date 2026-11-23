@@ -174,13 +174,6 @@ class ThreadPresentationTest {
         }
         assertEquals(RowMark.Done, threadRowMark(blocked.copy(status = "completed", activityRunStatus = null)))
     }
-    @Test fun shellLayoutBreakpoints() {
-        assertEquals(ShellLayout.Phone, shellLayout(411f))
-        assertEquals(ShellLayout.TwoPane, shellLayout(600f))
-        assertEquals(ShellLayout.TwoPane, shellLayout(840f))
-        assertEquals(ShellLayout.Rail, shellLayout(1280f))
-        assertEquals("Mac", railLabel("Mac mini"))
-    }
     @Test fun invalidAndFutureTimesAreSafe() {
         assertEquals("", relativeThreadTime("invalid", 0))
         assertEquals("now", relativeThreadTime("2026-11-06T09:00:00Z", 0))

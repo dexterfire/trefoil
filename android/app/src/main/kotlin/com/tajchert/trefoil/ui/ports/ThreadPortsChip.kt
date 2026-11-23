@@ -23,6 +23,8 @@ import com.tajchert.trefoil.core.model.DiscoveredLocalServer
 import com.tajchert.trefoil.ui.Tf
 import com.tajchert.trefoil.ui.TfIcons
 import com.tajchert.trefoil.ui.TrefoilType
+import com.tajchert.trefoil.ui.adaptive.handPointer
+import com.tajchert.trefoil.ui.adaptive.focusRing
 
 /**
  * Thread-header entry point for the ports screen: "Dev server :5173", or "N dev servers" for several.
@@ -37,7 +39,7 @@ fun ThreadPortsChip(servers: List<DiscoveredLocalServer>, onClick: () -> Unit, m
     val description = if (ports.size == 1) stringResource(R.string.ports_chip_description_single, ports[0]) else stringResource(R.string.ports_chip_description_multiple, ports.size)
     Surface(
         onClick = onClick, shape = RoundedCornerShape(16.dp), color = c.s2, contentColor = c.text,
-        modifier = modifier.padding(end = 2.dp).semantics { contentDescription = description; role = Role.Button },
+        modifier = modifier.padding(end = 2.dp).focusRing(RoundedCornerShape(16.dp)).handPointer().semantics { contentDescription = description; role = Role.Button },
     ) {
         Row(Modifier.height(32.dp).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Icon(TfIcons.Globe, null, Modifier.size(16.dp))

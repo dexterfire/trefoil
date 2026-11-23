@@ -15,6 +15,11 @@ import androidx.compose.material3.Text
 import com.android.tools.screenshot.PreviewTest
 import com.tajchert.trefoil.ui.Tf
 import com.tajchert.trefoil.ui.TrefoilTheme
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.foundation.layout.Arrangement
+import com.tajchert.trefoil.ui.adaptive.LocalCompactHeight
+import com.tajchert.trefoil.ui.ports.DevServersPaneLayout
+import com.tajchert.trefoil.ui.ports.PortBrowserState
 import com.tajchert.trefoil.ui.ports.PortsScreen
 import com.tajchert.trefoil.ui.ports.PortsUiState
 import com.tajchert.trefoil.ui.ports.ThreadPortsChip
@@ -133,3 +138,78 @@ fun TunnelBrowser_Error_Light() { BrowserShot(error = "net::ERR_CONNECTION_RESET
 @Preview(showBackground = true, widthDp = 400, heightDp = 800, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun TunnelBrowser_Error_Dark() { BrowserShot(error = "net::ERR_CONNECTION_RESET", dark = true) }
+
+/** A stand-in for the forwarded page: a WebView does not render under Layoutlib. */
+@Composable
+private fun FakePage() {
+    Column(Modifier.fillMaxSize().background(Tf.colors.s1).padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Vite + React", color = Tf.colors.text)
+        Text("count is 3", color = Tf.colors.muted)
+    }
+}
+
+private val openVite = PortBrowserState("env-workstation", 5173, "http://localhost:5173/", "vite")
+
+@Composable
+private fun DevServersShot(state: PortsUiState, browser: PortBrowserState?, hosted: Boolean = false, dark: Boolean = false, compactHeight: Boolean = false) {
+    TrefoilTheme(darkTheme = dark) {
+        CompositionLocalProvider(LocalCompactHeight provides compactHeight) {
+            DevServersPaneLayout(state, PortsFixtures.actions, browser, hosted) { url, title, singleToolbar ->
+                TunnelBrowserLayout(
+                    title = title, address = url, canGoBack = true, canGoForward = false, loading = false, progress = 100, error = null,
+                    onClose = {}, onPageBack = {}, onPageForward = {}, onReload = {}, onStop = {}, onOpenExternal = {}, singleToolbar = singleToolbar,
+                ) { FakePage() }
+            }
+        }
+    }
+}
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 1200, heightDp = 800)
+@Composable
+fun DevServers_PageOpen_Wide_Light() { DevServersShot(PortsFixtures.mixed, openVite) }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 1200, heightDp = 800, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun DevServers_PageOpen_Wide_Dark() { DevServersShot(PortsFixtures.mixed, openVite, dark = true) }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 1200, heightDp = 800)
+@Composable
+fun DevServers_NothingOpen_Wide_Light() { DevServersShot(PortsFixtures.mixed, null, hosted = true) }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 1200, heightDp = 800)
+@Composable
+fun DevServers_EmptyList_Wide_Light() { DevServersShot(PortsFixtures.empty, null, hosted = true) }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 720, heightDp = 841)
+@Composable
+fun DevServers_Grid_Medium_Light() { DevServersShot(PortsFixtures.mixed, null, hosted = true) }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 880, heightDp = 400)
+@Composable
+fun DevServers_PageOpen_CompactHeight_Light() { DevServersShot(PortsFixtures.mixed, openVite, hosted = true, compactHeight = true) }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 880, heightDp = 400)
+@Composable
+fun DevServers_NothingOpen_CompactHeight_Light() { DevServersShot(PortsFixtures.mixed, null, hosted = true, compactHeight = true) }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 420, heightDp = 800)
+@Composable
+fun DevServers_HostedList_Panel_Light() { DevServersShot(PortsFixtures.mixed, null, hosted = true) }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 420, heightDp = 800)
+@Composable
+fun DevServers_HostedPage_Panel_Light() { DevServersShot(PortsFixtures.mixed, openVite, hosted = true) }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 360, heightDp = 800, fontScale = 1.3f)
+@Composable
+fun DevServers_List_FontScale_Light() { DevServersShot(PortsFixtures.mixed, null) }

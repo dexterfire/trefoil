@@ -30,6 +30,7 @@ import com.tajchert.trefoil.downloads.HtmlRenderFetch
 import com.tajchert.trefoil.ui.LocalFileDownloadUi
 import com.tajchert.trefoil.ui.Tf
 import com.tajchert.trefoil.ui.TrefoilType
+import com.tajchert.trefoil.ui.adaptive.TfIconButton
 
 /** What the inline card shows. [Ready] carries the page; its `toString` never prints content. */
 internal sealed interface HtmlRenderState {
@@ -115,8 +116,7 @@ internal fun HtmlRenderCard(reference: HtmlRenderReference, modifier: Modifier =
  * is saved with it, because inputs of rememberSaveable are not checked when state is restored after a rotation.
  */
 @Composable
-internal fun rememberHtmlRenderContentHeight(reference: HtmlRenderReference): MutableState<Float?> {
-    val width = LocalConfiguration.current.screenWidthDp
+internal fun rememberHtmlRenderContentHeight(reference: HtmlRenderReference, width: Int = LocalConfiguration.current.screenWidthDp): MutableState<Float?> {
     val saved = rememberSaveable(reference) { mutableStateOf<Pair<Int, Float>?>(null) }
     return remember(saved, width) {
         object : MutableState<Float?> {
@@ -148,19 +148,19 @@ internal fun HtmlRenderCardContent(
     val theme = remember(c) { htmlRenderTheme(c) }
     // Saveable so a rotation does not close the full-screen page.
     var fullScreen by rememberSaveable(reference) { mutableStateOf(false) }
-    var contentHeight by rememberHtmlRenderContentHeight(reference)
     val ready = state as? HtmlRenderState.Ready
     Surface(modifier.fillMaxWidth(), shape = shape, color = c.s1, contentColor = c.text, border = BorderStroke(1.dp, c.line)) {
         Column {
             Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 2.dp).heightIn(min = 40.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Code, null, Modifier.size(16.dp), tint = c.muted)
                 Text(reference.title, Modifier.weight(1f).padding(horizontal = 8.dp), style = TrefoilType.meta, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                IconButton(onClick = { fullScreen = true }, enabled = ready != null, modifier = Modifier.size(40.dp)) {
-                    Icon(Icons.Default.OpenInFull, "Open “${reference.title}” full screen", Modifier.size(18.dp), tint = if (ready != null) c.muted else c.muted.copy(alpha = .4f))
-                }
+                TfIconButton(Icons.Default.OpenInFull, "Open “${reference.title}” full screen", { fullScreen = true }, Modifier.size(40.dp), enabled = ready != null,
+                    iconSize = 18.dp, tint = if (ready != null) c.muted else c.muted.copy(alpha = .4f))
             }
             HorizontalDivider(color = c.line)
             BoxWithConstraints(Modifier.fillMaxWidth().background(c.bg)) {
+                // Measured at the card's own width (a pane or column, not the screen), so a resized pane never reuses a stale height.
+                var contentHeight by rememberHtmlRenderContentHeight(reference, maxWidth.value.toInt())
                 val fallback = htmlRenderFrameHeight(reference, maxWidth.value)
                 when (state) {
                     is HtmlRenderState.Ready -> {
@@ -230,7 +230,7 @@ private fun HtmlRenderFullScreen(reference: HtmlRenderReference, html: String, t
         Surface(Modifier.fillMaxSize(), color = c.bg, contentColor = c.text) {
             Column(Modifier.fillMaxSize().safeDrawingPadding()) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).background(c.s1).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = onClose) { Icon(Icons.Default.Close, "Close", tint = c.text) }
+                    TfIconButton(Icons.Default.Close, "Close", onClose, tint = c.text)
                     Text(reference.title, Modifier.weight(1f).padding(end = 12.dp), style = TrefoilType.rowTitle, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 HorizontalDivider(color = c.line)

@@ -1,6 +1,7 @@
 package com.tajchert.trefoil.ui.ports
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.net.Uri
 import android.view.ViewGroup
 import android.webkit.ConsoleMessage
@@ -23,8 +24,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -50,6 +53,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
@@ -67,6 +71,8 @@ import com.tajchert.trefoil.R
 import com.tajchert.trefoil.ui.Tf
 import com.tajchert.trefoil.ui.TfIcons
 import com.tajchert.trefoil.ui.TrefoilType
+import com.tajchert.trefoil.ui.adaptive.LocalCompactHeight
+import com.tajchert.trefoil.ui.adaptive.TfIconButton
 import java.net.URI
 
 /** What the in-app browser does with a navigation request. */
@@ -135,9 +141,14 @@ internal class TunnelBrowserWebState(initialUrl: String) {
  * In-app browser for a forwarded dev server. [url] is the local forward (`http://localhost:N/`); the page title
  * is [title]. JavaScript and DOM storage are on because this is a dev tool. Navigation stays on the forwarded
  * origin, see [tunnelNavigation]. [onOpenExternal] opens the forward in the device browser, [onBack] leaves.
+ * [singleToolbar] swaps the title bar, address row and bottom page controls for one toolbar row (list-detail panes);
+ * [browserActions] is drawn in that row, or in the title bar, just before "open externally".
  */
 @Composable
-fun TunnelBrowserScreen(url: String, title: String, onBack: () -> Unit, onOpenExternal: () -> Unit, modifier: Modifier = Modifier) {
+fun TunnelBrowserScreen(
+    url: String, title: String, onBack: () -> Unit, onOpenExternal: () -> Unit, modifier: Modifier = Modifier,
+    singleToolbar: Boolean = false, browserActions: (@Composable RowScope.() -> Unit)? = null, panelToolbar: Boolean = false,
+) {
     val uriHandler = LocalUriHandler.current
     var generation by remember(url) { mutableIntStateOf(0) }
     val web = remember(url, generation) { TunnelBrowserWebState(url) }
@@ -154,10 +165,14 @@ fun TunnelBrowserScreen(url: String, title: String, onBack: () -> Unit, onOpenEx
         onStop = { web.webView?.stopLoading() },
         onOpenExternal = onOpenExternal,
         modifier = modifier,
+        singleToolbar = singleToolbar, actions = browserActions, panelToolbar = panelToolbar,
     ) {
         TunnelWebView(url, web, onOpenLink = { link -> runCatching { uriHandler.openUri(link) } }, onRenderGone = { generation++ }, Modifier.fillMaxSize())
     }
 }
+
+/** Creates the WebView of a forward; tests swap it to count creations. */
+internal val LocalWebViewFactory = staticCompositionLocalOf<(Context) -> WebView> { { context -> WebView(context) } }
 
 /** Stateless chrome around the page: close and external buttons, address, load progress, error state and page controls. */
 @Composable
@@ -176,23 +191,66 @@ internal fun TunnelBrowserLayout(
     onStop: () -> Unit,
     onOpenExternal: () -> Unit,
     modifier: Modifier = Modifier,
+    singleToolbar: Boolean = false,
+    actions: (@Composable RowScope.() -> Unit)? = null,
+    panelToolbar: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val c = Tf.colors
+    val compactHeight = LocalCompactHeight.current
+    val addressLabel = stringResource(R.string.browser_address)
     Column(modifier.fillMaxSize().background(c.bg)) {
-        Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onClose) { Icon(TfIcons.Close, stringResource(R.string.browser_close), Modifier.size(22.dp), tint = c.text) }
-            Text(title, Modifier.weight(1f).padding(start = 4.dp), style = TrefoilType.rowTitle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            IconButton(onClick = onOpenExternal) { Icon(Icons.AutoMirrored.Filled.OpenInNew, stringResource(R.string.browser_open_external), Modifier.size(22.dp), tint = c.text) }
-        }
-        val addressLabel = stringResource(R.string.browser_address)
-        Surface(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 10.dp), shape = RoundedCornerShape(18.dp), color = c.s2) {
-            Row(
-                Modifier.heightIn(min = 36.dp).padding(horizontal = 12.dp).semantics { contentDescription = "$addressLabel $address" },
-                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Icon(TfIcons.Globe, null, Modifier.size(14.dp), tint = c.muted)
-                Text(address, style = TrefoilType.mono, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (singleToolbar) {
+            Row(Modifier.fillMaxWidth().height(if (compactHeight) 48.dp else 52.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                TfIconButton(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.browser_back), onPageBack, enabled = canGoBack, tint = if (canGoBack) c.text else c.muted.copy(alpha = .5f))
+                TfIconButton(Icons.AutoMirrored.Filled.ArrowForward, stringResource(R.string.browser_forward), onPageForward, enabled = canGoForward, tint = if (canGoForward) c.text else c.muted.copy(alpha = .5f))
+                if (loading && error == null) TfIconButton(TfIcons.Close, stringResource(R.string.browser_stop), onStop, tint = c.text, iconSize = 20.dp)
+                else TfIconButton(TfIcons.Refresh, stringResource(R.string.browser_reload), onReload, tint = c.text, iconSize = 22.dp)
+                Surface(Modifier.weight(1f).padding(horizontal = 4.dp), shape = RoundedCornerShape(18.dp), color = c.s2) {
+                    Row(
+                        Modifier.heightIn(min = 36.dp).padding(horizontal = 12.dp).semantics { contentDescription = "$addressLabel $address" },
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(TfIcons.Globe, null, Modifier.size(14.dp), tint = c.muted)
+                        Text(address, Modifier.weight(1f), style = TrefoilType.mono, color = c.text, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
+                    }
+                }
+                actions?.invoke(this)
+                TfIconButton(Icons.AutoMirrored.Filled.OpenInNew, stringResource(R.string.browser_open_external), onOpenExternal, tint = c.text, iconSize = 22.dp)
+                TfIconButton(TfIcons.Close, stringResource(R.string.browser_close), onClose, tint = c.text, iconSize = 22.dp)
+            }
+        } else if (panelToolbar) {
+            // Docked side panel: one 48dp toolbar straight under the panel's tab bar. It starts with the arrow back to the server list
+            // (the close action of the full-size title bar) and holds the address in place of the title and the address row.
+            Row(Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                TfIconButton(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.browser_close), onClose, tint = c.text, iconSize = 22.dp)
+                Surface(Modifier.weight(1f).padding(horizontal = 4.dp), shape = RoundedCornerShape(18.dp), color = c.s2) {
+                    Row(
+                        Modifier.heightIn(min = 36.dp).padding(horizontal = 12.dp).semantics { contentDescription = "$addressLabel $address" },
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(TfIcons.Globe, null, Modifier.size(14.dp), tint = c.muted)
+                        Text(address, Modifier.weight(1f), style = TrefoilType.mono, color = c.text, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
+                    }
+                }
+                actions?.invoke(this)
+                TfIconButton(Icons.AutoMirrored.Filled.OpenInNew, stringResource(R.string.browser_open_external), onOpenExternal, tint = c.text, iconSize = 22.dp)
+            }
+        } else {
+            Row(Modifier.fillMaxWidth().heightIn(min = if (compactHeight) 48.dp else 56.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                TfIconButton(TfIcons.Close, stringResource(R.string.browser_close), onClose, tint = c.text, iconSize = 22.dp)
+                Text(title, Modifier.weight(1f).padding(start = 4.dp), style = TrefoilType.rowTitle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                actions?.invoke(this)
+                TfIconButton(Icons.AutoMirrored.Filled.OpenInNew, stringResource(R.string.browser_open_external), onOpenExternal, tint = c.text, iconSize = 22.dp)
+            }
+            Surface(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 10.dp), shape = RoundedCornerShape(18.dp), color = c.s2) {
+                Row(
+                    Modifier.heightIn(min = 36.dp).padding(horizontal = 12.dp).semantics { contentDescription = "$addressLabel $address" },
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(TfIcons.Globe, null, Modifier.size(14.dp), tint = c.muted)
+                    Text(address, style = TrefoilType.mono, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
         }
         HorizontalDivider(color = c.line)
@@ -211,12 +269,14 @@ internal fun TunnelBrowserLayout(
                 LinearProgressIndicator(progress = { (progress / 100f).coerceIn(0f, 1f) }, Modifier.fillMaxWidth(), color = c.accent, trackColor = c.s2)
             }
         }
-        HorizontalDivider(color = c.line)
-        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onPageBack, enabled = canGoBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.browser_back), tint = if (canGoBack) c.text else c.muted.copy(alpha = .5f)) }
-            IconButton(onClick = onPageForward, enabled = canGoForward) { Icon(Icons.AutoMirrored.Filled.ArrowForward, stringResource(R.string.browser_forward), tint = if (canGoForward) c.text else c.muted.copy(alpha = .5f)) }
-            if (loading && error == null) IconButton(onClick = onStop) { Icon(TfIcons.Close, stringResource(R.string.browser_stop), Modifier.size(20.dp), tint = c.text) }
-            else IconButton(onClick = onReload) { Icon(TfIcons.Refresh, stringResource(R.string.browser_reload), Modifier.size(22.dp), tint = c.text) }
+        if (!singleToolbar) {
+            HorizontalDivider(color = c.line)
+            Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                TfIconButton(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.browser_back), onPageBack, enabled = canGoBack, tint = if (canGoBack) c.text else c.muted.copy(alpha = .5f))
+                TfIconButton(Icons.AutoMirrored.Filled.ArrowForward, stringResource(R.string.browser_forward), onPageForward, enabled = canGoForward, tint = if (canGoForward) c.text else c.muted.copy(alpha = .5f))
+                if (loading && error == null) TfIconButton(TfIcons.Close, stringResource(R.string.browser_stop), onStop, tint = c.text, iconSize = 20.dp)
+                else TfIconButton(TfIcons.Refresh, stringResource(R.string.browser_reload), onReload, tint = c.text, iconSize = 22.dp)
+            }
         }
     }
 }
@@ -232,6 +292,7 @@ private fun TunnelWebView(url: String, web: TunnelBrowserWebState, onOpenLink: (
     val openLink by rememberUpdatedState(onOpenLink)
     val renderGone by rememberUpdatedState(onRenderGone)
     val lifecycleOwner = LocalLifecycleOwner.current
+    val newWebView = LocalWebViewFactory.current
     DisposableEffect(lifecycleOwner, web) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
@@ -246,7 +307,7 @@ private fun TunnelWebView(url: String, web: TunnelBrowserWebState, onOpenLink: (
     AndroidView(
         modifier = modifier,
         factory = { context ->
-            WebView(context).apply {
+            newWebView(context).apply {
                 layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
                 isSaveEnabled = false
                 with(settings) {

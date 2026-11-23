@@ -22,14 +22,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import com.tajchert.trefoil.ui.shell.isStartThreadChord
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tajchert.trefoil.core.model.*
@@ -37,6 +44,13 @@ import com.tajchert.trefoil.core.session.ComposerDraft
 import com.tajchert.trefoil.core.session.ComposerDraftDiscard
 import com.tajchert.trefoil.core.session.ComposerDraftKey
 import com.tajchert.trefoil.core.session.hasContent
+import com.tajchert.trefoil.ui.adaptive.AdaptiveSpec
+import com.tajchert.trefoil.ui.adaptive.TfAdaptiveSheet
+import com.tajchert.trefoil.ui.adaptive.TfIconButton
+import com.tajchert.trefoil.ui.adaptive.TfTooltip
+import com.tajchert.trefoil.ui.adaptive.handPointer
+import com.tajchert.trefoil.ui.adaptive.windowSizeDp
+import com.tajchert.trefoil.ui.adaptive.focusRing
 
 /** Modes the model supports; an empty or missing list means every mode is allowed. */
 internal fun allowedRuntimeModes(model: ModelOption?): List<RuntimeMode> =
@@ -117,18 +131,20 @@ internal const val RECENT_PROJECT_LIMIT = 5
  * [start] receives the draft and the prompt (blank when none); the shell starts the draft and
  * hands the prompt to the conversation, which sends it through its normal composer path.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun NewThreadSheet(state: ClientState, dismiss: () -> Unit, start: (ThreadDraft, String) -> Unit, composerDrafts: ComposerDraftUi = ComposerDraftUi(), openProjectId: String? = null, onSetModelFavorite: (ModelKey, Boolean) -> Unit = { _, _ -> }) {
-    val c = Tf.colors
-    ModalBottomSheet(
-        onDismissRequest = dismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = c.sheet, contentColor = c.text, scrimColor = c.scrim, tonalElevation = 0.dp,
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        contentWindowInsets = { WindowInsets(0) },
-        dragHandle = { Box(Modifier.padding(top = 12.dp, bottom = 8.dp).size(36.dp, 4.dp).background(c.s3, RoundedCornerShape(2.dp))) },
-    ) { NewThreadSheetContent(state, dismiss, start, Modifier.imePadding().navigationBarsPadding(), composerDrafts = composerDrafts, openProjectId = openProjectId, onSetModelFavorite = onSetModelFavorite) }
+    // Today's bottom sheet below 600dp; a centred dialog above: 520dp in one column up to 839dp, 640x468dp in two panes from 840dp.
+    val twoPane = windowSizeDp().width >= AdaptiveSpec.ExpandedMinWidth.dp
+    TfAdaptiveSheet(
+        onDismiss = dismiss, dialogMaxWidth = if (twoPane) AdaptiveSpec.DialogNewThreadWidth.dp else NEW_THREAD_MEDIUM_DIALOG_WIDTH,
+        dialogMaxHeight = if (twoPane) NEW_THREAD_TWO_PANE_HEIGHT else Dp.Unspecified,
+    ) { NewThreadSheetContent(state, dismiss, start, composerDrafts = composerDrafts, openProjectId = openProjectId, onSetModelFavorite = onSetModelFavorite) }
 }
+
+/** Dialog width from 600dp to 839dp windows (one column). From 840dp it is [AdaptiveSpec.DialogNewThreadWidth] in two panes. */
+private val NEW_THREAD_MEDIUM_DIALOG_WIDTH = 520.dp
+private val NEW_THREAD_TWO_PANE_HEIGHT = 468.dp
+private val NEW_THREAD_PROJECT_COLUMN_WIDTH = 216.dp
 
 /** Sheet body, separate from the [ModalBottomSheet] chrome so it renders and tests standalone. */
 @OptIn(ExperimentalLayoutApi::class)
@@ -169,6 +185,7 @@ internal fun NewThreadSheetContent(
     fun collapsePicker() { pickerCollapsed = true; expanded = false; query = "" }
     var chosenEffort by rememberSaveable { mutableStateOf<String?>(null) }
     var chosenFast by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    var modelMenu by rememberSaveable { mutableStateOf(false) }
     val defaults = state.newThreadSettings(projectId.ifEmpty { null })
     val model = state.models.getOrNull(modelIndex) ?: defaults.model
     val reasoning = model?.reasoning?.takeIf { it.selectableChoices.isNotEmpty() }
@@ -238,6 +255,11 @@ internal fun NewThreadSheetContent(
         }
     }
     val canStart = state.canLaunchThreads && !state.busy && selectedProject != null && model != null
+    // Ctrl/Meta+Enter starts the thread exactly as the Start button does, under the same rule, once: a held key or a second press does nothing.
+    var startedByKey by remember { mutableStateOf(false) }
+    // The field edits a TextFieldValue that follows the prompt (as the message box does), so the key handler can see an IME composition.
+    var promptEdit by remember { mutableStateOf(TextFieldValue(prompt, TextRange(prompt.length))) }
+    val promptValue = if (promptEdit.text == prompt) promptEdit else TextFieldValue(prompt, TextRange(prompt.length))
 
     val activity = remember(state.threads) { projectActivity(state.threads) }
     val ordered = remember(state.projects, activity) { projectsByRecentActivity(state.projects, activity) }
@@ -255,11 +277,14 @@ internal fun NewThreadSheetContent(
     val hidden = filtered.size - shown.size
     val now = remember { System.currentTimeMillis() }
 
-    Column(modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, bottom = 20.dp)) {
+    // The layout pieces are shared by the one-column body (phone sheet, 520dp dialog) and the two-pane body (640dp dialog).
+    val titleRow: @Composable () -> Unit = {
         Row(Modifier.padding(start = 4.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("New thread", style = MaterialTheme.typography.headlineSmall, color = c.text, modifier = Modifier.weight(1f))
-            IconButton(onClick = dismiss, Modifier.size(48.dp)) { Icon(TfIcons.Close, "Close", tint = c.text) }
+            TfIconButton(TfIcons.Close, "Close", dismiss, Modifier.size(48.dp), tint = c.text)
         }
+    }
+    val projectPicker: @Composable () -> Unit = {
         Row(Modifier.fillMaxWidth().padding(start = 4.dp).heightIn(min = 36.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("PROJECT", style = TrefoilType.section, color = c.muted, modifier = Modifier.weight(1f))
         }
@@ -271,7 +296,7 @@ internal fun NewThreadSheetContent(
             else Column {
                 if (searchable) OutlinedTextField(query, { query = it }, singleLine = true, placeholder = { Text("Search projects") }, shape = TfFieldShape, colors = tfFieldColors(),
                     leadingIcon = { Icon(TfIcons.Search, null, Modifier.size(18.dp), tint = c.muted) },
-                    trailingIcon = { if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(TfIcons.Close, "Clear search", Modifier.size(18.dp), tint = c.muted) } },
+                    trailingIcon = { if (query.isNotEmpty()) TfIconButton(TfIcons.Close, "Clear search", { query = "" }, iconSize = 18.dp, tint = c.muted) },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                     keyboardActions = KeyboardActions(onSearch = { filtered.firstOrNull()?.takeIf { searching }?.let { pickProject(it.id); collapsePicker() } }),
                     modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp).semantics { contentDescription = "Search projects" })
@@ -282,7 +307,7 @@ internal fun NewThreadSheetContent(
                         ProjectRow(project, project.id == projectId, activity[project.id]?.let { relativeThreadTime(java.time.Instant.ofEpochMilli(it).toString(), now) }) { pickProject(project.id); collapsePicker() }
                     }
                     if (hidden > 0) Row(
-                        Modifier.fillMaxWidth().height(44.dp).clip(RoundedCornerShape(12.dp)).clickable(role = Role.Button, onClickLabel = "Show all projects", onClick = { expanded = true })
+                        Modifier.fillMaxWidth().height(44.dp).clip(RoundedCornerShape(12.dp)).focusRing().handPointer().clickable(role = Role.Button, onClickLabel = "Show all projects", onClick = { expanded = true })
                             .semantics(mergeDescendants = true) { contentDescription = "Show all ${filtered.size} projects" }.padding(horizontal = 12.dp),
                         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
@@ -292,10 +317,31 @@ internal fun NewThreadSheetContent(
                 }
             }
         }
+    }
 
-        Column(Modifier.padding(top = 20.dp).fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(c.s1).border(1.dp, c.line, RoundedCornerShape(24.dp))) {
+    // Two panes show every project at once, so there is nothing to collapse and a pick or a focus change keeps the search.
+    val projectColumn: @Composable () -> Unit = {
+        Column(Modifier.width(NEW_THREAD_PROJECT_COLUMN_WIDTH).fillMaxHeight().background(c.rail)) {
+            Text("PROJECT", style = TrefoilType.section, color = c.muted, modifier = Modifier.padding(start = 20.dp, end = 16.dp, top = 20.dp, bottom = 8.dp))
+            // The 216dp column is too narrow for "Search projects" next to the icon: the shorter hint stays on one line (the accessible name is unchanged).
+            if (state.projects.size > 1) OutlinedTextField(query, { query = it }, singleLine = true, placeholder = { Text("Search", maxLines = 1) }, shape = TfFieldShape, colors = tfFieldColors(),
+                leadingIcon = { Icon(TfIcons.Search, null, Modifier.size(18.dp), tint = c.muted) },
+                trailingIcon = { if (query.isNotEmpty()) TfIconButton(TfIcons.Close, "Clear search", { query = "" }, iconSize = 18.dp, tint = c.muted) },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { filtered.firstOrNull()?.takeIf { searching }?.let { pickProject(it.id) } }),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 6.dp).semantics { contentDescription = "Search projects" })
+            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 8.dp, end = 8.dp, top = 2.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                if (state.projects.isEmpty()) Text("No projects reported by this environment.", style = TrefoilType.preview, color = c.muted, modifier = Modifier.padding(start = 12.dp, top = 6.dp))
+                else if (filtered.isEmpty()) Text("No projects match \"${query.trim()}\".", style = TrefoilType.preview, color = c.muted, modifier = Modifier.padding(start = 12.dp, top = 6.dp))
+                filtered.forEach { project -> ProjectRow(project, project.id == projectId, activity[project.id]?.let { relativeThreadTime(java.time.Instant.ofEpochMilli(it).toString(), now) }) { pickProject(project.id) } }
+            }
+        }
+    }
+
+    val editor: @Composable (Dp, Boolean) -> Unit = { top, collapsesPicker ->
+        Column(Modifier.padding(top = top).fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(c.s1).border(1.dp, c.line, RoundedCornerShape(24.dp))) {
             TextField(
-                prompt, { prompt = it; touched = true; persist(text = it) }, Modifier.fillMaxWidth().heightIn(min = 140.dp).onFocusChanged { if (it.isFocused && selectedProject != null) collapsePicker() }, minLines = 5, maxLines = 10, enabled = !state.busy && loaded,
+                promptValue, { promptEdit = it; if (it.text != prompt) { prompt = it.text; touched = true; persist(text = it.text) } }, Modifier.fillMaxWidth().heightIn(min = 140.dp).onFocusChanged { if (it.isFocused && collapsesPicker && selectedProject != null) collapsePicker() }, minLines = 5, maxLines = 10, enabled = !state.busy && loaded,
                 textStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 24.sp),
                 placeholder = { Text("What should the agent do?", fontSize = 17.sp, lineHeight = 24.sp) },
                 colors = TextFieldDefaults.colors(
@@ -306,32 +352,19 @@ internal fun NewThreadSheetContent(
             )
             Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp, top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                 Spacer(Modifier.weight(1f))
-                FilledIconButton(
-                    onClick = { model?.let { start(ThreadDraft(projectId, it, mode, modelOptions = it.validOptions(explicitOptions)), prompt) } }, enabled = canStart, modifier = Modifier.size(48.dp),
+                TfTooltip("Start") { FilledIconButton(
+                    onClick = { model?.let { start(ThreadDraft(projectId, it, mode, modelOptions = it.validOptions(explicitOptions)), prompt) } }, enabled = canStart, modifier = Modifier.size(48.dp).focusRing().handPointer(canStart),
                     colors = IconButtonDefaults.filledIconButtonColors(containerColor = c.accent, contentColor = c.onAccent, disabledContainerColor = c.accent.copy(alpha = .35f), disabledContentColor = c.onAccent.copy(alpha = .7f)),
-                ) { Icon(TfIcons.Send, "Start") }
+                ) { Icon(TfIcons.Send, "Start") } }
             }
         }
 
         FlowRow(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            var modelMenu by remember { mutableStateOf(false) }
             var effortMenu by remember { mutableStateOf(false) }
             var modeMenu by remember { mutableStateOf(false) }
             Box {
                 val modelsLoading = modelPickerLoading(state.models, state.connection)
                 SheetPill(modelPillLabel(model, explicitOptions, modelsLoading, empty = "No models"), TfIcons.Sparkle, modelPillDescription(model, explicitOptions, modelsLoading), enabled = state.models.isNotEmpty() || modelsLoading) { modelMenu = true }
-                // An effort pick takes the chosenEffort path, the Fast switch the chosenFast one; both persist with the draft.
-                if (modelMenu) ModelPickerSheet(
-                    models = state.models, providers = state.providers, current = model, explicit = explicitOptions, enabled = loaded, dismiss = { modelMenu = false },
-                    onSetModel = { option -> state.models.indexOfFirst { it.sameModelAs(option) }.takeIf { it >= 0 && loaded }?.let { index -> modelIndex = index; touched = true; persist(index = index) } },
-                    onSetModelOption = { id, value ->
-                        val effortId = model?.reasoning?.id
-                        if (loaded && id == effortId && value is String) { chosenEffort = value; touched = true; persist(effort = value) }
-                        else if (loaded && id == FAST_MODE_OPTION_ID && value is Boolean && model?.fastMode != null) { chosenFast = value; touched = true; persist(fast = value) }
-                    },
-                    preferences = state.modelPreferences, canWriteSettings = state.canWriteSettings, onToggleFavorite = onSetModelFavorite, showFast = true,
-                    loading = modelPickerLoading(state.models, state.connection),
-                )
             }
             if (model != null && reasoning != null) {
                 val choices = reasoning.selectableChoices
@@ -367,6 +400,47 @@ internal fun NewThreadSheetContent(
         if (state.models.isEmpty() && !modelPickerLoading(state.models, state.connection)) Text("No models reported by this environment. Reconnect to refresh configuration.", style = TrefoilType.meta, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = 10.dp))
         Text("Workspace uses the server default.", style = TrefoilType.meta, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = 10.dp))
     }
+
+    // The container's own width picks the layout: the 640dp dialog is two panes, the 520dp dialog and the phone sheet one column.
+    BoxWithConstraints(modifier.fillMaxWidth().onPreviewKeyEvent { event ->
+        if (!isStartThreadChord(event)) return@onPreviewKeyEvent false
+        // While the IME composes, the key belongs to it (the message box does the same): starting now would send half-composed text.
+        if (promptValue.composition != null) return@onPreviewKeyEvent false
+        if (event.type == KeyEventType.KeyDown && event.nativeKeyEvent.repeatCount == 0 && canStart && !startedByKey) {
+            startedByKey = true
+            model?.let { start(ThreadDraft(projectId, it, mode, modelOptions = it.validOptions(explicitOptions)), prompt) }
+        }
+        true
+    }) {
+        if (maxWidth >= AdaptiveSpec.DialogNewThreadWidth.dp) {
+            val height = if (constraints.hasBoundedHeight) minOf(maxHeight, NEW_THREAD_TWO_PANE_HEIGHT) else NEW_THREAD_TWO_PANE_HEIGHT
+            Row(Modifier.fillMaxWidth().height(height)) {
+                projectColumn()
+                VerticalDivider(color = c.line)
+                Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 20.dp)) {
+                    titleRow()
+                    editor(0.dp, false)
+                }
+            }
+        } else Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, bottom = 20.dp)) {
+            titleRow()
+            projectPicker()
+            editor(20.dp, true)
+        }
+        // Outside the layout branches so the picker keeps its place when the dialog crosses 840dp; it is a window of its own.
+        if (modelMenu) ModelPickerSheet(
+            models = state.models, providers = state.providers, current = model, explicit = explicitOptions, enabled = loaded, dismiss = { modelMenu = false },
+            onSetModel = { option -> state.models.indexOfFirst { it.sameModelAs(option) }.takeIf { it >= 0 && loaded }?.let { index -> modelIndex = index; touched = true; persist(index = index) } },
+            // An effort pick takes the chosenEffort path, the Fast switch the chosenFast one; both persist with the draft.
+            onSetModelOption = { id, value ->
+                val effortId = model?.reasoning?.id
+                if (loaded && id == effortId && value is String) { chosenEffort = value; touched = true; persist(effort = value) }
+                else if (loaded && id == FAST_MODE_OPTION_ID && value is Boolean && model?.fastMode != null) { chosenFast = value; touched = true; persist(fast = value) }
+            },
+            preferences = state.modelPreferences, canWriteSettings = state.canWriteSettings, onToggleFavorite = onSetModelFavorite, showFast = true,
+            loading = modelPickerLoading(state.models, state.connection),
+        )
+    }
 }
 
 @Composable
@@ -375,7 +449,7 @@ private fun SelectedProjectPill(project: Project, onClick: () -> Unit) {
     val shape = RoundedCornerShape(14.dp)
     Row(
         Modifier.padding(top = 6.dp).height(40.dp).widthIn(max = 320.dp).clip(shape).border(1.dp, c.line, shape)
-            .clickable(onClickLabel = "Change project", role = Role.Button, onClick = onClick).semantics(mergeDescendants = true) { contentDescription = "Project: ${project.title}" }
+            .focusRing().handPointer().clickable(onClickLabel = "Change project", role = Role.Button, onClick = onClick).semantics(mergeDescendants = true) { contentDescription = "Project: ${project.title}" }
             .padding(start = 8.dp, end = 12.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -393,7 +467,7 @@ private fun ProjectRow(project: Project, selected: Boolean, lastActive: String?,
     val detail = listOfNotNull(lastActive?.takeIf { it.isNotEmpty() }, shortProjectPath(project.path).takeIf { it.isNotEmpty() && it != project.title }).joinToString(" · ")
     Row(
         Modifier.fillMaxWidth().heightIn(min = 52.dp).clip(shape).background(if (selected) c.accentSoft else Color.Transparent)
-            .clickable(role = Role.RadioButton, onClick = onClick).semantics(mergeDescendants = true) { this.selected = selected }
+            .focusRing().handPointer().clickable(role = Role.RadioButton, onClick = onClick).semantics(mergeDescendants = true) { this.selected = selected }
             .padding(start = 8.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -411,7 +485,7 @@ private fun SheetPill(label: String?, icon: ImageVector, description: String, en
     val c = Tf.colors
     val shape = RoundedCornerShape(18.dp)
     Row(
-        Modifier.height(36.dp).clip(shape).background(c.s2, shape).clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+        Modifier.height(36.dp).clip(shape).background(c.s2, shape).focusRing().handPointer(enabled).clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .semantics(mergeDescendants = true) { contentDescription = description }.padding(horizontal = if (label == null) 10.dp else 12.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(if (label == null) 4.dp else 6.dp),
     ) {

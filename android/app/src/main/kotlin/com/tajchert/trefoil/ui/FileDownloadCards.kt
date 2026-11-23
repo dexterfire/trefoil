@@ -15,6 +15,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.downloads.*
+import com.tajchert.trefoil.ui.adaptive.TfIconButton
 import java.util.Locale
 
 /** UI-origin identity accompanies every remote action; local completed-file actions work offline. */
@@ -71,12 +72,11 @@ internal fun DownloadFileCard(reference: RemoteFileReference, modifier: Modifier
                     Text(label, Modifier.padding(top = 3.dp), style = TrefoilType.meta.copy(fontSize = 12.sp), color = Tf.colors.muted)
                 }
                 when {
-                    downloading -> IconButton(onClick = { remoteAction(ui.onCancel) }) { Icon(Icons.Default.Close, "Cancel download ${reference.fileName}") }
-                    completed != null -> IconButton(onClick = { remoteAction(ui.onDownload) }, enabled = ui.canDownload && key != null) {
-                        Icon(Icons.Default.Refresh, "Download fresh copy of ${reference.fileName}")
-                    }
-                    completed == null -> IconButton(onClick = { remoteAction(ui.onDownload) }, enabled = ui.canDownload && key != null) {
-                        Icon(Icons.Default.Download, if (state?.status in setOf(DownloadStatus.Cancelled, DownloadStatus.Failed)) "Retry download ${reference.fileName}" else "Download ${reference.fileName}")
+                    downloading -> TfIconButton(Icons.Default.Close, "Cancel download ${reference.fileName}", { remoteAction(ui.onCancel) })
+                    completed != null -> TfIconButton(Icons.Default.Refresh, "Download fresh copy of ${reference.fileName}", { remoteAction(ui.onDownload) }, enabled = ui.canDownload && key != null)
+                    completed == null -> {
+                        val retry = state?.status in setOf(DownloadStatus.Cancelled, DownloadStatus.Failed)
+                        TfIconButton(Icons.Default.Download, if (retry) "Retry download ${reference.fileName}" else "Download ${reference.fileName}", { remoteAction(ui.onDownload) }, enabled = ui.canDownload && key != null)
                     }
                 }
             }

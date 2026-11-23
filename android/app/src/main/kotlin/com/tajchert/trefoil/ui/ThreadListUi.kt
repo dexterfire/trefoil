@@ -4,6 +4,7 @@
 package com.tajchert.trefoil.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -13,7 +14,13 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.unit.dp
+import com.tajchert.trefoil.ui.shell.RegisterShortcut
+import com.tajchert.trefoil.ui.shell.ShortcutId
+import com.tajchert.trefoil.ui.adaptive.LocalCompactHeight
+import com.tajchert.trefoil.ui.adaptive.ThreadListChrome
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.core.session.ComposerDraft
 import com.tajchert.trefoil.core.session.ComposerDraftKey
@@ -222,16 +229,21 @@ internal fun ThreadList(
     onAction: (ThreadTarget, ThreadAction, String?) -> Unit = { _, _, _ -> },
     selectedId: String? = null,
     shell: ShellActions? = null,
-    railLayout: Boolean = false,
     banner: @Composable () -> Unit = {},
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
     composerDrafts: ComposerDraftUi = ComposerDraftUi(),
     onOpenDraft: (String) -> Unit = {},
     onDiscardDraft: (ComposerDraft) -> Unit = {},
+    chrome: ThreadListChrome = ThreadListChrome(),
 ) {
     var query by rememberSaveable(state.environment?.id) { mutableStateOf("") }
     var searching by rememberSaveable(state.environment?.id) { mutableStateOf(false) }
+    // Ctrl+K / Ctrl+F: the Search button's state change, then the query field takes focus (an open field is just focused, not closed).
+    val searchFocus = remember { FocusRequester() }
+    RegisterShortcut(ShortcutId.SearchThreads) {
+        if (searching || query.isNotEmpty()) runCatching { searchFocus.requestFocus() } else searching = true
+    }
     var projectId by rememberSaveable(state.environment?.id) { mutableStateOf<String?>(null) }
     var filter by rememberSaveable(state.environment?.id) { mutableStateOf(ThreadFilter.All) }
     val projects = remember(state.projects) { state.projects.associateBy { it.id } }
@@ -269,16 +281,20 @@ internal fun ThreadList(
     // Creating a thread depends on the shell, not on the open thread's refresh state.
     val canCreate = state.canLaunchThreads && state.projects.isNotEmpty() && state.models.isNotEmpty()
     val c = Tf.colors
+    // A rail beside the list already has the New action, so the list shows neither a FAB nor a button.
+    val railBeside = chrome.railPresent
     Column(Modifier.fillMaxSize().background(c.bg)) {
-        ThreadListHeader(state, shell, railLayout, canCreate, create, onSearch = { if (searching || query.isNotEmpty()) { searching = false; query = "" } else searching = true })
+        ThreadListHeader(state, shell, onSearch = { if (searching || query.isNotEmpty()) { searching = false; query = "" } else searching = true },
+            chrome = chrome, compactHeight = LocalCompactHeight.current)
         banner()
-        if (searching || query.isNotEmpty()) ThreadSearchField(query, { query = it }) { query = ""; searching = false }
-        ThreadFilterChips(filter, counts, state.projects, projects[projectId], { filter = it }, { projectId = it })
+        if (searching || query.isNotEmpty()) Box(Modifier.focusRequester(searchFocus).focusGroup()) { ThreadSearchField(query, { query = it }) { query = ""; searching = false } }
+        ThreadFilterChips(filter, counts, state.projects, projects[projectId], { filter = it }, { projectId = it },
+            tabletChrome = chrome != ThreadListChrome())
         val loading = threadListLoading(state)
         if ((state.busy || loading) && state.threads.isEmpty() || threadListUpdating(state)) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp).height(2.dp), color = c.accent, trackColor = c.s2)
         PullToRefreshBox(isRefreshing, onRefresh, Modifier.weight(1f).fillMaxWidth()) {
             val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottomInset + if (railLayout) 24.dp else 96.dp)) {
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottomInset + if (railBeside) 24.dp else 96.dp)) {
                 if (sections.isEmpty() && draftRows.isEmpty()) {
                     if (loading) item(key = "loading") { ThreadListLoading() }
                     else if (threadListShowsEmpty(state)) item(key = "empty") {
@@ -291,7 +307,7 @@ internal fun ThreadList(
                         ShelfLabel("Drafts", draftRows.size, draftsOpen, dot = null) { expanded = if ("Drafts" in expanded) expanded - "Drafts" else expanded + "Drafts" }
                     }
                     if (draftsOpen) items(draftRows, key = { (draft, _) -> "draft:${(draft.key as ComposerDraftKey.NewThread).projectId}" }, contentType = { "draft" }) { (draft, project) ->
-                        DraftRow(draft, project, now, { onOpenDraft(project.id) }) { onDiscardDraft(draft) }
+                        DraftRow(draft, project, now, { onOpenDraft(project.id) }, tabletChrome = chrome != ThreadListChrome()) { onDiscardDraft(draft) }
                     }
                 }
                 sections.forEach { section ->
@@ -303,11 +319,12 @@ internal fun ThreadList(
                     }
                     if (open) items(section.threads, key = { "thread:${section.title}:${it.id}" }, contentType = { "thread" }) { thread ->
                         ThreadRow(state, thread, projects[thread.projectId], now, selected = thread.id == selectedId, onAction = onAction,
-                            replyDraft = composerDrafts.drafts[ComposerDraftKey.Reply(state.environment?.id.orEmpty(), thread.id)]?.takeIf { it.hasContent() }) { select(thread.id) }
+                            replyDraft = composerDrafts.drafts[ComposerDraftKey.Reply(state.environment?.id.orEmpty(), thread.id)]?.takeIf { it.hasContent() },
+                            tabletChrome = chrome != ThreadListChrome()) { select(thread.id) }
                     }
                 }
             }
-            if (!railLayout) NewThreadFab(canCreate, create, Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(end = 16.dp, bottom = 16.dp).avoidSnackbar())
+            if (!railBeside) NewThreadFab(canCreate, create, Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(end = 16.dp, bottom = 16.dp).avoidSnackbar())
         }
     }
 }

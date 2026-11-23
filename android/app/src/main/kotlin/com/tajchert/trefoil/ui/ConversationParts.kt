@@ -34,9 +34,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tajchert.trefoil.core.model.*
+import com.tajchert.trefoil.ui.adaptive.TfIconButton
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
+import com.tajchert.trefoil.ui.adaptive.handPointer
+import com.tajchert.trefoil.ui.adaptive.focusRing
 
 /* ---------- Messages ---------- */
 
@@ -45,22 +48,28 @@ internal fun MessageRow(message: ConversationMessage, stacked: Boolean, showMeta
     val c = Tf.colors
     val user = message.role == "user"
     val clipboard = LocalClipboardManager.current
+    val layout = LocalConversationLayout.current
+    // Wide column: the bubble shrink-wraps up to its cap at the column's end; files sit under it (user) or at prose width.
+    val cardWidth = if (!layout.wide) Modifier.fillMaxWidth(if (user) .86f else 1f) else Modifier.widthIn(max = (if (user) layout.bubbleMax else layout.proseMax).dp).fillMaxWidth()
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (user) Alignment.End else Alignment.Start) {
         if (user) {
-            Surface(shape = RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp), color = c.s2, contentColor = c.text, modifier = Modifier.fillMaxWidth(.86f)) {
+            Surface(shape = RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp), color = c.s2, contentColor = c.text,
+                modifier = if (layout.wide) Modifier.widthIn(max = layout.bubbleMax.dp) else Modifier.fillMaxWidth(.86f)) {
                 SelectionContainer { Text(message.text, Modifier.padding(horizontal = 14.dp, vertical = 10.dp), style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp)) }
             }
         } else {
             MarkdownContent(message.text, Modifier.fillMaxWidth())
         }
-        MessageFileCards(message, Modifier.fillMaxWidth(if (user) .86f else 1f))
+        MessageFileCards(message, cardWidth)
         if (message.streaming) Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             WorkingSpinner(size = 14.dp)
             Text("Writing…", style = TrefoilType.meta, color = c.blue)
         } else if (showMetadata) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                messageTime(message.updatedAt ?: message.createdAt)?.let { time -> Text((if (!user) "T3 · " else "") + time, Modifier.padding(top = 6.dp, end = if (user) 4.dp else 0.dp), style = TrefoilType.meta.copy(fontSize = 12.sp), color = c.muted) }
-                if (!user) IconButton(onClick = { clipboard.setText(AnnotatedString(message.text)) }) { Icon(Icons.Default.ContentCopy, "Copy response", Modifier.size(15.dp), tint = c.muted) }
+                val time = messageTime(message.updatedAt ?: message.createdAt)
+                time?.let { Text((if (!user) "T3 · " else "") + it, Modifier.padding(top = 6.dp, end = if (user) 4.dp else 0.dp), style = TrefoilType.meta.copy(fontSize = 12.sp), color = c.muted) }
+                // Wide column: with no timestamp in front, pull the 48dp button left so its glyph lines up with the prose edge (the hit area keeps its size).
+                if (!user) Box(if (layout.wide && time == null) Modifier.offset(x = (-16).dp) else Modifier) { TfIconButton(Icons.Default.ContentCopy, "Copy response", { clipboard.setText(AnnotatedString(message.text)) }, iconSize = 15.dp, tint = c.muted) }
             }
         }
     }
@@ -95,7 +104,7 @@ private fun WorkRow(
 ) {
     val c = Tf.colors
     Row(Modifier.fillMaxWidth().heightIn(min = 32.dp)
-        .then(if (onClick != null) Modifier.clickable(role = Role.Button, onClickLabel = onClickLabel, onClick = onClick) else Modifier)
+        .then(if (onClick != null) Modifier.focusRing().handPointer().clickable(role = Role.Button, onClickLabel = onClickLabel, onClick = onClick) else Modifier)
         .then(if (description != null || (expanded != null && onClick != null)) Modifier.semantics(mergeDescendants = true) {
             description?.let { contentDescription = it }
             if (expanded != null && onClick != null) stateDescription = if (expanded) "Expanded" else "Collapsed"
@@ -117,7 +126,7 @@ internal fun CompletedWork(
     var expanded by rememberSaveable(work.key) { mutableStateOf(initiallyExpanded) }
     val c = Tf.colors
     Column(Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth().heightIn(min = 32.dp).clickable(role = Role.Button, onClickLabel = if (expanded) "Collapse completed work" else "Expand completed work") { expanded = !expanded }
+        Row(Modifier.fillMaxWidth().heightIn(min = 32.dp).focusRing().handPointer().clickable(role = Role.Button, onClickLabel = if (expanded) "Collapse completed work" else "Expand completed work") { expanded = !expanded }
             .semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" }.padding(vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(work.label, Modifier.weight(1f, fill = false), style = WorkRowText, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -240,7 +249,7 @@ private fun WorkEntryDetail(activity: ToolActivity, canLoadActivity: Boolean, on
                     }
                 }
             }
-            if (copyText.isNotBlank()) IconButton(onClick = { clipboard.setText(AnnotatedString(copyText)) }, modifier = Modifier.size(32.dp)) { Icon(Icons.Default.ContentCopy, "Copy activity", Modifier.size(14.dp), tint = c.muted) }
+            if (copyText.isNotBlank()) TfIconButton(Icons.Default.ContentCopy, "Copy activity", { clipboard.setText(AnnotatedString(copyText)) }, Modifier.size(32.dp), iconSize = 14.dp, tint = c.muted)
         }
         if (activity.outputOmitted || activity.detailsOmitted) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(if (activity.detailsOmitted) "File details are not included in this snapshot." else "Output is not included in this snapshot.", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = c.muted)
@@ -279,11 +288,13 @@ internal fun activityHeadline(activity: ToolActivity): String {
 internal fun RuntimeRequest.quickReplyQuestion(): Question? =
     questions.singleOrNull()?.takeIf { canApprove && it.options.isNotEmpty() && !it.multiple }
 
+// Allow, Deny and Submit are a Material Surface with onClick: it already reaches a 48dp touch area around the 40dp pill (touchBoundsInRoot),
+// and a disabled one does not respond, so a wide pane needs no wrapper here.
 @Composable
 private fun TfButton(label: String, onClick: () -> Unit, enabled: Boolean, primary: Boolean, modifier: Modifier = Modifier) {
     val c = Tf.colors
     Surface(onClick = onClick, enabled = enabled, shape = RoundedCornerShape(20.dp), color = if (primary) c.accent else c.s2, contentColor = if (primary) c.onAccent else c.text,
-        modifier = modifier.alpha(if (enabled) 1f else .4f).semantics { role = Role.Button }) {
+        modifier = modifier.alpha(if (enabled) 1f else .4f).focusRing(RoundedCornerShape(20.dp)).handPointer(enabled).semantics { role = Role.Button }) {
         Box(Modifier.height(40.dp).padding(horizontal = 20.dp), contentAlignment = Alignment.Center) {
             Text(label, style = MaterialTheme.typography.labelLarge, maxLines = 1)
         }
@@ -296,7 +307,9 @@ internal fun RequestCard(request: RuntimeRequest, enabled: Boolean, respond: (St
     var answers by rememberSaveable(request.id) { mutableStateOf<Map<String, List<String>>>(emptyMap()) }
     val valid = request.questions.all { !it.required || answers[it.id]?.any(String::isNotBlank) == true }
     val quickReply = request.quickReplyQuestion()
-    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = c.s1, contentColor = c.text, border = BorderStroke(1.dp, c.line)) {
+    // Wide pane: a request waiting on the user's decision gets an amber border so it stands apart from the passive cards around it.
+    val border = if (LocalConversationLayout.current.wide && request.canApprove) BorderStroke(1.5.dp, c.amber.copy(alpha = .45f)) else BorderStroke(1.dp, c.line)
+    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = c.s1, contentColor = c.text, border = border) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             SectionLabel("Needs you", dot = c.amber)
             if (request.questions.isEmpty()) {
@@ -352,7 +365,10 @@ internal fun QuickReplies(requests: List<RuntimeRequest>, enabled: Boolean, resp
     val request = requests.firstOrNull { it.quickReplyQuestion() != null } ?: return
     val question = request.quickReplyQuestion() ?: return
     val scroll = rememberScrollState()
-    Row(Modifier.fillMaxWidth().horizontalScroll(scroll).padding(horizontal = 16.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        question.options.forEach { option -> TfChip(option, onClick = { respond(request.id, "accept", mapOf(question.id to listOf(option))) }, enabled = enabled) }
+    // Wide: the dock lines the chips up with the reading column (its own side padding replaces the phone's 16dp).
+    ReadingDock {
+        Row(Modifier.fillMaxWidth().horizontalScroll(scroll).padding(horizontal = if (LocalConversationLayout.current.wide) 0.dp else 16.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            question.options.forEach { option -> TfChip(option, onClick = { respond(request.id, "accept", mapOf(question.id to listOf(option))) }, enabled = enabled) }
+        }
     }
 }

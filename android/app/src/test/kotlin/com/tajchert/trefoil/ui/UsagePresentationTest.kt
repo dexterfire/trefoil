@@ -83,4 +83,30 @@ class UsagePresentationTest {
         assertEquals("Offline · showing last known data", usageOfflineNotice(ConnectionStatus.Disconnected, false))
         assertEquals("Usage can't be read on this connection · showing last known data", usageOfflineNotice(ConnectionStatus.Connected, false))
     }
+
+    @Test fun layoutModeFollowsTheContainerWidth() {
+        assertEquals(UsageLayoutMode.Tabs, usageLayoutMode(400f))
+        assertEquals(UsageLayoutMode.Tabs, usageLayoutMode(599.9f))
+        assertEquals(UsageLayoutMode.TabsWide, usageLayoutMode(600f))
+        assertEquals(UsageLayoutMode.TabsWide, usageLayoutMode(999.9f))
+        assertEquals(UsageLayoutMode.TwoColumn, usageLayoutMode(1000f))
+        assertEquals(UsageLayoutMode.TwoColumn, usageLayoutMode(1840f))
+    }
+
+    @Test fun limitGridUsesTwoColumnsOnlyWhenTwoCellsFit() {
+        assertEquals(1, usageLimitColumns(600f))
+        assertEquals(1, usageLimitColumns(643f))
+        assertEquals(2, usageLimitColumns(644f))
+        assertEquals(2, usageLimitColumns(999f))
+    }
+
+    @Test fun breakdownsSitSideBySideFromFiveHundredSixtyAndRightColumnWidthIsDerived() {
+        assertEquals(false, usageSplitsBreakdown(559f))
+        assertEquals(true, usageSplitsBreakdown(560f))
+        // 1000: 1000 - 2*24 - 380 - 24 = 548 (stacked); 1120 and wider: 1120 - 48 - 404 = 668 (side by side).
+        assertEquals(548f, usageRightColumnWidth(1000f))
+        assertEquals(668f, usageRightColumnWidth(1840f))
+        assertEquals(false, usageSplitsBreakdown(usageRightColumnWidth(1000f)))
+        assertEquals(true, usageSplitsBreakdown(usageRightColumnWidth(1200f)))
+    }
 }
