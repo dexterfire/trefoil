@@ -1,5 +1,14 @@
 # Android releases
 
+Release `0.23.0` (`versionCode = 41`) lays the app out from its window on tablets and foldables: a
+navigation rail from medium width, thread list and conversation in two resizable panes, a docked side panel
+(Agents, Screens, dev servers), centred dialogs from 600 dp, nothing laid across a separating hinge, a
+tabletop screen viewer, and keyboard shortcuts, tooltips and pointer states. The model picker is rewritten as
+a native grouped picker: provider tabs, version families with a version tray, search, favourites synced with
+T3 server settings, and a two-pane layout on tablets. New threads can start in Fast mode, and a Fast or effort
+pick the model lacks is never stored or restored. Check the picker, favourites and a tablet or foldable
+layout against a real environment on a device (the adaptive layouts were checked only in screenshot tests).
+
 Release `0.22.0` (`versionCode = 40`) sorts the New thread project picker by recent thread activity,
 preselects the most recent project, shows each project's last activity and path, and searches titles and
 workspace paths (five recent projects, then Show all). New threads start from T3's default model selection
