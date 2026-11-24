@@ -55,7 +55,7 @@ internal fun MessageRow(message: ConversationMessage, stacked: Boolean, showMeta
         if (user) {
             Surface(shape = RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp), color = c.s2, contentColor = c.text,
                 modifier = if (layout.wide) Modifier.widthIn(max = layout.bubbleMax.dp) else Modifier.fillMaxWidth(.86f)) {
-                SelectionContainer { Text(message.text, Modifier.padding(horizontal = 14.dp, vertical = 10.dp), style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp)) }
+                SelectionContainer { Text(rememberLinkified(message.text), Modifier.padding(horizontal = 14.dp, vertical = 10.dp), style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp)) }
             }
         } else {
             MarkdownContent(message.text, Modifier.fillMaxWidth())

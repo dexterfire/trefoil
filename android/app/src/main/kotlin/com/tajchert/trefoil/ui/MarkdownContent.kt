@@ -193,10 +193,55 @@ private val inlineRegex = Regex(
     "\\\\([\\\\`*_{}\\[\\]()#+\\-.!|~>])" +                      // 1 escape
         "|`([^`]+)`" +                                            // 2 code
         "|\\[((?:[^\\[\\]]|\\[[^\\]]*])+)]\\(\\s*([^)\\s]+)(?:\\s+\"[^\"]*\")?\\s*\\)" + // 3,4 link
-        "|\\*\\*\\*(?=\\S)(.+?)(?<=\\S)\\*\\*\\*" +                // 5 bold italic
-        "|\\*\\*(?=\\S)(.+?)(?<=\\S)\\*\\*|(?<!\\w)__(?=\\S)(.+?)(?<=\\S)__(?!\\w)" + // 6,7 bold
-        "|~~(?=\\S)(.+?)(?<=\\S)~~" +                              // 8 strike
-        "|\\*(?=\\S)([^*]+?)(?<=\\S)\\*|(?<!\\w)_(?=\\S)([^_]+?)(?<=\\S)_(?!\\w)") // 9,10 italic
+        "|<(https?://[^\\s<>]+)>|((?<![\\w/])https?://[^\\s<>`]+)" + // 5,6 autolink, bare URL
+        "|\\*\\*\\*(?=\\S)(.+?)(?<=\\S)\\*\\*\\*" +                // 7 bold italic
+        "|\\*\\*(?=\\S)(.+?)(?<=\\S)\\*\\*|(?<!\\w)__(?=\\S)(.+?)(?<=\\S)__(?!\\w)" + // 8,9 bold
+        "|~~(?=\\S)(.+?)(?<=\\S)~~" +                              // 10 strike
+        "|\\*(?=\\S)([^*]+?)(?<=\\S)\\*|(?<!\\w)_(?=\\S)([^_]+?)(?<=\\S)_(?!\\w)") // 11,12 italic
+
+private const val BARE_URL = "(?<![\\w/])https?://[^\\s<>`]+"
+private val bareUrlRegex = Regex(BARE_URL, RegexOption.IGNORE_CASE)
+
+/** Drops sentence punctuation, markdown markers and unbalanced closers a bare URL match swallowed. */
+internal fun trimBareUrl(raw: String): String {
+    var end = raw.length
+    while (end > 0) {
+        val ch = raw[end - 1]
+        val open = when (ch) { ')' -> '('; ']' -> '['; '}' -> '{'; else -> null }
+        val drop = if (open != null) raw.substring(0, end).let { u -> u.count { it == ch } > u.count { it == open } } else ch in ".,;:!?'\"*_~|"
+        if (!drop) break
+        end--
+    }
+    return raw.substring(0, end)
+}
+
+/** Ranges of bare http(s) URLs in plain text. */
+internal fun bareUrlRanges(text: String): List<IntRange> = bareUrlRegex.findAll(text).mapNotNull { m ->
+    val url = trimBareUrl(m.value)
+    if (url.substringAfter("://").isEmpty()) null else m.range.first until m.range.first + url.length
+}.toList()
+
+private fun AnnotatedString.Builder.appendLink(url: String, c: TrefoilColors, onLink: (String) -> Unit, content: AnnotatedString.Builder.() -> Unit) =
+    withLink(LinkAnnotation.Clickable(url, TextLinkStyles(SpanStyle(color = c.accent)), { onLink(url) })) { content() }
+
+/** Plain text (no markdown) with bare URLs made tappable. */
+@Composable
+internal fun rememberLinkified(text: String): AnnotatedString {
+    val c = Tf.colors
+    val uri = LocalUriHandler.current
+    return remember(text, c) {
+        buildAnnotatedString {
+            var cursor = 0
+            bareUrlRanges(text).forEach { r ->
+                append(text.substring(cursor, r.first))
+                val url = text.substring(r)
+                appendLink(url, c, { runCatching { uri.openUri(it) } }) { append(url) }
+                cursor = r.last + 1
+            }
+            append(text.substring(cursor))
+        }
+    }
+}
 
 internal fun isSafeLink(url: String) = url.startsWith("http://", true) || url.startsWith("https://", true)
 
@@ -212,13 +257,21 @@ private fun AnnotatedString.Builder.appendInline(text: String, c: TrefoilColors,
             g[3] != null -> {
                 val url = g[4]!!.value
                 if (isSafeLink(url)) {
-                    withLink(LinkAnnotation.Clickable(url, TextLinkStyles(SpanStyle(color = c.accent)), { onLink(url) })) { inner(g[3]!!.value) }
+                    appendLink(url, c, onLink) { inner(g[3]!!.value) }
                 } else inner(g[3]!!.value)
             }
-            g[5] != null -> withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontStyle = FontStyle.Italic)) { inner(g[5]!!.value) }
-            g[6] != null || g[7] != null -> withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { inner((g[6] ?: g[7])!!.value) }
-            g[8] != null -> withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) { inner(g[8]!!.value) }
-            else -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { inner((g[9] ?: g[10])!!.value) }
+            g[5] != null -> g[5]!!.value.let { url -> appendLink(url, c, onLink) { append(url) } }
+            g[6] != null -> {
+                // Trimmed punctuation and markers go back to the scanner, so `**https://x**` still closes its bold.
+                val url = trimBareUrl(g[6]!!.value)
+                if (url.substringAfter("://").isEmpty()) append(url) else appendLink(url, c, onLink) { append(url) }
+                cursor = m.range.first + url.length
+                return@forEach
+            }
+            g[7] != null -> withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontStyle = FontStyle.Italic)) { inner(g[7]!!.value) }
+            g[8] != null || g[9] != null -> withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { inner((g[8] ?: g[9])!!.value) }
+            g[10] != null -> withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) { inner(g[10]!!.value) }
+            else -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { inner((g[11] ?: g[12])!!.value) }
         }
         cursor = m.range.last + 1
     }

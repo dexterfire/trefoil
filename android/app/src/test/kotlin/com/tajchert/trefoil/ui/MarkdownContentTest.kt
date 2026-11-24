@@ -71,6 +71,15 @@ class MarkdownContentTest {
         assertFalse(isSafeLink("intent://x"))
     }
 
+    @Test fun bareUrlsAreFoundWithoutTrailingPunctuation() {
+        fun urls(text: String) = bareUrlRanges(text).map { text.substring(it) }
+        assertEquals(listOf("https://example.com/a?b=1&c=2#d"), urls("See https://example.com/a?b=1&c=2#d."))
+        assertEquals(listOf("https://github.com/o/r/pull/12"), urls("(PR https://github.com/o/r/pull/12)"))
+        assertEquals(listOf("https://en.wikipedia.org/wiki/Trefoil_(knot)"), urls("https://en.wikipedia.org/wiki/Trefoil_(knot), then"))
+        assertEquals(listOf("http://a.io", "https://b.io/x_y_z"), urls("http://a.io and **https://b.io/x_y_z**"))
+        assertEquals(emptyList<String>(), urls("no link: https:// or xhttps://a.io or ftp://a.io"))
+    }
+
     @Test fun tableColumnsKeepNaturalWidthWhenTheyFit() {
         assertArrayEquals(intArrayOf(100, 150), tableColumnWidths(intArrayOf(100, 150), intArrayOf(80, 60), 400))
     }
