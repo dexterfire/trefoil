@@ -145,17 +145,25 @@ internal fun threadSummary(value: JsonObject, archived: Boolean = false) = Threa
     hasActionableProposedPlan = (value["hasActionableProposedPlan"] as? JsonPrimitive)?.booleanOrNull == true,
     latestUserAuthoredMessageAtPresent = "latestUserAuthoredMessageAt" in value,
     completionHeldBackgroundWork = pendingBackgroundWorkHoldsCompletion(value.objects("pendingBackgroundTasks")),
-    latestRunStopRequested = (value["latestRunStopRequested"] as? JsonPrimitive)?.booleanOrNull == true,
-    latestRunBackgroundWake = (value["latestRunBackgroundWake"] as? JsonPrimitive)?.booleanOrNull == true,
-    pendingRequestUserOnly = (value.obj("pendingRuntimeRequest")["userOnly"] as? JsonPrimitive)?.booleanOrNull == true,
-    workflowStep = (value.obj("lineage")["workflowStep"] as? JsonPrimitive)?.booleanOrNull == true,
-    monitorHoldsWakeCompletion = (value["latestRunBackgroundWake"] as? JsonPrimitive)?.booleanOrNull == true &&
+    latestRunStopRequested = value.literalTrue("latestRunStopRequested"),
+    latestRunBackgroundWake = value.literalTrue("latestRunBackgroundWake"),
+    pendingRequestUserOnly = value.obj("pendingRuntimeRequest").literalTrue("userOnly"),
+    workflowStep = value.obj("lineage").literalTrue("workflowStep"),
+    monitorHoldsWakeCompletion = value.literalTrue("latestRunBackgroundWake") &&
         value.objects("pendingBackgroundTasks").any { pendingMonitorHoldsWake(it) },
 )
 
-/** T3 `monitorHoldsWakeCompletion` task test: a monitor that is not a pull request watch (those wake only on news). */
-private fun pendingMonitorHoldsWake(task: JsonObject): Boolean =
-    task.optionalText("kind") == "monitor" && !task.string("taskId").startsWith("pull-request-watch:")
+/** Only a JSON `true` literal; a quoted "true" or any other type reads as absent. */
+private fun JsonObject.literalTrue(key: String): Boolean = (get(key) as? JsonPrimitive)?.takeUnless { it.isString }?.booleanOrNull == true
+
+/**
+ * T3 `monitorHoldsWakeCompletion` task test: a monitor that is not a pull request watch (those wake only on news).
+ * T3 requires a non-empty `taskId`; a task without one is malformed and holds nothing.
+ */
+private fun pendingMonitorHoldsWake(task: JsonObject): Boolean {
+    val taskId = (task["taskId"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() } ?: return false
+    return task.optionalText("kind") == "monitor" && !taskId.startsWith("pull-request-watch:")
+}
 
 /** T3's contract decodes absent and unknown kinds as background_task before checking completion. */
 private fun pendingBackgroundWorkHoldsCompletion(tasks: List<JsonObject>): Boolean = tasks.any { task ->

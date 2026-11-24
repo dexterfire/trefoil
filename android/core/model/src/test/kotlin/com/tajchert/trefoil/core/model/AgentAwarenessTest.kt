@@ -155,7 +155,8 @@ class AgentAwarenessTest {
         val step = agentAlertStep(AgentAlertTrack(), env, connected = true, fresh = true, threads = rows, now = 0)
         assertEquals(emptyList<AgentAlert>(), step.alerts)
         assertEquals(mapOf("a" to Running, "b" to WaitingForApproval, "c" to Completed), step.track.phases)
-        assertEquals(setOf("a"), step.track.worked)
+        // Waiting on its own request means a run is active: eligible for a later terminal alert.
+        assertEquals(setOf("a", "b"), step.track.worked)
         assertEquals(env, step.track.environmentId)
         // Already waiting at adoption does not alert later either.
         assertEquals(emptyList<AgentAlert>(), agentAlertStep(step.track, env, true, true, rows, 1).alerts)
@@ -170,14 +171,40 @@ class AgentAwarenessTest {
     @Test fun moveIntoAttentionAlertsOnce() {
         val idle = thread("a")
         val approval = idle.copy(pendingRequestKind = "approval")
-        val input = idle.copy(pendingRequestKind = "user_input")
-        val steps = run(1L to listOf(approval), 2L to listOf(input), 3L to listOf(approval), 4L to listOf(idle), 5L to listOf(input))
-        assertEquals(listOf("a" to Approval), steps[0].kinds())
+        val steps = run(1L to listOf(approval), 2L to listOf(approval), 3L to listOf(idle), 4L to listOf(approval))
         assertEquals(AgentAlert(env, "a", Approval, "Title a", "p"), steps[0].alerts.single())
+        assertEquals(emptySet<String>(), steps[0].clear)
         assertEquals(emptyList<Any>(), steps[1].kinds()); assertEquals(emptySet<String>(), steps[1].clear)
+        assertEquals(setOf("a"), steps[2].clear)
+        assertEquals(listOf("a" to Approval), steps[3].kinds())
+    }
+
+    @Test fun attentionKindOrRequestChangeReplacesTheAlert() {
+        val idle = thread("a", "running")
+        val a = idle.copy(pendingRequestKind = "approval", pendingRequestId = "r1")
+        val steps = run(
+            0L to listOf(idle), 1L to listOf(a), 2L to listOf(a), 3L to listOf(a.copy(pendingRequestId = "r2")),
+            4L to listOf(a.copy(pendingRequestKind = "user_input", pendingRequestId = "r2")),
+            // Absent id falls back to kind only.
+            5L to listOf(a.copy(pendingRequestKind = "user_input", pendingRequestId = null)),
+        )
+        assertEquals(listOf("a" to Approval), steps[1].kinds())
+        assertEquals(emptyList<Any>(), steps[2].kinds()); assertEquals(emptySet<String>(), steps[2].clear)
+        assertEquals(listOf("a" to Approval), steps[3].kinds()); assertEquals(setOf("a"), steps[3].clear)
+        assertEquals(listOf("a" to Input), steps[4].kinds()); assertEquals(setOf("a"), steps[4].clear)
+        assertEquals(emptyList<Any>(), steps[5].kinds()); assertEquals(emptySet<String>(), steps[5].clear)
+    }
+
+    @Test fun childRequestChangeWithoutGapReplacesTheAlert() {
+        val parent = thread("parent", "running")
+        val steps = run(
+            0L to listOf(parent), 1L to listOf(parent, child("c", "parent").copy(pendingRequestId = "A")),
+            2L to listOf(parent, child("c", "parent").copy(pendingRequestId = "A")),
+            3L to listOf(parent, child("c", "parent").copy(pendingRequestId = "B")),
+        )
+        assertEquals(listOf("parent" to Approval), steps[1].kinds())
         assertEquals(emptyList<Any>(), steps[2].kinds())
-        assertEquals(setOf("a"), steps[3].clear)
-        assertEquals(listOf("a" to Input), steps[4].kinds())
+        assertEquals(listOf("parent" to Approval), steps[3].kinds()); assertEquals(setOf("parent"), steps[3].clear)
     }
 
     @Test fun childRequestAlertsOnParent() {
@@ -235,12 +262,80 @@ class AgentAwarenessTest {
         assertEquals(listOf("a" to Finished), steps[5].kinds())
     }
 
-    @Test fun newAlertReplacesOldWithoutClear() {
+    @Test fun newAlertAlsoClearsTheOldOne() {
         val running = thread("a", "running"); val done = thread("a", "completed")
         val steps = run(0L to listOf(running), 1L to listOf(done), 6_000L to listOf(done), 7_000L to listOf(done.copy(pendingRequestKind = "approval")))
         assertEquals(listOf("a" to Approval), steps[3].kinds())
-        assertEquals(emptySet<String>(), steps[3].clear)
+        assertEquals(setOf("a"), steps[3].clear)
         assertEquals(mapOf("a" to Approval), steps[3].track.alerted)
+        // Approval -> Failed: the approval is cancelled even if the driver then drops the Failed post.
+        val failed = agentAlertStep(steps[3].track, env, true, true, listOf(thread("a", "failed")), 8_000L)
+        assertEquals(listOf("a" to Failed), failed.kinds()); assertEquals(setOf("a"), failed.clear)
+    }
+
+    @Test fun attentionAtBaselineMakesTerminalEligible() {
+        val waiting = thread("a").copy(pendingRequestKind = "approval")
+        val start = baseline(listOf(waiting, thread("b").copy(pendingRequestKind = "user_input")))
+        val step = agentAlertStep(start, env, true, true, listOf(thread("a", "failed"), thread("b", "completed")), 1)
+        assertEquals(listOf("a" to Failed), step.kinds())
+        assertEquals(listOf("b" to Finished), agentAlertStep(step.track, env, true, true, listOf(thread("a", "failed"), thread("b", "completed")), 5_001).kinds())
+        // A parent waiting only on its child, with no active run of its own, is not eligible.
+        val parent = thread("p", "idle")
+        val childOnly = baseline(listOf(parent, child("c", "p")))
+        assertTrue("p" !in childOnly.worked)
+        assertTrue("p" in baseline(listOf(parent.copy(activityRunStatus = "running"), child("c", "p"))).worked)
+    }
+
+    @Test fun settledDuringConfirmWindowStillAlertsOnceThenClears() {
+        val running = thread("a", "running"); val done = thread("a", "completed").copy(latestRunId = "r1")
+        val settled = done.copy(settledOverride = "settled")
+        val steps = run(0L to listOf(running), 1_000L to listOf(done), 2_000L to listOf(settled), 6_000L to listOf(settled), 7_000L to listOf(settled.copy(title = "x")))
+        assertEquals(emptyList<Any>(), steps[2].kinds()); assertEquals(6_000L, steps[2].recheckAtMillis)
+        assertEquals(listOf("a" to Finished), steps[3].kinds()); assertNull(steps[3].recheckAtMillis)
+        assertEquals(emptyList<Any>(), steps[4].kinds()); assertEquals(setOf("a"), steps[4].clear)
+        // Hidden by something other than settlement (a queued continuation): dropped.
+        val queued = run(0L to listOf(running), 1_000L to listOf(done), 2_000L to listOf(done.copy(status = "queued")), 6_000L to listOf(done.copy(status = "queued")))
+        assertEquals(emptyList<Any>(), queued[3].kinds()); assertEquals(emptyMap<String, Long>(), queued[2].track.pendingCompletions)
+    }
+
+    @Test fun staleRowsAfterAdoptionHoldEverything() {
+        val running = thread("a", "running"); val done = thread("a", "completed")
+        val pending = run(0L to listOf(running), 1_000L to listOf(done)).last().track
+        val stale = agentAlertStep(pending, env, connected = true, fresh = false, threads = listOf(done.copy(pendingRequestKind = "approval")), now = 7_000L)
+        assertEquals(pending, stale.track); assertEquals(emptyList<AgentAlert>(), stale.alerts); assertEquals(emptySet<String>(), stale.clear)
+        assertEquals(8_000L, stale.recheckAtMillis)
+        assertEquals(6_000L, agentAlertStep(pending, env, true, false, listOf(done), 2_000L).recheckAtMillis)
+        assertNull(agentAlertStep(baseline(emptyList()), env, true, false, emptyList(), 0).recheckAtMillis)
+        assertEquals(listOf("a" to Finished), agentAlertStep(stale.track, env, true, true, listOf(done), 8_000L).kinds())
+    }
+
+    @Test fun differentCompletionRestartsTheWindow() {
+        val running = thread("a", "running")
+        val first = thread("a", "completed").copy(latestRunId = "r1", latestRunCompletedAt = "2026-11-24T10:00:00Z")
+        val second = first.copy(latestRunId = "r2", latestRunCompletedAt = "2026-11-24T10:00:03Z")
+        val steps = run(0L to listOf(running), 1_000L to listOf(first), 4_000L to listOf(second), 6_000L to listOf(second), 9_000L to listOf(second),
+            start = baseline(emptyList()))
+        assertEquals(9_000L, steps[2].recheckAtMillis)
+        assertEquals(mapOf("a" to 4_000L), steps[2].track.pendingCompletions)
+        // The first completion would have been due at 6 s; the second one restarted the window.
+        assertEquals(emptyList<Any>(), steps[3].kinds())
+        assertEquals(listOf("a" to Finished), steps[4].kinds())
+    }
+
+    @Test fun staleTerminalIsConsumedSilently() {
+        val t0 = java.time.Instant.parse("2026-11-24T10:00:00Z").toEpochMilli()
+        val running = thread("a", "running"); val failed = thread("a", "failed").copy(latestRunCompletedAt = "2026-11-24T10:00:00Z")
+        val old = run(t0 to listOf(running), t0 + 121_000 to listOf(failed), t0 + 122_000 to listOf(failed))
+        assertEquals(emptyList<Any>(), old[1].kinds() + old[2].kinds())
+        assertTrue("a" !in old[1].track.worked)
+        val fresh = run(t0 to listOf(running), t0 + 120_000 to listOf(failed))
+        assertEquals(listOf("a" to Failed), fresh[1].kinds())
+        val done = thread("a", "completed").copy(latestRunCompletedAt = "2026-11-24T10:00:00Z")
+        val late = run(t0 to listOf(running), t0 + 118_000 to listOf(done), t0 + 123_000 to listOf(done), t0 + 130_000 to listOf(done))
+        assertEquals(emptyList<Any>(), late[1].kinds() + late[2].kinds() + late[3].kinds())
+        assertNull(late[2].recheckAtMillis)
+        // Unreadable completion time: emitted.
+        assertEquals(listOf("a" to Failed), run(0L to listOf(running), 1L to listOf(failed.copy(latestRunCompletedAt = "?"))).last().kinds())
     }
 
     @Test fun alertClearsWhenThreadIsArchivedSettledOrGone() {
@@ -255,14 +350,28 @@ class AgentAwarenessTest {
     }
 
     @Test fun disconnectOrEnvironmentSwitchResetsAndClears() {
-        val waiting = thread("a").copy(pendingRequestKind = "approval")
+        val waiting = thread("a").copy(pendingRequestKind = "approval", pendingRequestId = "r1")
         val alerted = run(0L to listOf(thread("a")), 1L to listOf(waiting)).last().track
+        // A blip on the same machine forgets the baseline but keeps the posted alert.
         val offline = agentAlertStep(alerted, env, connected = false, fresh = true, threads = listOf(waiting), now = 2)
-        assertEquals(AgentAlertTrack(env), offline.track); assertEquals(setOf("a"), offline.clear); assertEquals(emptyList<AgentAlert>(), offline.alerts)
-        // The reconnect's stale cache does nothing; its fresh snapshot is adopted silently, even if a thread is waiting.
-        assertEquals(AgentAlertStep(AgentAlertTrack(env)), agentAlertStep(offline.track, env, true, false, listOf(waiting), 3))
+        assertNull(offline.track.phases); assertEquals(emptySet<String>(), offline.track.worked)
+        assertEquals(mapOf("a" to Approval), offline.track.alerted)
+        assertEquals(emptySet<String>(), offline.clear); assertEquals(emptyList<AgentAlert>(), offline.alerts)
+        // The reconnect's stale cache does nothing.
+        assertEquals(AgentAlertStep(offline.track), agentAlertStep(offline.track, env, true, false, listOf(waiting), 3))
+        // Still pending after reconnect: neither cleared nor re-alerted, now or on the next observation.
         val readopted = agentAlertStep(offline.track, env, true, true, listOf(waiting), 4)
-        assertEquals(emptyList<AgentAlert>(), readopted.alerts); assertEquals(mapOf("a" to WaitingForApproval), readopted.track.phases)
+        assertEquals(emptyList<AgentAlert>(), readopted.alerts); assertEquals(emptySet<String>(), readopted.clear)
+        assertEquals(mapOf("a" to WaitingForApproval), readopted.track.phases); assertEquals(mapOf("a" to Approval), readopted.track.alerted)
+        val after = agentAlertStep(readopted.track, env, true, true, listOf(waiting), 5)
+        assertEquals(emptyList<AgentAlert>(), after.alerts); assertEquals(emptySet<String>(), after.clear)
+        // Answered while offline: cleared at adoption, silently.
+        val answered = agentAlertStep(offline.track, env, true, true, listOf(thread("a")), 4)
+        assertEquals(emptyList<AgentAlert>(), answered.alerts); assertEquals(setOf("a"), answered.clear)
+        assertEquals(emptyMap<String, AgentAlertKind>(), answered.track.alerted)
+        // Another request of the same kind while offline: the old alert is stale, and the new one is baseline.
+        val replaced = agentAlertStep(offline.track, env, true, true, listOf(waiting.copy(pendingRequestId = "r2")), 4)
+        assertEquals(setOf("a"), replaced.clear); assertEquals(emptyList<AgentAlert>(), replaced.alerts)
 
         val switched = agentAlertStep(alerted, "other", connected = true, fresh = false, threads = listOf(waiting), now = 2)
         assertEquals(AgentAlertTrack("other"), switched.track); assertEquals(setOf("a"), switched.clear)

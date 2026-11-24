@@ -116,7 +116,9 @@ class PresentationProjectionTest {
         assertTrue(thread.latestRunStopRequested); assertTrue(thread.latestRunBackgroundWake)
         assertTrue(thread.pendingRequestUserOnly); assertTrue(thread.workflowStep); assertTrue(thread.monitorHoldsWakeCompletion)
         for (legacy in listOf("""{}""", """{"latestRunStopRequested":"yes","latestRunBackgroundWake":1,
-            "pendingRuntimeRequest":{"userOnly":{}},"lineage":{"workflowStep":null},"pendingBackgroundTasks":"x"}""")) {
+            "pendingRuntimeRequest":{"userOnly":{}},"lineage":{"workflowStep":null},"pendingBackgroundTasks":"x"}""",
+            """{"latestRunStopRequested":"true","latestRunBackgroundWake":"true","pendingRuntimeRequest":{"userOnly":"true"},
+            "lineage":{"workflowStep":"true"},"pendingBackgroundTasks":[{"taskId":"tail","kind":"monitor"}]}""")) {
             val row = threadSummary(fixture(legacy))
             assertFalse(legacy, row.latestRunStopRequested || row.latestRunBackgroundWake || row.pendingRequestUserOnly ||
                 row.workflowStep || row.monitorHoldsWakeCompletion)
@@ -126,7 +128,9 @@ class PresentationProjectionTest {
     @Test fun monitorHoldsWakeCompletionMatchesT3() {
         val cases = listOf(
             """true,"pendingBackgroundTasks":[{"taskId":"tail","kind":"monitor"}]""" to true,
-            """true,"pendingBackgroundTasks":[{"kind":"monitor"}]""" to true,
+            """true,"pendingBackgroundTasks":[{"kind":"monitor"}]""" to false,
+            """true,"pendingBackgroundTasks":[{"taskId":"  ","kind":"monitor"}]""" to false,
+            """true,"pendingBackgroundTasks":[{"taskId":7,"kind":"monitor"}]""" to false,
             """true,"pendingBackgroundTasks":[{"taskId":"pull-request-watch:github.com/o/r#1","kind":"monitor","awaited":true}]""" to false,
             """true,"pendingBackgroundTasks":[{"taskId":"pull-request-watch:x","kind":"monitor"},{"taskId":"tail","kind":"monitor"}]""" to true,
             """true,"pendingBackgroundTasks":[{"taskId":"cmd","kind":"command"},{"taskId":"agent","kind":"subagent"}]""" to false,
