@@ -96,7 +96,8 @@ class AgentAlertNotifierTest {
         assertEquals("thread-1", intent.getStringExtra("threadId"))
         assertEquals(android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP,
             intent.flags and (android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP))
-        assertEquals(OpenThreadRequest("env-1", "thread-1"), parseOpenThreadIntent(intent))
+        // The notification's own tap carries the installation token, so the activity accepts it.
+        assertEquals(OpenThreadRequest("env-1", "thread-1"), parseOpenThreadIntent(intent, AgentAlertNotifier.tapToken(app)))
         assertEquals("trefoil-alert", intent.data?.scheme)
     }
 

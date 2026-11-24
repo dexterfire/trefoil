@@ -224,6 +224,80 @@ class AgentAlertDriverTest {
         assertEquals(AgentAlertKind.Finished, h.sink.posts.single().first.kind)
     }
 
+    /** A completion held from [start] (epoch millis) that confirms at 5 s. */
+    private fun holdingStep(start: Long = 0L): (StepCall) -> AgentAlertStep = { call ->
+        if (call.now >= 5_000) AgentAlertStep(call.track.copy(pendingCompletions = emptyMap()), alerts = listOf(alert(kind = AgentAlertKind.Finished)))
+        else AgentAlertStep(call.track.copy(pendingCompletions = mapOf("t1" to start)), recheckAtMillis = 5_000L)
+    }
+
+    @Test fun aCompletionFirstSeenInTheForegroundNeverPostsAfterBackgrounding() = runTest(UnconfinedTestDispatcher()) {
+        val h = harness()
+        h.respond = holdingStep()
+        h.state.value = h.state.value.copy(threads = listOf(ThreadSummary("t1", "p1", "x")))
+        runCurrent()
+        advanceTimeBy(3_000); runCurrent()
+        h.driver.setForeground(false)
+        advanceTimeBy(2_000); runCurrent()
+        assertTrue(h.calls.any { it.now >= 5_000 })
+        assertTrue(h.sink.posts.isEmpty())
+    }
+
+    @Test fun aCompletionFirstSeenWithTheSettingOffNeverPostsAfterItIsTurnedOn() = runTest(UnconfinedTestDispatcher()) {
+        val h = harness(enabled = false)
+        h.driver.setForeground(false)
+        h.respond = holdingStep()
+        h.state.value = h.state.value.copy(threads = listOf(ThreadSummary("t1", "p1", "x")))
+        runCurrent()
+        h.setting.value = true; runCurrent()
+        advanceTimeBy(5_000); runCurrent()
+        assertTrue(h.calls.any { it.now >= 5_000 })
+        assertTrue(h.sink.posts.isEmpty())
+    }
+
+    @Test fun aCompletionHeldInTheBackgroundPosts() = runTest(UnconfinedTestDispatcher()) {
+        val h = harness()
+        h.driver.setForeground(false)
+        h.respond = holdingStep()
+        h.state.value = h.state.value.copy(threads = listOf(ThreadSummary("t1", "p1", "x")))
+        runCurrent()
+        advanceTimeBy(5_000); runCurrent()
+        assertEquals(AgentAlertKind.Finished, h.sink.posts.single().first.kind)
+    }
+
+    @Test fun aTerminalAlertWhoseRunChangedWhileTheStepRanIsDropped() = runTest(UnconfinedTestDispatcher()) {
+        val h = harness()
+        h.driver.setForeground(false)
+        val evaluated = ThreadSummary("t1", "p1", "x", latestRunId = "r1")
+        val marker = AgentAlertTrack("evaluated")
+        h.respond = { call ->
+            if (call.threads.single().latestRunId == "r1") {
+                // The live state moves to another run while this step runs.
+                h.state.value = h.state.value.copy(threads = listOf(evaluated.copy(latestRunId = "r2")))
+                AgentAlertStep(marker, alerts = listOf(alert(kind = AgentAlertKind.Failed)))
+            } else AgentAlertStep(call.track)
+        }
+        h.state.value = h.state.value.copy(threads = listOf(evaluated))
+        runCurrent()
+        assertTrue(h.sink.posts.isEmpty())
+        // The next observation saw the new run with the track from before the dropped step.
+        assertEquals("r2", h.calls.last().threads.single().latestRunId)
+        assertTrue(h.calls.last().track != marker)
+    }
+
+    @Test fun aTerminalAlertIsDroppedWhenTheShellStoppedBeingFresh() = runTest(UnconfinedTestDispatcher()) {
+        val h = harness()
+        h.driver.setForeground(false)
+        h.respond = { call ->
+            if (call.fresh) {
+                h.state.value = h.state.value.copy(shellLive = false)
+                AgentAlertStep(call.track, alerts = listOf(alert(kind = AgentAlertKind.Finished)))
+            } else AgentAlertStep(call.track)
+        }
+        h.state.value = h.state.value.copy(threads = listOf(ThreadSummary("t1", "p1", "x")))
+        runCurrent()
+        assertTrue(h.sink.posts.isEmpty())
+    }
+
     @Test fun shownThreadInTheForegroundCancelsItsNotification() = runTest(UnconfinedTestDispatcher()) {
         val h = harness()
         h.state.value = h.state.value.copy(selectedThreadId = "t1")

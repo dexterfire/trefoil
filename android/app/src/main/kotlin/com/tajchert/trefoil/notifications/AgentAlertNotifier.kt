@@ -63,6 +63,11 @@ internal class AgentAlertNotifier(private val context: Context) : AgentAlertSink
         const val ACTION_OPEN_THREAD = "com.tajchert.trefoil.action.OPEN_THREAD"
         const val EXTRA_ENVIRONMENT_ID = "environmentId"
         const val EXTRA_THREAD_ID = "threadId"
+        /** Carries [tapToken]: MainActivity is exported, so only an intent with it comes from one of this app's notifications. */
+        const val EXTRA_TAP_TOKEN = "tapToken"
+        private const val TOKEN_PREFS = "trefoil.notifications"
+        private const val TOKEN_KEY = "tapToken"
+        @Volatile private var cachedTapToken: String? = null
         const val UNTITLED = "Untitled conversation"
         const val MAX_TITLE_LENGTH = 120
 
@@ -83,11 +88,27 @@ internal class AgentAlertNotifier(private val context: Context) : AgentAlertSink
 
         fun title(raw: String): String = raw.trim().ifBlank { UNTITLED }.let { if (it.length > MAX_TITLE_LENGTH) it.take(MAX_TITLE_LENGTH - 1).trimEnd() + "…" else it }
 
+        /**
+         * A random secret of this installation, generated once and kept in app-private preferences (never logged, never exported).
+         * Per install rather than per process, so a notification still opens its thread when the system killed the process that
+         * posted it. Only the system and this app can read a PendingIntent's extras.
+         */
+        fun tapToken(context: Context): String = cachedTapToken ?: synchronized(this) {
+            cachedTapToken ?: run {
+                val prefs = context.getSharedPreferences(TOKEN_PREFS, Context.MODE_PRIVATE)
+                prefs.getString(TOKEN_KEY, null)?.takeIf { it.isNotEmpty() } ?: run {
+                    val bytes = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+                    bytes.joinToString("") { "%02x".format(it) }.also { prefs.edit().putString(TOKEN_KEY, it).commit() }
+                }
+            }.also { cachedTapToken = it }
+        }
+
         fun openIntent(context: Context, environmentId: String, threadId: String): Intent =
             // Explicit; the data URI only makes intents of different threads unequal (filterEquals), so their PendingIntents never merge.
             Intent(context, MainActivity::class.java).setAction(ACTION_OPEN_THREAD)
                 .setData(Uri.fromParts(URI_SCHEME, tag(environmentId, threadId), null))
                 .putExtra(EXTRA_ENVIRONMENT_ID, environmentId).putExtra(EXTRA_THREAD_ID, threadId)
+                .putExtra(EXTRA_TAP_TOKEN, tapToken(context))
                 .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
 
         fun build(context: Context, alert: AgentAlert, projectTitle: String?): Notification {

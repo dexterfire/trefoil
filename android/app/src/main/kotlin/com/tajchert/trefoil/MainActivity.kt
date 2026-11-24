@@ -56,7 +56,7 @@ class MainActivity : ComponentActivity() {
         setIntent(Intent(Intent.ACTION_MAIN))
     }
     private fun handleOpenThreadIntent(intent: Intent?) {
-        val request = parseOpenThreadIntent(intent) ?: return
+        val request = parseOpenThreadIntent(intent, AgentAlertNotifier.tapToken(this)) ?: return
         // Held by the view model, so a cold start (machines still loading) or a rotation while the machine connects keeps it.
         model.openThreadFromNotification(request)
         // Consumed once: recreation or a later resume must not reopen the thread.
@@ -104,14 +104,19 @@ class MainActivity : ComponentActivity() {
         try { getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(networkCallback) } catch (_: RuntimeException) {}
         networkCallbackRegistered = false
     }
-    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+    private val notificationPermission: androidx.activity.result.ActivityResultLauncher<String> = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
         // Denied changes nothing else: the keep-alive service still runs, and Android only hides its notifications.
+        permissionRequests.finished()
     }
+    /** Every notification permission request goes through here, so one user action never opens two dialogs. */
+    private val permissionRequests: SinglePermissionRequest = SinglePermissionRequest { notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS) }
+    private fun notificationPermissionGranted() = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+        checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
     private fun requestNotificationPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
+        if (notificationPermissionGranted()) return
+        // A toggle's request counts as the one-time request too.
+        uiPrefs.edit().putBoolean(AGENT_NOTIFICATION_PERMISSION_ASKED, true).apply()
+        permissionRequests.request()
     }
     private val uiPrefs by lazy { getSharedPreferences("trefoil.ui", MODE_PRIVATE) }
     /**
@@ -119,11 +124,9 @@ class MainActivity : ComponentActivity() {
      * machine is connected while the setting is on and the permission is missing. Denial changes nothing else.
      */
     private fun askNotificationPermissionOnce() {
-        val granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-        if (!shouldAskAgentNotificationPermission(Build.VERSION.SDK_INT, connected = true, model.agentNotifications.value, granted, uiPrefs.getBoolean(AGENT_NOTIFICATION_PERMISSION_ASKED, false))) return
+        if (!shouldAskAgentNotificationPermission(Build.VERSION.SDK_INT, connected = true, model.agentNotifications.value, notificationPermissionGranted(), uiPrefs.getBoolean(AGENT_NOTIFICATION_PERMISSION_ASKED, false))) return
         uiPrefs.edit().putBoolean(AGENT_NOTIFICATION_PERMISSION_ASKED, true).apply()
-        notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        permissionRequests.request()
     }
     /** The "Keep connected in background" toggle; turning it on asks for the notification permission on Android 13+. */
     fun onKeepConnectedChange(enabled: Boolean) {
@@ -299,6 +302,22 @@ private const val MAX_PAIR_LINK_LENGTH = 4096
 /** `SharedPreferences("trefoil.ui")` key: the one-time agent-notification permission request was made. */
 internal const val AGENT_NOTIFICATION_PERMISSION_ASKED = "agentNotificationPermissionAsked"
 
+/**
+ * At most one permission dialog at a time: a request while one is in flight (the toggle's and the automatic first-connect request
+ * of the same action) is dropped. [finished] runs when the dialog's result arrives.
+ */
+internal class SinglePermissionRequest(private val launch: () -> Unit) {
+    private var inFlight = false
+    /** Launches the dialog unless one is showing; true when it launched. */
+    fun request(): Boolean {
+        if (inFlight) return false
+        inFlight = true
+        try { launch() } catch (e: RuntimeException) { inFlight = false; throw e }
+        return true
+    }
+    fun finished() { inFlight = false }
+}
+
 /** Ask for `POST_NOTIFICATIONS` without a toggle: Android 13+, connected, setting on, not granted, and never asked before. */
 internal fun shouldAskAgentNotificationPermission(sdk: Int, connected: Boolean, settingOn: Boolean, granted: Boolean, asked: Boolean): Boolean =
     sdk >= Build.VERSION_CODES.TIRAMISU && connected && settingOn && !granted && !asked
@@ -317,11 +336,15 @@ internal fun parsePairLinkIntent(intent: Intent?): String? {
 private const val MAX_OPEN_THREAD_ID_LENGTH = 512
 
 /**
- * The thread a tap on an agent notification asks to open, or null. MainActivity is exported, so any app can send this action: the
- * ids are only used to look up a saved machine and one of its listed threads, never to reach a thread by id alone.
+ * The thread a tap on an agent notification asks to open, or null. MainActivity is exported, so any app can send this action: only
+ * an intent carrying [tapToken] (the installation's secret, see [AgentAlertNotifier.tapToken], which only this app's own
+ * notification PendingIntents hold) is accepted. Even then the ids are only used to look up a saved machine and one of its listed
+ * threads, never to reach a thread by id alone.
  */
-internal fun parseOpenThreadIntent(intent: Intent?): OpenThreadRequest? {
+internal fun parseOpenThreadIntent(intent: Intent?, tapToken: String): OpenThreadRequest? {
     if (intent?.action != AgentAlertNotifier.ACTION_OPEN_THREAD || intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return null
+    val presented = intent.getStringExtra(AgentAlertNotifier.EXTRA_TAP_TOKEN) ?: return null
+    if (tapToken.isEmpty() || !java.security.MessageDigest.isEqual(presented.toByteArray(), tapToken.toByteArray())) return null
     val environmentId = intent.getStringExtra(AgentAlertNotifier.EXTRA_ENVIRONMENT_ID)?.takeIf { it.isNotBlank() && it.length <= MAX_OPEN_THREAD_ID_LENGTH } ?: return null
     val threadId = intent.getStringExtra(AgentAlertNotifier.EXTRA_THREAD_ID)?.takeIf { it.isNotBlank() && it.length <= MAX_OPEN_THREAD_ID_LENGTH } ?: return null
     return OpenThreadRequest(environmentId, threadId)
