@@ -101,7 +101,7 @@ class EncryptedShellCacheStoreTest {
     }
 
     @Test fun aFileOfAnotherFormatVersionIsDiscarded() = test {
-        val other = ShellCacheCodec.encode(shell)!!.decodeToString().replace("\"version\":1", "\"version\":2").encodeToByteArray()
+        val other = ShellCacheCodec.encode(shell)!!.decodeToString().replace("\"version\":${ShellCacheCodec.VERSION}", "\"version\":${ShellCacheCodec.VERSION + 1}").encodeToByteArray()
         dir.mkdirs()
         entryFile().writeBytes(cipher.seal(other, "trefoil.shell-cache.v1:env".encodeToByteArray()))
         assertNull(store.read("env"))
