@@ -286,13 +286,15 @@ class AgentAwarenessTest {
         assertTrue("p" in baseline(listOf(parent.copy(activityRunStatus = "running"), child("c", "p"))).worked)
     }
 
-    @Test fun settledDuringConfirmWindowStillAlertsOnceThenClears() {
+    @Test fun settledDuringConfirmWindowAlertsOnceAndIsNeverTracked() {
         val running = thread("a", "running"); val done = thread("a", "completed").copy(latestRunId = "r1")
         val settled = done.copy(settledOverride = "settled")
         val steps = run(0L to listOf(running), 1_000L to listOf(done), 2_000L to listOf(settled), 6_000L to listOf(settled), 7_000L to listOf(settled.copy(title = "x")))
         assertEquals(emptyList<Any>(), steps[2].kinds()); assertEquals(6_000L, steps[2].recheckAtMillis)
         assertEquals(listOf("a" to Finished), steps[3].kinds()); assertNull(steps[3].recheckAtMillis)
-        assertEquals(emptyList<Any>(), steps[4].kinds()); assertEquals(setOf("a"), steps[4].clear)
+        // One-shot: not remembered, so neither a later quiet step nor a later change clears (or repeats) it.
+        assertEquals(emptyMap<String, AgentAlertKind>(), steps[3].track.alerted)
+        assertEquals(emptyList<Any>(), steps[4].kinds()); assertEquals(emptySet<String>(), steps[4].clear)
         // Hidden by something other than settlement (a queued continuation): dropped.
         val queued = run(0L to listOf(running), 1_000L to listOf(done), 2_000L to listOf(done.copy(status = "queued")), 6_000L to listOf(done.copy(status = "queued")))
         assertEquals(emptyList<Any>(), queued[3].kinds()); assertEquals(emptyMap<String, Long>(), queued[2].track.pendingCompletions)

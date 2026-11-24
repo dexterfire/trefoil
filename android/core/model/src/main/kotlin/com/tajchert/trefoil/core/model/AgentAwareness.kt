@@ -77,7 +77,8 @@ fun threadAwareness(thread: ThreadSummary, threads: List<ThreadSummary>, now: Lo
  * - a move into attention, or to another request or kind while waiting, alerts;
  * - a terminal phase alerts only for a thread seen working since the baseline and only while its completion time is
  *   at most two minutes old, a completion only once the same completion held for [AGENT_COMPLETION_CONFIRM_MS]
- *   (settling it inside that window does not cancel it);
+ *   (settling it inside that window does not cancel it, but that alert is one-shot: it is not remembered, so no later
+ *   step clears it, because a settled thread has no phase that could show it no longer applies);
  * - a thread whose earlier alert no longer applies is in `clear`, also when it gets a new alert in the same step, so
  *   cancelling `clear` before posting `alerts` never leaves a stale notification;
  * - a connection loss forgets the baseline but keeps posted alerts until the next fresh snapshot shows whether they
@@ -128,6 +129,8 @@ fun agentAlertStep(
         if (waiting != null) attention[id] = waiting
         var working = id in track.worked || countsAsWork(row, phase, waiting)
         var kind: AgentAlertKind? = null
+        /** Settled during its confirm window: alerted once and never tracked, since nothing later could clear it. */
+        var oneShot = false
 
         /** A held completion: alert once it is due (if still fresh), else keep waiting. */
         fun holdCompletion(firstSeen: Long, run: String) {
@@ -157,14 +160,16 @@ fun agentAlertStep(
             }
             // Relay: a held completion settled during its hold still alerts; only settlement may hide it.
             phase == null && sameRun && working && row.settledOverride == "settled" &&
-                awarenessOf(row.copy(settledOverride = null), child?.kind) == AwarenessPhase.Completed ->
+                awarenessOf(row.copy(settledOverride = null), child?.kind) == AwarenessPhase.Completed -> {
                 holdCompletion(prior!!, runIdentity(row))
+                oneShot = true
+            }
         }
         if (working) worked += id
         val old = track.alerted[id]
         if (kind != null) {
             alerts += AgentAlert(environmentId, id, kind!!, row.title, row.projectId)
-            alerted[id] = kind!!
+            if (!oneShot) alerted[id] = kind!!
             if (waiting != null) alertedAttention[id] = waiting
             if (old != null) clear += id
         } else if (old != null) {

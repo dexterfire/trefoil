@@ -185,6 +185,19 @@ class RetainedSessionTest {
             assertTrue(f.client.state.value.threads.isEmpty())
         }
     }
+    @Test fun selectThreadInOpensOnlyAThreadTheNamedCurrentEnvironmentLists() = runBlocking {
+        Fixture().use { f ->
+            f.shell(f.connect())
+            assertFalse("another machine's request", f.client.selectThreadIn("other-env", "working"))
+            assertFalse("a thread the shell does not list", f.client.selectThreadIn("env", "missing"))
+            assertNull(f.client.state.value.selectedThreadId)
+            assertEquals(0, f.subscriptions.get())
+            assertTrue(f.client.selectThreadIn("env", "working"))
+            assertEquals("working", f.client.state.value.selectedThreadId)
+            withTimeout(5000) { f.threads.receive() }
+            assertEquals(1, f.subscriptions.get())
+        }
+    }
     @Test fun sameEnvironmentReconnectKeepsShellAndConversationUntilFreshSnapshots() = runBlocking {
         Fixture().use { f ->
             f.shell(f.connect()); f.client.selectThread("working")

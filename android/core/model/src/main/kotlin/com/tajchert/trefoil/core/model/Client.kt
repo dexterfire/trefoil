@@ -339,6 +339,17 @@ interface TrefoilClient {
     suspend fun verifyLink(timeoutMillis: Long): Boolean = true
     suspend fun disconnect()
     suspend fun selectThread(threadId: String)
+    /**
+     * Selects [threadId] only while [environmentId] is the current environment and its shell lists the thread; otherwise
+     * nothing changes and the result is false. For requests that name a machine (a notification tap): the check and the
+     * selection happen together, so a machine switch in between never opens another machine's thread.
+     */
+    suspend fun selectThreadIn(environmentId: String, threadId: String): Boolean {
+        val current = state.value
+        if (current.environment?.id != environmentId || current.threads.none { it.id == threadId }) return false
+        selectThread(threadId)
+        return true
+    }
     /** False while the app is in the background: the open thread is then not being looked at, so no visit is recorded. */
     fun setThreadViewing(viewing: Boolean) {}
     /**

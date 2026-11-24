@@ -924,6 +924,13 @@ class T3Client(
         return work.await()
     }
     override suspend fun selectThread(threadId: String) = selectThreadNow(threadId)
+    override suspend fun selectThreadIn(environmentId: String, threadId: String): Boolean = synchronized(lifecycleLock) {
+        // Checked under the lock that every environment switch takes, so the environment cannot change before the selection.
+        val current = state.value
+        if (current.environment?.id != environmentId || current.threads.none { it.id == threadId }) return@synchronized false
+        selectThreadNow(threadId)
+        true
+    }
     /**
      * Shows [threadId] and subscribes it once the current connection's shell is synchronized: a row shown from the cache
      * (or retained) may name a thread deleted meanwhile, whose subscription the server would reject, failing the session.
