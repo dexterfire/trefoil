@@ -6,8 +6,24 @@ package com.tajchert.trefoil.ui
 import com.tajchert.trefoil.ui.shell.RegisterShortcut
 import com.tajchert.trefoil.ui.shell.ShortcutId
 import com.tajchert.trefoil.ui.shell.alternateFollowUp
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -118,6 +134,8 @@ internal fun Conversation(
     /** Threads (see [stopKey]) with a queue command in flight: the queue strip's controls wait for it. */
     queueOperationKeys: Set<String> = emptySet(),
     onCancelQueued: (String) -> Unit = {}, onSteerQueued: (String) -> Unit = {}, onResumeQueue: () -> Unit = {},
+    /** Dismissed prompt suggestions and how to dismiss one; the composer decides when the hint shows. */
+    promptSuggestions: PromptSuggestionUi = PromptSuggestionUi(),
 ) {
     val c = Tf.colors
     // A draft hides whatever thread was previously selected; its first message creates the real thread.
@@ -374,7 +392,7 @@ internal fun Conversation(
                     QuickReplies(state.requests, canSend, respond)
                     if (thread != null && thread.isProviderNativeSubagentThread()) ReadOnlySubagentBar(thread, clock, onOpenParent)
                     else ConversationComposer(state, draft, text, ::editText, submitted != null, stopPending, onSetRuntimeMode, onSetModel, onSetModelOption, onSetModelFavorite,
-                        stop = interrupt, onSend = { mode -> submit(text, mode) }, canWriteNow = rawState.canWrite, queueBusy = stopKey(state.environment?.id, state.selectedThreadId) in queueOperationKeys, onCancelQueued = onCancelQueued, onSteerQueued = onSteerQueued, onResumeQueue = onResumeQueue)
+                        stop = interrupt, onSend = { mode -> submit(text, mode) }, canWriteNow = rawState.canWrite, queueBusy = stopKey(state.environment?.id, state.selectedThreadId) in queueOperationKeys, onCancelQueued = onCancelQueued, onSteerQueued = onSteerQueued, onResumeQueue = onResumeQueue, promptSuggestions = promptSuggestions)
                 }
             }
         }
@@ -474,6 +492,7 @@ internal fun ConversationComposer(
     onSetRuntimeMode: (RuntimeMode) -> Unit, onSetModel: (ModelOption) -> Unit, onSetModelOption: (String, Any) -> Unit, onSetModelFavorite: (ModelKey, Boolean) -> Unit = { _, _ -> },
     stop: () -> Unit, onSend: (FollowUpMode?) -> Unit, canWriteNow: Boolean = state.canWrite, queueBusy: Boolean = false,
     onCancelQueued: (String) -> Unit, onSteerQueued: (String) -> Unit, onResumeQueue: () -> Unit,
+    promptSuggestions: PromptSuggestionUi = PromptSuggestionUi(),
 ) {
     val c = Tf.colors
     val compactHeight = LocalCompactHeight.current
@@ -507,6 +526,64 @@ internal fun ConversationComposer(
             }
         }
     }
+    // Prompt suggestion: a ghost in the empty field's placeholder slot. Accepting writes it into the draft (never sends); see PromptSuggestionHint.kt.
+    val candidate = promptSuggestionCandidate(state, draft != null, text, waiting, canWriteNow, promptSuggestions.dismissed)
+    val hint = rememberSettledPromptSuggestion(candidate, promptSuggestions.appearDelayMs)
+    val ghostOn = hint.shown
+    val reducedMotion = rememberAnimationsOff()
+    val scope = rememberCoroutineScope()
+    val focus = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val haptics = LocalHapticFeedback.current
+    var dragX by remember { mutableFloatStateOf(0f) }
+    // 0 -> 1 while an accepted suggestion turns from ghost colour into the draft's colour.
+    val solidify = remember { Animatable(1f) }
+    fun acceptSuggestion() {
+        val accepted = promptSuggestionToAccept(hint.display?.text.takeIf { ghostOn }, text) ?: return
+        dragX = 0f
+        haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+        edit = TextFieldValue(accepted, TextRange(accepted.length)); caretStart = accepted.length; caretEnd = accepted.length
+        onText(accepted)
+        focus.requestFocus(); keyboard?.show()
+        scope.launch { solidify.snapTo(0f); solidify.animateTo(1f, tween(if (reducedMotion) 0 else 180)) }
+    }
+    fun dismissSuggestion() {
+        val suggestion = hint.display?.takeIf { ghostOn } ?: return
+        dragX = 0f
+        promptSuggestions.onDismiss(promptSuggestionKey(state.environment?.id, suggestion.runId))
+    }
+    // Hardware keyboard, field empty and hint showing: Tab accepts, Escape dismisses. Anything else (and Tab with no hint) is left alone.
+    val suggestionKeys = Modifier.onPreviewKeyEvent { event ->
+        if (!ghostOn || text.isNotEmpty() || event.type != KeyEventType.KeyDown) false
+        else when {
+            event.key == Key.Tab && !event.isShiftPressed && !event.isAltPressed && !event.isCtrlPressed && !event.isMetaPressed -> { acceptSuggestion(); true }
+            event.key == Key.Escape -> { dismissSuggestion(); true }
+            else -> false
+        }
+    }
+    // Swipe right on the hint accepts, left dismisses. Taps and vertical moves are not consumed, so the field still focuses as usual.
+    val swipeThreshold = with(LocalDensity.current) { PROMPT_SUGGESTION_SWIPE_DP.dp.toPx() }
+    val suggestionSwipe = if (!ghostOn) Modifier else Modifier.pointerInput(Unit) {
+        var total = 0f
+        detectHorizontalDragGestures(
+            onDragStart = { total = 0f },
+            onDragEnd = {
+                when (promptSuggestionSwipe(total, swipeThreshold)) {
+                    PromptSuggestionSwipe.Accept -> acceptSuggestion()
+                    PromptSuggestionSwipe.Dismiss -> dismissSuggestion()
+                    PromptSuggestionSwipe.None -> scope.launch { animate(dragX, 0f) { v, _ -> dragX = v } }
+                }
+            },
+            onDragCancel = { scope.launch { animate(dragX, 0f) { v, _ -> dragX = v } } },
+        ) { change, amount ->
+            change.consume()
+            total += amount
+            dragX = total.coerceIn(-swipeThreshold * 1.5f, swipeThreshold * 1.5f)
+        }
+    }
+    val fieldIndent by animateDpAsState(if (ghostOn) PromptSuggestionIndent else 0.dp, tween(if (reducedMotion) 0 else 180), label = "suggestion-indent")
+    val fieldColor = lerp(c.muted, c.text, solidify.value)
+    val placeholderAlpha by animateFloatAsState(if (ghostOn) 0f else 1f, tween(if (reducedMotion) 0 else if (ghostOn) 220 else 120), label = "placeholder-alpha")
     ReadingDock(phoneHorizontal = 12.dp, top = if (compactHeight) 2.dp else 4.dp, bottom = if (compactHeight) 8.dp else 16.dp) {
         if (!state.canWrite) Text("Read only · reconnect to continue", Modifier.padding(start = 6.dp, bottom = 6.dp), style = noticeStyle)
         if (waiting) Text("Waiting for server confirmation…", Modifier.padding(start = 6.dp, bottom = 6.dp), style = noticeStyle)
@@ -515,12 +592,20 @@ internal fun ConversationComposer(
             Column {
                 BasicTextField(
                     value = value, onValueChange = ::edited, maxLines = if (compactHeight) 2 else 6,
-                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = c.text), cursorBrush = SolidColor(c.accent),
-                    modifier = enterKeys.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = if (compactHeight) 10.dp else 14.dp, bottom = 2.dp),
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = fieldColor), cursorBrush = SolidColor(c.accent),
+                    modifier = suggestionKeys.then(enterKeys).then(suggestionSwipe).focusRequester(focus)
+                        // The size animation is only for the hint wrapping onto a second line; typed text must grow the field as before.
+                        // It clips, so it wraps the field's padding, which has the room the 28dp accept pill overflows a line into.
+                        .then(if (text.isEmpty() && !reducedMotion) Modifier.animateContentSize(tween(180)) else Modifier)
+                        .fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = if (compactHeight) 10.dp else 14.dp, bottom = 2.dp),
                     decorationBox = { inner ->
                         Box {
-                            if (text.isEmpty()) Text(composerPlaceholder(state, draft != null), style = MaterialTheme.typography.bodyLarge, color = c.muted)
-                            inner()
+                            if (text.isEmpty()) Text(composerPlaceholder(state, draft != null), Modifier.graphicsLayer { alpha = placeholderAlpha }.then(if (ghostOn) Modifier.clearAndSetSemantics {} else Modifier),
+                                style = MaterialTheme.typography.bodyLarge, color = c.muted)
+                            PromptSuggestionPresence(ghostOn, reducedMotion) {
+                                hint.display?.let { PromptSuggestionGhost(it, promptSuggestionMaxLines(compactHeight), ::acceptSuggestion, ::dismissSuggestion, offset = { dragX }) }
+                            }
+                            Box(Modifier.padding(start = fieldIndent)) { inner() }
                         }
                     },
                 )

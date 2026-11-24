@@ -94,6 +94,8 @@ object TfIcons {
     val Mic by lazy { strokeIcon("mic", rect(9f, 3f, 6f, 11f, 3f), "M18 11a6 6 0 0 1-12 0M12 17v4") }
     /** Arrow up: send / start. */
     val Send by lazy { strokeIcon("send", "M12 19V5M6 11l6-6 6 6") }
+    /** Arrow pointing up and left: put a suggestion into the field. */
+    val Insert by lazy { strokeIcon("insert", "M17 17L7 7M7 15V7h8") }
     /** Corner arrow: steer the running turn with a message. */
     val Steer by lazy { strokeIcon("steer", "M4 20v-7a5 5 0 0 1 5-5h11M15 3l5 5-5 5") }
     /** List with plus: queue a message behind the running turn. */

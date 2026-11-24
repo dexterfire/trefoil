@@ -53,6 +53,8 @@ internal const val RESUME_SHELL_REFRESH_MIN_BACKGROUND_MS = 30_000L
 internal val AUTO_RECONNECT_BACKOFF_MS = listOf(2_000L, 5_000L, 15_000L)
 /** After a default-network change, the live connection must answer a ping within this or it is dropped and reconnected. */
 internal const val LINK_CHECK_TIMEOUT_MS = 4_000L
+/** Most dismissed prompt suggestion keys kept in memory; the oldest go first. */
+internal const val MAX_DISMISSED_SUGGESTIONS = 200
 
 class TrefoilViewModel internal constructor(
     application: Application,
@@ -138,6 +140,13 @@ class TrefoilViewModel internal constructor(
      * that is in neither this set nor [sendOutcomes]: that send is lost, and the composer settles it as failed.
      */
     internal val sendsInFlight: StateFlow<Set<String>> = _sendsInFlight.asStateFlow()
+    private val _dismissedPromptSuggestions = MutableStateFlow<Set<String>>(emptySet())
+    /**
+     * Prompt suggestions dismissed in this process, as [promptSuggestionKey] (environment and run). Kept here so a dismissal survives
+     * leaving and reopening the thread; in memory only, since a suggestion is not persisted by the server either.
+     */
+    internal val dismissedPromptSuggestions: StateFlow<Set<String>> = _dismissedPromptSuggestions.asStateFlow()
+    internal fun dismissPromptSuggestion(key: String) = _dismissedPromptSuggestions.update { (it + key).toList().takeLast(MAX_DISMISSED_SUGGESTIONS).toSet() }
     private val stopGuard = StopGuard(android.os.SystemClock::elapsedRealtime)
     /** Threads (see [stopKey]) whose Stop is in flight; each is held until the thread has nothing left to stop, or 10 s. */
     internal val stopPending: StateFlow<Set<String>> = stopGuard.pending

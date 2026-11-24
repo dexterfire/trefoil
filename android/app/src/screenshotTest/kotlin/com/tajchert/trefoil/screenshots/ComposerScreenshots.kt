@@ -8,21 +8,42 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import com.android.tools.screenshot.PreviewTest
+import androidx.compose.runtime.CompositionLocalProvider
 import com.tajchert.trefoil.core.model.ClientState
+import com.tajchert.trefoil.core.model.ConversationRun
+import com.tajchert.trefoil.core.model.PromptSuggestion
+import com.tajchert.trefoil.ui.PromptSuggestionUi
+import com.tajchert.trefoil.ui.adaptive.LocalCompactHeight
 import com.tajchert.trefoil.ui.ConversationComposer
 import com.tajchert.trefoil.ui.TrefoilTheme
 
 private val fx = ConversationFixtures
 
 @Composable
-private fun Composer(state: ClientState, text: String = "", dark: Boolean = false, stopPending: Boolean = false) {
+private fun Composer(state: ClientState, text: String = "", dark: Boolean = false, stopPending: Boolean = false, compactHeight: Boolean = false, hint: PromptSuggestionUi = PromptSuggestionUi()) {
     TrefoilTheme(darkTheme = dark) {
         Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.background) {
-            ConversationComposer(state, null, text, {}, false, stopPending, {}, {}, { _, _ -> }, stop = {}, onSend = {},
-                onCancelQueued = {}, onSteerQueued = {}, onResumeQueue = {})
+            CompositionLocalProvider(LocalCompactHeight provides compactHeight) {
+                ConversationComposer(state, null, text, {}, false, stopPending, {}, {}, { _, _ -> }, stop = {}, onSend = {},
+                    onCancelQueued = {}, onSteerQueued = {}, onResumeQueue = {}, promptSuggestions = hint)
+            }
         }
     }
 }
+
+/** The hint shows from the first frame here (no 350 ms wait), since a render has no time for the delay. */
+private val shownNow = PromptSuggestionUi(appearDelayMs = 0)
+/** An idle thread whose latest run completed and left [text] as the predicted next message (what `offeredPromptSuggestion` requires). */
+private fun suggesting(text: String): ClientState {
+    val chat = fx.chatState()
+    return chat.copy(
+        threads = chat.threads.map { if (it.id == chat.selectedThreadId) it.copy(latestRunId = "run-fixture") else it },
+        runs = listOf(ConversationRun("run-fixture", "completed", startedAt = "2026-11-24T10:00:00Z", completedAt = "2026-11-24T10:01:00Z", ordinal = 1)),
+        promptSuggestion = PromptSuggestion("run-fixture", text),
+    )
+}
+private const val ShortSuggestion = "Now add tests for it."
+private const val LongSuggestion = "Looks good. Can you also update the README to describe the new setting, add a short note to the changelog, and then open a pull request against main?"
 
 /** Running, nothing typed: the primary button is Stop. */
 @PreviewTest
@@ -100,3 +121,37 @@ fun Composer_QueueHeldNoRows_Light() = Composer(fx.heldNoRowsState())
 @Preview(showBackground = true, widthDp = 400, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun Composer_QueueHeldNoRows_Dark() = Composer(fx.heldNoRowsState(), dark = true)
+
+/** Prompt suggestion in the empty composer: a muted sparkle, the predicted next message and an accept pill; one line keeps the field's height. */
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400)
+@Composable
+fun Composer_Suggestion_OneLine_Light() = Composer(suggesting(ShortSuggestion), hint = shownNow)
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun Composer_Suggestion_OneLine_Dark() = Composer(suggesting(ShortSuggestion), dark = true, hint = shownNow)
+
+/** A long suggestion wraps to two lines and ends in an ellipsis; the text stays clear of the pill. */
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400)
+@Composable
+fun Composer_Suggestion_TwoLines_Light() = Composer(suggesting(LongSuggestion), hint = shownNow)
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun Composer_Suggestion_TwoLines_Dark() = Composer(suggesting(LongSuggestion), dark = true, hint = shownNow)
+
+/** Compact height (landscape phone): one line at most. */
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400)
+@Composable
+fun Composer_Suggestion_Compact_Light() = Composer(suggesting(LongSuggestion), compactHeight = true, hint = shownNow)
+
+/** Before the hint has been stable for 350 ms the field still shows its placeholder. */
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400)
+@Composable
+fun Composer_Suggestion_Pending_Light() = Composer(suggesting(ShortSuggestion))

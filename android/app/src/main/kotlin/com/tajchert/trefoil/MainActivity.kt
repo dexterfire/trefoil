@@ -31,6 +31,7 @@ import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.remember
 import com.tajchert.trefoil.ui.ComposerDraftUi
+import com.tajchert.trefoil.ui.PromptSuggestionUi
 import com.tajchert.trefoil.ui.TrefoilApp
 import com.tajchert.trefoil.ui.FileDownloadUi
 import com.tajchert.trefoil.downloads.CompletedDownload
@@ -165,6 +166,8 @@ class MainActivity : ComponentActivity() {
                 ComposerDraftUi(newThreadDrafts + replyPreviews, model::composerDraft, model::updateComposerDraft, model::clearComposerDraft,
                     model::discardComposerDraft, model::restoreComposerDraft, model::moveComposerDraft, model::updateComposerDraftText, draftsLoaded)
             }
+            val dismissedSuggestions by model.dismissedPromptSuggestions.collectAsStateWithLifecycle()
+            val promptSuggestionUi = remember(dismissedSuggestions) { PromptSuggestionUi(dismissedSuggestions, model::dismissPromptSuggestion) }
             ProvideWindowFold { TrefoilApp(
                 onThreadShown = model::setThreadShown,
                 usageOpenRequest = usageRequest,
@@ -195,6 +198,7 @@ class MainActivity : ComponentActivity() {
                 isRefreshing = refreshing,
                 onRefresh = model::refresh,
                 composerDrafts = composerDraftUi,
+                promptSuggestions = promptSuggestionUi,
                 onUndoSettlement = model::undoSettlement,
                 onLoadActivity = model::loadActivity,
                 screenViewer = screenViewer,
