@@ -62,7 +62,7 @@ Android cleartext configuration permits dynamic private-IP requests; the shared 
 
 ## Agent activity notifications
 
-Local agent alerts are client-only. They add no fields and no RPCs. Each phase is derived only from shell snapshot rows already sent by `orchestration.subscribeShell`: the thread's own row and the rows of its direct subagent children. The rules follow T3 Code `packages/shared/src/agentAwareness.ts` (`projectThreadAwarenessV2`) and the snooze check in `apps/server/src/relay/AgentAwarenessRelay.ts`.
+Local agent alerts are client-only. They add no fields and no RPCs. Each phase is derived only from shell snapshot rows already sent by `orchestration.subscribeShell`: the thread's own row and the rows of its subagent descendants (reached through subagents and side chats). The rules follow T3 Code `packages/shared/src/agentAwareness.ts` (`projectThreadAwarenessV2`) and the snooze check in `apps/server/src/relay/AgentAwarenessRelay.ts`.
 
 A thread that is not listed lineage, is archived or is deleted has no phase. Otherwise the first matching rule gives its phase:
 
@@ -77,4 +77,4 @@ No alert is raised when:
 - `settledOverride` is `settled`, the phase is Completed or Failed (or Running on a completed run), and background work does not hold completion;
 - the phase is Completed and the thread was snoozed over that completion.
 
-Alerts depend on transitions between snapshots. A transition into an attention phase (approval or input) from another phase alerts once; approval and input do not alert each other. A transition into Failed alerts at once, and a transition into Completed alerts after 5 seconds if the thread is still Completed. Both need the thread to have started or run since its last alert. The first snapshot after connecting sets the baseline silently, and threads already Starting or Running then count as having worked.
+Alerts depend on transitions between snapshots. A transition into an attention phase (approval or input) alerts once. While a thread is already waiting, a new request id or a change between approval and input alerts again. A transition into Failed alerts at once, and a transition into Completed alerts after 5 seconds if the same completion (`latestRunId`, `latestRunCompletedAt`) still holds. A completion settled inside those 5 seconds still alerts, once, and that alert is not tracked for later cancellation. Both terminal alerts need the thread to have started or run since its last alert, and are skipped when `latestRunCompletedAt` is more than 2 minutes old. The first snapshot after connecting sets the baseline silently, and threads already Starting or Running then count as having worked. A connection loss on the same environment forgets the baseline but keeps posted alerts until the next fresh shell snapshot shows whether they still apply; an environment change clears them. "Fresh" means the shell stream is synchronized, independent of the selected thread's detail subscription.

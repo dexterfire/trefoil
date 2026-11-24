@@ -163,29 +163,30 @@ the hold is explained on return, including when the 30-minute limit was the caus
 
 While Trefoil is connected to a machine and the app is in the background, it posts local Android notifications for agents on that machine. There is no relay, account or push service. The notifications come from the app's own live connection.
 
-The setting is **Notify about agent activity** in the overflow menu, under Keep connected in background. It is on by default and stored in `trefoil.ui` preferences. Turning it on, or turning Keep connected in background on, asks for notification permission on Android 13+. Denying the permission changes nothing else.
+The setting is **Notify about agent activity** in the overflow menu, under Keep connected in background. It is on by default and stored in `trefoil.ui` preferences. On Android 13+ Trefoil asks for notification permission once, the first time a machine is connected while the setting is on and the permission is missing; turning the setting on, or turning Keep connected in background on, asks again. Denying the permission changes nothing else.
 
 Alerts use the "Agent alerts" channel, which Android settings can mute. Each thread has one notification, and a newer alert for the same thread replaces it. Alerts fire when:
 
 - **Approval needed:** a thread needs an approval, or one of its subagents does.
 - **Waiting for input:** a thread needs an answer, or one of its subagents does.
-- **Agent finished:** a run completes and stays completed for 5 seconds. A completion that changes within those 5 seconds sends nothing.
+- **Agent finished:** a run completes and stays completed for 5 seconds. A completion that changes within those 5 seconds sends nothing, except that settling the thread inside that window still alerts once. That one alert is not tracked, so Trefoil does not remove it later; tapping or swiping it does.
 - **Agent failed:** a run fails. This alerts at once.
 
-Switching between approval and input does not alert again.
+A new request, or a switch between approval and input, while a thread is already waiting alerts again. The same request does not alert twice.
 
 Nothing is alerted for:
 
 - threads that were already waiting, starting or running when the connection was made. Those count as the starting point.
 - subagent, side-chat and workflow-step threads on their own. Their waits alert through the top-level thread.
 - archived or settled threads, or a completion that was snoozed.
+- a finish or failure whose completion time is more than 2 minutes old.
 - anything while the app is in the foreground. The in-app snackbar covers that, and foreground alerts are not saved for later.
 
-A notification is cancelled when its thread is answered, starts a new run, is archived or settled, or is open on screen while the app is in the foreground.
+A notification is cancelled when its thread is answered, starts a new run, is archived or settled, or is open on screen while the app is in the foreground. A dropped connection to the same machine keeps posted alerts until the next fresh snapshot shows whether they still apply. Switching to another machine, disconnecting or forgetting the machine removes them.
 
-Privacy: the thread title and project name show only when the phone is unlocked. On a locked screen the notification shows "Trefoil" and the status only. Trefoil never logs thread titles or ids for these alerts.
+Privacy: the notifications are private. When the device hides sensitive notification content on the lock screen, a locked screen shows only "Trefoil" and the status, without the thread title or project name. If the user has chosen to show all notification content on the lock screen, Android shows the titles there too. Trefoil never logs thread titles or ids for these alerts.
 
-Tapping a notification opens its thread. If the thread belongs to another saved machine, Trefoil switches to that machine first. A thread is never opened by id alone, and a thread that does not appear after the switch does nothing.
+Tapping a notification opens its thread. If the thread belongs to another saved machine, Trefoil switches to that machine first. The request survives a cold start (it waits for the saved machines to load) and rotation. The thread opens only while that machine is the current one and lists it. A thread is never opened by id alone. An unknown machine does nothing. The request is dropped when you pick another machine or thread, start a new thread, disconnect, or the connection moves to another machine.
 
 Limits: alerts cover only the machine Trefoil is connected to, and only while the app is in the background with that connection live. With Keep connected in background off, the connection closes after about 60 seconds in the background, so alerts stop too. Remote push is not supported; if the app process or the connection is gone, no alert arrives. Covered by Robolectric and JVM tests; not yet exercised on a device.
 
