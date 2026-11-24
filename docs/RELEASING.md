@@ -1,5 +1,14 @@
 # Android releases
 
+Release `0.24.0` (`versionCode = 42`) adds local agent activity notifications: while connected to a
+machine with the app in the background, Trefoil posts Android notifications when a thread or one of its
+subagents needs an approval or an answer, when a run finishes (after staying completed for 5 seconds) and when
+a run fails. There is no push service; alerts come from the app's own live connection, one per thread, and
+tapping one opens the thread once the shell is synchronized. The setting (**Notify about agent activity**, on
+by default) sits under Keep connected in background. The empty composer shows T3 prompt suggestions, bare URLs
+in thread messages are tappable, and system notices render as T3-style warnings. Check approval, input, finish
+and failure alerts and a notification tap against a real environment on a device.
+
 Release `0.23.0` (`versionCode = 41`) lays the app out from its window on tablets and foldables: a
 navigation rail from medium width, thread list and conversation in two resizable panes, a docked side panel
 (Agents, Screens, dev servers), centred dialogs from 600 dp, nothing laid across a separating hinge, a
