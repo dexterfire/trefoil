@@ -33,6 +33,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import com.tajchert.trefoil.ui.screens.ScreenViewerState
 import com.tajchert.trefoil.ui.screens.ScreenSessionsScreen
+import com.tajchert.trefoil.notifications.OpenThreadRequest
 import com.tajchert.trefoil.ui.ports.PortBrowserState
 import com.tajchert.trefoil.ui.ports.PortsActions
 import com.tajchert.trefoil.ui.ports.DevServersPane
@@ -127,6 +128,8 @@ fun TrefoilApp(
     onCancelQueued: (String) -> Unit = {}, onSteerQueued: (String) -> Unit = {}, onResumeQueue: () -> Unit = {},
     keepConnected: Boolean = false, onSetModelOption: (String, Any) -> Unit = { _, _ -> }, onSetModelFavorite: (ModelKey, Boolean) -> Unit = { _, _ -> },
     onKeepConnectedChange: (Boolean) -> Unit = {},
+    agentNotifications: Boolean = false, onAgentNotificationsChange: (Boolean) -> Unit = {},
+    openThreadRequest: Pair<Long, OpenThreadRequest>? = null,
     onSshConnect: (SshConnectionInput) -> Unit = {},
     sshHostKey: SshHostKey? = null,
     onTrustSsh: () -> Unit = {},
@@ -309,6 +312,8 @@ fun TrefoilApp(
             onDisconnect = if (connected) ({ onDisconnect(); navigate(ShellDestination.Machines); showThread = false }) else null,
             keepConnected = keepConnected,
             onKeepConnectedChange = onKeepConnectedChange,
+            agentNotifications = agentNotifications,
+            onAgentNotificationsChange = onAgentNotificationsChange,
             onDockBrowserBesideThread = if (portsAvailable) dockBrowserBesideThread else null,
         )
         val needsYouThreads = remember(state.threads) { needsYouThreads(state.threads) }
@@ -337,6 +342,26 @@ fun TrefoilApp(
         val openAttention by rememberUpdatedState<(String?) -> Unit> { id ->
             navigate(ShellDestination.Threads); onClosePortBrowser()
             if (id != null && state.threads.any { it.id == id }) select(id) else { cancelDraft(); showThread = false }
+        }
+        // A tap on an agent notification: switch to its saved machine first, then open the thread once that machine lists it. Never a
+        // thread of another machine by id alone; an unknown machine does nothing, and the request is dropped when the machine changes to another one.
+        var pendingOpen by remember { mutableStateOf<OpenThreadRequest?>(null) }
+        val currentEnvironmentId by rememberUpdatedState(state.environment?.id)
+        LaunchedEffect(openThreadRequest) {
+            val request = openThreadRequest?.second ?: return@LaunchedEffect
+            val machine = savedEnvironments.firstOrNull { it.id == request.environmentId }
+            if (machine == null) { pendingOpen = null; return@LaunchedEffect }
+            pendingOpen = request
+            if (currentEnvironmentId != machine.id) onConnect(machine)
+        }
+        LaunchedEffect(state.environment?.id) {
+            val pending = pendingOpen
+            val now = state.environment?.id
+            if (pending != null && now != null && now != pending.environmentId) pendingOpen = null
+        }
+        LaunchedEffect(pendingOpen, state.environment?.id, state.threads) {
+            val pending = pendingOpen ?: return@LaunchedEffect
+            if (state.environment?.id == pending.environmentId && state.threads.any { it.id == pending.threadId }) { pendingOpen = null; openAttention(pending.threadId) }
         }
         val attentionRelevant by rememberUpdatedState<(AttentionMessage) -> Boolean> {
             state.connection == ConnectionStatus.Connected && attentionStillRelevant(it, needsYouThreads, openThreadId)

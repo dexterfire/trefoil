@@ -30,6 +30,8 @@ import com.tajchert.trefoil.core.ssh.SshConnectionException
 import com.tajchert.trefoil.core.ssh.SshTunnel
 import com.tajchert.trefoil.core.ssh.SshTunnelConnector
 import com.tajchert.trefoil.keepalive.ConnectionKeepAlive
+import com.tajchert.trefoil.notifications.AgentAlertDriver
+import com.tajchert.trefoil.notifications.AgentAlertNotifier
 import com.tajchert.trefoil.security.DeviceDpopKey
 import com.tajchert.trefoil.security.ComposerDraftFileStore
 import com.tajchert.trefoil.security.EnvironmentStore
@@ -203,6 +205,11 @@ class TrefoilViewModel internal constructor(
     private val _keepConnected = MutableStateFlow(prefs.getBoolean(KEEP_CONNECTED, false))
     /** Opt-in: a foreground service keeps a live connection open (and auto-reconnect working) while in the background. */
     val keepConnected: StateFlow<Boolean> = _keepConnected.asStateFlow()
+    private val _agentNotifications = MutableStateFlow(prefs.getBoolean(AGENT_NOTIFICATIONS, true))
+    /** Local notifications about agent activity while the app is in the background and connected; on by default. */
+    val agentNotifications: StateFlow<Boolean> = _agentNotifications.asStateFlow()
+    /** Posts those notifications; takes the foreground and shown-thread facts from the lifecycle hooks below. */
+    private val agentAlerts = AgentAlertDriver(viewModelScope, client.state, AgentAlertNotifier(application), _agentNotifications)
     /** Drives the keep-alive service; replaced only by tests. */
     internal var keepAliveControl: KeepAliveControl = ServiceKeepAliveControl
         set(value) { field = value; watchKeepAliveService() }
@@ -932,6 +939,7 @@ class TrefoilViewModel internal constructor(
     fun disconnect() {
         liveEnvironment = null; reconnectWhenOnline = null
         autoReconnectJob?.cancel(); autoReconnectJob = null
+        agentAlerts.cancelAll()
         clearDraft()
         screenSessions.close()
         resumeEnvironment = null; cancelSsh()
@@ -950,6 +958,11 @@ class TrefoilViewModel internal constructor(
         _keepConnected.value = enabled
         postKeepAliveCheck()
     }
+    /** Persists the opt-in for agent notifications; turning it off removes the ones in the shade (the driver sees the flow change). */
+    fun setAgentNotifications(enabled: Boolean) {
+        prefs.edit().putBoolean(AGENT_NOTIFICATIONS, enabled).apply()
+        _agentNotifications.value = enabled
+    }
     /** Saves per-machine consent for plain HTTP to literal private LAN addresses; applies from the next connect. */
     fun allowLocalNetworkHttp(environmentId: String, allowed: Boolean) = action("Could not save the local network setting.") {
         initialized.await()
@@ -965,7 +978,7 @@ class TrefoilViewModel internal constructor(
         shellCacheRead += environment.id
         composerDraftStore.clearEnvironment(environment.id)
         if (drafts.environmentId == environment.id || state.value.environment?.id == environment.id) clearDraft()
-        if (selectedEnvironment?.id == environment.id || state.value.environment?.id == environment.id) { cancelSsh(); keepAliveLatched = true }
+        if (selectedEnvironment?.id == environment.id || state.value.environment?.id == environment.id) { cancelSsh(); keepAliveLatched = true; agentAlerts.cancelAll() }
         if (resumeEnvironment?.id == environment.id) resumeEnvironment = null
         _machineProbes.update { it - environment.id }
         if (prefs.getString(LAST_ENVIRONMENT, null) == environment.id) prefs.edit().remove(LAST_ENVIRONMENT).apply()
@@ -988,7 +1001,7 @@ class TrefoilViewModel internal constructor(
     }
     private var threadShown = false
     /** The conversation is on screen (reported by the UI); a visit is recorded only while it is shown in the foreground. */
-    fun setThreadShown(shown: Boolean) { threadShown = shown; updateThreadViewing() }
+    fun setThreadShown(shown: Boolean) { threadShown = shown; updateThreadViewing(); agentAlerts.setThreadShown(shown) }
     private fun updateThreadViewing() = client.setThreadViewing(foreground && threadShown)
     fun pause() {
         flushComposerDrafts()
@@ -997,6 +1010,7 @@ class TrefoilViewModel internal constructor(
         screenSessions.pause()
         foreground = false
         updateThreadViewing()
+        agentAlerts.setForeground(false)
         backgroundedAt = android.os.SystemClock.elapsedRealtime()
         // Route switches and machine probes wait for the foreground.
         refreshRouteMonitor()
@@ -1083,6 +1097,7 @@ class TrefoilViewModel internal constructor(
         foreground = true
         portForwards.checkDeadlines()
         updateThreadViewing()
+        agentAlerts.setForeground(true)
         backgroundDisconnectJob?.cancel(); backgroundDisconnectJob = null
         postKeepAliveCheck()
         screenSessions.resume()
@@ -1397,6 +1412,7 @@ class TrefoilViewModel internal constructor(
     private companion object {
         const val LAST_ENVIRONMENT = "lastEnvironmentId"
         const val KEEP_CONNECTED = "keepConnectedInBackground"
+        const val AGENT_NOTIFICATIONS = "agentNotifications"
         const val SSH_FAILURE = "SSH connection failed. Check the address, login and running T3 server."
     }
 }

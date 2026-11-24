@@ -37,6 +37,9 @@ internal data class ShellActions(
     /** Opt-in foreground service that keeps the connection alive in the background; null hides the entry. */
     val keepConnected: Boolean = false,
     val onKeepConnectedChange: ((Boolean) -> Unit)? = null,
+    /** Local notifications about agent activity while in the background; null hides the entry. */
+    val agentNotifications: Boolean = false,
+    val onAgentNotificationsChange: ((Boolean) -> Unit)? = null,
     /**
      * "Dock beside thread": moves the open in-app browser from the Servers destination into the side panel's Preview tab in one state
      * change (destination Threads and tab Preview together), keeping the page. Null without dev servers. Windows too narrow to dock show
@@ -116,12 +119,13 @@ internal fun ColumnScope.ShellMenuItems(state: ClientState, actions: ShellAction
         onClick = { close(); actions.onMachines() })
     DropdownMenuItem(text = { Text("Connect machine") }, enabled = !state.busy, leadingIcon = { Icon(TfIcons.Plus, null, Modifier.size(20.dp)) },
         onClick = { close(); actions.onConnectMachine() })
-    if (actions.onKeepConnectedChange != null) {
-        HorizontalDivider(Modifier.padding(vertical = 4.dp))
-        DropdownMenuItem(text = { Text("Keep connected in background") },
-            trailingIcon = { Checkbox(checked = actions.keepConnected, onCheckedChange = null) },
-            onClick = { close(); actions.onKeepConnectedChange.invoke(!actions.keepConnected) })
-    }
+    if (actions.onKeepConnectedChange != null || actions.onAgentNotificationsChange != null) HorizontalDivider(Modifier.padding(vertical = 4.dp))
+    if (actions.onKeepConnectedChange != null) DropdownMenuItem(text = { Text("Keep connected in background") },
+        trailingIcon = { Checkbox(checked = actions.keepConnected, onCheckedChange = null) },
+        onClick = { close(); actions.onKeepConnectedChange.invoke(!actions.keepConnected) })
+    if (actions.onAgentNotificationsChange != null) DropdownMenuItem(text = { Text("Notify about agent activity") },
+        trailingIcon = { Checkbox(checked = actions.agentNotifications, onCheckedChange = null) },
+        onClick = { close(); actions.onAgentNotificationsChange.invoke(!actions.agentNotifications) })
     if (actions.onDisconnect != null) DropdownMenuItem(text = { Text("Disconnect machine") },
         leadingIcon = { Icon(TfIcons.Disconnect, null, Modifier.size(20.dp)) }, onClick = { close(); actions.onDisconnect.invoke() })
 }

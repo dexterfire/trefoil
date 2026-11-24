@@ -33,6 +33,8 @@ import androidx.compose.runtime.remember
 import com.tajchert.trefoil.ui.ComposerDraftUi
 import com.tajchert.trefoil.ui.PromptSuggestionUi
 import com.tajchert.trefoil.ui.TrefoilApp
+import com.tajchert.trefoil.notifications.AgentAlertNotifier
+import com.tajchert.trefoil.notifications.OpenThreadRequest
 import com.tajchert.trefoil.ui.FileDownloadUi
 import com.tajchert.trefoil.downloads.CompletedDownload
 import com.tajchert.trefoil.downloads.DownloadFileActions
@@ -50,11 +52,19 @@ class MainActivity : ComponentActivity() {
         // The link is a single-use credential: drop it from the activity intent so nothing can replay it.
         setIntent(Intent(Intent.ACTION_MAIN))
     }
+    private var openThreadRequest by mutableStateOf<Pair<Long, OpenThreadRequest>?>(null)
+    private fun handleOpenThreadIntent(intent: Intent?) {
+        val request = parseOpenThreadIntent(intent) ?: return
+        openThreadRequest = ((openThreadRequest?.first ?: 0) + 1) to request
+        // Consumed once: recreation or a later resume must not reopen the thread.
+        setIntent(Intent(Intent.ACTION_MAIN))
+    }
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         handleUsageIntent(intent)
         handlePairLinkIntent(intent)
+        handleOpenThreadIntent(intent)
     }
     /** The system Keyboard Shortcut Helper (Meta+/) lists the same table the app dispatches from. */
     override fun onProvideKeyboardShortcuts(data: MutableList<KeyboardShortcutGroup>, menu: Menu?, deviceId: Int) {
@@ -92,15 +102,23 @@ class MainActivity : ComponentActivity() {
         networkCallbackRegistered = false
     }
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
-        // Denied keeps the setting on: the service still runs, Android only hides its notification.
+        // Denied changes nothing else: the keep-alive service still runs, and Android only hides its notifications.
+    }
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
     }
     /** The "Keep connected in background" toggle; turning it on asks for the notification permission on Android 13+. */
     fun onKeepConnectedChange(enabled: Boolean) {
         model.setKeepConnected(enabled)
-        if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
+        if (enabled) requestNotificationPermission()
+    }
+    /** The "Notify about agent activity" toggle; turning it on asks for the notification permission on Android 13+. */
+    fun onAgentNotificationsChange(enabled: Boolean) {
+        model.setAgentNotifications(enabled)
+        if (enabled) requestNotificationPermission()
     }
     override fun onStart() {
         super.onStart(); model.resume()
@@ -120,7 +138,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Only a fresh launch consumes the widget intent; recreation (rotation) must not reopen Usage.
-        if (savedInstanceState == null) { handleUsageIntent(intent); handlePairLinkIntent(intent) }
+        if (savedInstanceState == null) { handleUsageIntent(intent); handlePairLinkIntent(intent); handleOpenThreadIntent(intent) }
         enableEdgeToEdge()
         lifecycleScope.launch {
             // A forwarded dev server opens in the device browser; the loopback listener lives only while the forward does.
@@ -155,6 +173,7 @@ class MainActivity : ComponentActivity() {
             val machineProbes by model.machineProbes.collectAsStateWithLifecycle()
             val usage by model.usage.collectAsStateWithLifecycle()
             val keepConnected by model.keepConnected.collectAsStateWithLifecycle()
+            val agentNotifications by model.agentNotifications.collectAsStateWithLifecycle()
             val portBrowser by model.portForwards.browser.collectAsStateWithLifecycle()
             val stoppedForwards by model.portForwards.stoppedNotices.collectAsStateWithLifecycle()
             val refreshing by model.isRefreshing.collectAsStateWithLifecycle()
@@ -172,6 +191,7 @@ class MainActivity : ComponentActivity() {
                 onThreadShown = model::setThreadShown,
                 usageOpenRequest = usageRequest,
                 pairLinkRequest = pairLinkRequest,
+                openThreadRequest = openThreadRequest,
                 usage = usage,
                 onOpenUsage = model.usageController::open,
                 onUsageRange = model.usageController::selectRange,
@@ -243,6 +263,8 @@ class MainActivity : ComponentActivity() {
                 onAllowLocalNetworkHttp = model::allowLocalNetworkHttp,
                 keepConnected = keepConnected,
                 onKeepConnectedChange = ::onKeepConnectedChange,
+                agentNotifications = agentNotifications,
+                onAgentNotificationsChange = ::onAgentNotificationsChange,
             ) }
         }
     }
@@ -259,6 +281,19 @@ internal fun parsePairLinkIntent(intent: Intent?): String? {
     val data = intent.data ?: return null
     if (!data.scheme.equals("t3code", ignoreCase = true) || data.host != "pair") return null
     return data.toString().takeIf { it.length <= MAX_PAIR_LINK_LENGTH }
+}
+
+private const val MAX_OPEN_THREAD_ID_LENGTH = 512
+
+/**
+ * The thread a tap on an agent notification asks to open, or null. MainActivity is exported, so any app can send this action: the
+ * ids are only used to look up a saved machine and one of its listed threads, never to reach a thread by id alone.
+ */
+internal fun parseOpenThreadIntent(intent: Intent?): OpenThreadRequest? {
+    if (intent?.action != AgentAlertNotifier.ACTION_OPEN_THREAD || intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return null
+    val environmentId = intent.getStringExtra(AgentAlertNotifier.EXTRA_ENVIRONMENT_ID)?.takeIf { it.isNotBlank() && it.length <= MAX_OPEN_THREAD_ID_LENGTH } ?: return null
+    val threadId = intent.getStringExtra(AgentAlertNotifier.EXTRA_THREAD_ID)?.takeIf { it.isNotBlank() && it.length <= MAX_OPEN_THREAD_ID_LENGTH } ?: return null
+    return OpenThreadRequest(environmentId, threadId)
 }
 
 internal fun parseUsageWidgetIntent(intent: Intent?): UsageWidgetTab? {

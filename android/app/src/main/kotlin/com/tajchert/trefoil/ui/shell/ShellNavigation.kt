@@ -307,10 +307,13 @@ internal fun ShellDrawerSheet(model: ShellNavModel, drawerState: DrawerState, cl
             Text("Machines", style = TrefoilType.meta, color = c.muted, modifier = Modifier.padding(start = 16.dp, top = 4.dp, bottom = 4.dp).semantics { heading() })
             MachineMenuItems(model, close)
             val actions = model.actions
-            if (actions.onKeepConnectedChange != null || actions.onDisconnect != null) HorizontalDivider(Modifier.padding(vertical = 4.dp), color = c.line)
+            if (actions.onKeepConnectedChange != null || actions.onAgentNotificationsChange != null || actions.onDisconnect != null) HorizontalDivider(Modifier.padding(vertical = 4.dp), color = c.line)
             if (actions.onKeepConnectedChange != null) DropdownMenuItem(text = { Text("Keep connected in background") },
                 trailingIcon = { Checkbox(checked = actions.keepConnected, onCheckedChange = null) },
                 onClick = { close(); actions.onKeepConnectedChange.invoke(!actions.keepConnected) })
+            if (actions.onAgentNotificationsChange != null) DropdownMenuItem(text = { Text("Notify about agent activity") },
+                trailingIcon = { Checkbox(checked = actions.agentNotifications, onCheckedChange = null) },
+                onClick = { close(); actions.onAgentNotificationsChange.invoke(!actions.agentNotifications) })
             if (actions.onDisconnect != null) DropdownMenuItem(text = { Text("Disconnect machine") },
                 leadingIcon = { Icon(TfIcons.Disconnect, null, Modifier.size(20.dp)) }, onClick = { close(); actions.onDisconnect.invoke() })
         }

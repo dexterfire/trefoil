@@ -94,6 +94,15 @@ class KeepAliveLifecycleTest {
     private fun dropConnection() { mutable.value = mutable.value.copy(connection = ConnectionStatus.Error, canWrite = false, error = "Connection lost") }
     private fun enableKeepAlive() { model.setKeepConnected(true); advance(0) }
 
+    @Test fun agentNotificationsSettingIsPersistedAndOnByDefault() {
+        assertTrue(model.agentNotifications.value)
+        model.setAgentNotifications(false)
+        assertFalse(model.agentNotifications.value)
+        assertFalse(RuntimeEnvironment.getApplication().getSharedPreferences("trefoil.ui", Context.MODE_PRIVATE).getBoolean("agentNotifications", true))
+        model.setAgentNotifications(true)
+        assertTrue(model.agentNotifications.value)
+    }
+
     @Test fun settingIsPersistedAndOffByDefault() {
         assertFalse(model.keepConnected.value)
         model.setKeepConnected(true)

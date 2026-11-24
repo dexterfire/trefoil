@@ -162,7 +162,7 @@ private val manyProjects = listOf("api-gateway", "trefoil", "website", "infra", 
 
 @Composable
 private fun KeepConnectedMenu(dark: Boolean, checked: Boolean) = Phone(dark) {
-    val actions = ShellFixtures.noActions.copy(keepConnected = checked, onKeepConnectedChange = {})
+    val actions = ShellFixtures.noActions.copy(keepConnected = checked, onKeepConnectedChange = {}, agentNotifications = !checked, onAgentNotificationsChange = {})
     Box(Modifier.fillMaxSize()) { Surface(Modifier.align(Alignment.TopEnd).padding(top = 56.dp, end = 8.dp), color = Tf.colors.sheet,
         shape = RoundedCornerShape(16.dp), shadowElevation = 3.dp, tonalElevation = 3.dp) {
         androidx.compose.foundation.layout.Column(Modifier.width(IntrinsicSize.Max).widthIn(min = 112.dp, max = 280.dp).padding(vertical = 8.dp)) {
@@ -171,10 +171,10 @@ private fun KeepConnectedMenu(dark: Boolean, checked: Boolean) = Phone(dark) {
     } }
 }
 
-@PreviewTest @Preview(showBackground = true, widthDp = 400, heightDp = 400)
+@PreviewTest @Preview(showBackground = true, widthDp = 400, heightDp = 460)
 @Composable fun Shell_KeepConnectedMenu_On_Light() = KeepConnectedMenu(dark = false, checked = true)
 
-@PreviewTest @Preview(showBackground = true, widthDp = 400, heightDp = 400, uiMode = NIGHT)
+@PreviewTest @Preview(showBackground = true, widthDp = 400, heightDp = 460, uiMode = NIGHT)
 @Composable fun Shell_KeepConnectedMenu_Off_Dark() = KeepConnectedMenu(dark = true, checked = false)
 
 // Whole-app adaptive shell (TrefoilApp at tablet and foldable sizes): rail, drawer, collapsed list, book posture, reconnecting,
