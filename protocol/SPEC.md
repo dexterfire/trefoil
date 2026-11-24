@@ -59,3 +59,22 @@ again when a new SSH connection is needed.
 A transient attempt state reports testing stages, host-trust pauses, safe failures and success to retained forms. Entered secrets stay in memory only, never Android saved state. Forms close only after success or cancellation. Public-key content is rejected before SSH, hostname/username edges are trimmed, and errors scroll into view. SSH command errors may report a numeric exit code, but raw stdout/stderr is not shown because it can contain credentials.
 
 Android cleartext configuration permits dynamic private-IP requests; the shared URL policy is the enforcement point, checking literal RFC1918 addresses and stored consent before requests. Redirects remain disabled. Both pairing and reconnect honor the consent flag; old saved environments default to false. Connection cancellation cleans the matching socket generation, and internal timeouts become actionable failures.
+
+## Agent activity notifications
+
+Local agent alerts are client-only. They add no fields and no RPCs. Each phase is derived only from shell snapshot rows already sent by `orchestration.subscribeShell`: the thread's own row and the rows of its direct subagent children. The rules follow T3 Code `packages/shared/src/agentAwareness.ts` (`projectThreadAwarenessV2`) and the snooze check in `apps/server/src/relay/AgentAwarenessRelay.ts`.
+
+A thread that is not listed lineage, is archived or is deleted has no phase. Otherwise the first matching rule gives its phase:
+
+1. Its pending request is `user_input`: WaitingForInput.
+2. Its pending request is another kind, not `auth_refresh`: WaitingForApproval.
+3. A waiting subagent: WaitingForInput when the child's request is `user_input`, otherwise WaitingForApproval. Among several, the child with the newest `updatedAt` decides.
+4. Otherwise `activityRunStatus`, or `status` when absent: `preparing` or `starting` gives Starting; `running` or `waiting` gives Running; `completed` gives Running while background work holds completion or a monitor holds wake completion, otherwise Completed; `failed` gives Failed; any other value gives no phase.
+
+No alert is raised when:
+
+- the phase is Completed and `latestRunStopRequested` is true;
+- `settledOverride` is `settled`, the phase is Completed or Failed (or Running on a completed run), and background work does not hold completion;
+- the phase is Completed and the thread was snoozed over that completion.
+
+Alerts depend on transitions between snapshots. A transition into an attention phase (approval or input) from another phase alerts once; approval and input do not alert each other. A transition into Failed alerts at once, and a transition into Completed alerts after 5 seconds if the thread is still Completed. Both need the thread to have started or run since its last alert. The first snapshot after connecting sets the baseline silently, and threads already Starting or Running then count as having worked.

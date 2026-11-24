@@ -60,5 +60,5 @@ To allow it, open the machine's settings in Trefoil and turn on **Use local netw
 ## Not supported yet
 
 - **Relay sign-in:** T3 Connect relay sign-in needs T3's account system. Trefoil cannot sign in to the relay yet. Tunnel routes learned after pairing still work.
-- **Push notifications:** not built yet.
+- **Push notifications:** remote push is not built yet. While Trefoil is connected to the machine, it shows local notifications for agent activity.
 - **QR scanning:** not built yet. Paste the pairing link instead.

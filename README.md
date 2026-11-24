@@ -71,7 +71,7 @@ A native Android client for [T3 Code](https://github.com/pingdotgg/t3code): chec
 - 🌗 **Made for Android.** Phone, tablet and foldable layouts, keyboard shortcuts, light and dark themes, encrypted drafts and credentials.
 
 > [!NOTE]
-> **Early release.** Attachment uploads, full Markdown, diffs, shell terminals, notifications, T3 Connect relay sign-in and iOS are still planned. Some provider requests need another T3 client. See [current limits](docs/IMPLEMENTATION_STATUS.md).
+> **Early release.** Attachment uploads, full Markdown, diffs, shell terminals, remote push notifications, T3 Connect relay sign-in and iOS are still planned. Some provider requests need another T3 client. See [current limits](docs/IMPLEMENTATION_STATUS.md).
 
 ## 🚀 Get started
 
@@ -96,7 +96,7 @@ HTTPS endpoints must be reachable from your phone with a trusted certificate. HT
 
 ### 🛰️ T3 Connect
 
-Turn on **T3 Connect** in T3 Code under **Settings → Sharing & access** and pair Trefoil once from any address. Trefoil then learns the LAN, Tailscale and tunnel addresses, tries them in that order and switches back to a faster route when one answers. Relay sign-in, push notifications and QR scanning are not supported yet. See [T3 Connect routes](docs/T3_CONNECT_TUNNEL.md).
+Turn on **T3 Connect** in T3 Code under **Settings → Sharing & access** and pair Trefoil once from any address. Trefoil then learns the LAN, Tailscale and tunnel addresses, tries them in that order and switches back to a faster route when one answers. Relay sign-in, remote push notifications and QR scanning are not supported yet. See [T3 Connect routes](docs/T3_CONNECT_TUNNEL.md).
 
 ## 🛡️ Security and privacy
 
@@ -113,6 +113,8 @@ Turn on **T3 Connect** in T3 Code under **Settings → Sharing & access** and pa
 <br>
 
 This overflow-menu toggle is off by default. When it is on, Trefoil keeps a live connection (and any automatic reconnect) going while you use other apps, instead of disconnecting after 60 seconds. It runs a foreground service with an ongoing notification that shows the machine name and a Disconnect action. See [keep connected in background](docs/IMPLEMENTATION_STATUS.md#keep-connected-in-background-0160).
+
+A separate **Notify about agent activity** setting (on by default) posts local notifications while the app is in the background and connected: approval needed, waiting for input, agent finished or failed. See [agent activity notifications](docs/IMPLEMENTATION_STATUS.md#agent-activity-notifications).
 
 </details>
 

@@ -18,7 +18,7 @@ against an actual provider run. No developer threads were modified.
 
 Remaining product work: incremental native event reducers (current full refresh
 uses more bandwidth), bounded history pagination, rich Markdown, attachments,
-diffs/checkpoints, terminals, steer, relay sign-in (needs T3's account system), notifications,
+diffs/checkpoints, terminals, steer, relay sign-in (needs T3's account system), remote push notifications,
 access-token renewal and full provider request UX. QR scanning is not supported yet. Unhandled requests
 remain visible and direct users to another T3 client. Approval providers without
 basic accept/decline options are not handled in this first UI.
@@ -50,7 +50,7 @@ Current source 0.2.1 corrects retained connection forms, public-key-file validat
 
 Trefoil learns a machine's LAN, Tailscale and T3 Connect tunnel addresses after pairing and tries them in that order. It switches back to a faster route every 60 seconds and when the network changes, only when no send is in progress. Plain-HTTP LAN routes need per-machine consent. The user behaviour is in [T3 Connect routes](T3_CONNECT_TUNNEL.md).
 
-Relay sign-in, push notifications and QR scanning are not supported yet. Relay sign-in needs T3's account system. Validation of each route on real networks is still pending; this section describes intended behaviour.
+Relay sign-in, remote push notifications and QR scanning are not supported yet. Local agent activity notifications work while connected (see [agent activity notifications](#agent-activity-notifications)). Relay sign-in needs T3's account system. Validation of each route on real networks is still pending; this section describes intended behaviour.
 
 ## 0.3.0
 
@@ -158,3 +158,35 @@ With the setting off, the same service also runs while a dev-server forward open
 active (see `protocol/PORTS.md`), so the page keeps loading while the user is in the browser; it never holds a
 reconnect, ends at the latest 30 minutes after the forward was last opened in the browser, and a forward lost after
 the hold is explained on return, including when the 30-minute limit was the cause.
+
+## Agent activity notifications
+
+While Trefoil is connected to a machine and the app is in the background, it posts local Android notifications for agents on that machine. There is no relay, account or push service. The notifications come from the app's own live connection.
+
+The setting is **Notify about agent activity** in the overflow menu, under Keep connected in background. It is on by default and stored in `trefoil.ui` preferences. Turning it on, or turning Keep connected in background on, asks for notification permission on Android 13+. Denying the permission changes nothing else.
+
+Alerts use the "Agent alerts" channel, which Android settings can mute. Each thread has one notification, and a newer alert for the same thread replaces it. Alerts fire when:
+
+- **Approval needed:** a thread needs an approval, or one of its subagents does.
+- **Waiting for input:** a thread needs an answer, or one of its subagents does.
+- **Agent finished:** a run completes and stays completed for 5 seconds. A completion that changes within those 5 seconds sends nothing.
+- **Agent failed:** a run fails. This alerts at once.
+
+Switching between approval and input does not alert again.
+
+Nothing is alerted for:
+
+- threads that were already waiting, starting or running when the connection was made. Those count as the starting point.
+- subagent, side-chat and workflow-step threads on their own. Their waits alert through the top-level thread.
+- archived or settled threads, or a completion that was snoozed.
+- anything while the app is in the foreground. The in-app snackbar covers that, and foreground alerts are not saved for later.
+
+A notification is cancelled when its thread is answered, starts a new run, is archived or settled, or is open on screen while the app is in the foreground.
+
+Privacy: the thread title and project name show only when the phone is unlocked. On a locked screen the notification shows "Trefoil" and the status only. Trefoil never logs thread titles or ids for these alerts.
+
+Tapping a notification opens its thread. If the thread belongs to another saved machine, Trefoil switches to that machine first. A thread is never opened by id alone, and a thread that does not appear after the switch does nothing.
+
+Limits: alerts cover only the machine Trefoil is connected to, and only while the app is in the background with that connection live. With Keep connected in background off, the connection closes after about 60 seconds in the background, so alerts stop too. Remote push is not supported; if the app process or the connection is gone, no alert arrives. Covered by Robolectric and JVM tests; not yet exercised on a device.
+
+The keep-alive notification still shows only the machine name. Agent alerts use their own notifications.
