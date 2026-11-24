@@ -12,18 +12,25 @@ data class PromptSuggestion(val runId: String, val text: String)
  * The suggestion to offer in the empty composer: [ClientState.promptSuggestion] while the run that produced it is the
  * selected thread's latest completed run. Null otherwise. Dismissal and the empty-draft rule belong to the UI.
  *
- * Port of T3 `offeredPromptSuggestion` + `announcedRun`: the shell's `latestRunId` names the latest run. A message
+ * Port of T3 `offeredPromptSuggestion` + `announcedRun` over the shell's latest run (T3 `presentThreadShell`: the
+ * row's `latestRunId` and `latestRunStartedAt`, with the shell `status`, `idle` read as `completed`). A message
  * promoted to Steer leaves its queued run cancelled before it started, still the latest run, so the comparison skips
- * to the last run that ran. T3 reads the latest run's status from the shell; Trefoil's shell row carries no run
- * status, so the run must also be in the selected thread's [ClientState.runs]: while the detail lags the shell (the
- * run is missing), nothing is offered.
+ * to the last run in [ClientState.runs] that ran. Detail can lag the shell, so it skips only once the runs include
+ * that cancelled run. Without a shell row for the selected thread nothing is offered.
  */
 val ClientState.offeredPromptSuggestion: PromptSuggestion? get() {
     val suggestion = promptSuggestion ?: return null
-    val latestRunId = threads.firstOrNull { it.id == selectedThreadId }?.latestRunId ?: return null
-    val latest = runs.firstOrNull { it.id == latestRunId } ?: return null
-    val announced = if (latest.status == "cancelled" && latest.startedAt == null) latestExecutedRun(runs) else latest
-    return suggestion.takeIf { announced?.id == it.runId && announced.status == "completed" }
+    val shell = threads.firstOrNull { it.id == selectedThreadId } ?: return null
+    val latestRunId = shell.latestRunId ?: return null
+    val latestStatus = if (shell.status == "idle") "completed" else shell.status
+    val skipsLatest = latestStatus == "cancelled" && shell.latestRunStartedAt == null
+    val (announcedId, announcedStatus) = if (!skipsLatest) latestRunId to latestStatus else {
+        // T3 `skippedUnseenRun`: the detail has not caught up with the cancelled run yet.
+        if (runs.none { it.id == latestRunId && it.status == "cancelled" && it.startedAt == null }) return null
+        val run = latestExecutedRun(runs) ?: return null
+        run.id to run.status
+    }
+    return suggestion.takeIf { announcedId == it.runId && announcedStatus == "completed" }
 }
 
 /** T3 `latestExecutedRun`: the run that ran last, skipping queued runs and runs cancelled before they started. */

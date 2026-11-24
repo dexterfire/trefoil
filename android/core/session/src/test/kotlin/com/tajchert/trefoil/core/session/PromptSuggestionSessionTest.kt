@@ -21,6 +21,11 @@ class PromptSuggestionSessionTest {
         val suggestions = Channel<Request>(Channel.UNLIMITED)
         val interrupts = Channel<String>(Channel.UNLIMITED)
         val configStream = Channel<Request>(Channel.UNLIMITED)
+        /** Set: `server.getConfig` reports this build, so the shell cursor can resume (with `afterSequence`). */
+        @Volatile var serverVersion: String? = null
+        /** Resumed shell subscriptions wait here for the test to answer them; a fresh one is answered at once. */
+        @Volatile var holdResumedShell = false
+        val resumedShells = Channel<Request>(Channel.UNLIMITED)
         init {
             server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse = when {
@@ -35,9 +40,13 @@ class PromptSuggestionSessionTest {
                             if (frame.string("_tag") != "Request") return
                             val id = frame.string("id")
                             when (frame.string("tag")) {
-                                "server.getConfig" -> complete(webSocket, id, """{"providers":[],"environment":{"capabilities":{}},"settings":$settings}""")
+                                "server.getConfig" -> {
+                                    val version = serverVersion?.let { ""","environmentId":"env","serverVersion":"$it"""" }.orEmpty()
+                                    complete(webSocket, id, """{"providers":[],"environment":{"capabilities":{}$version},"settings":$settings}""")
+                                }
                                 "subscribeServerConfig" -> configStream.trySend(Request(webSocket, id, frame.obj("payload")))
-                                "orchestration.subscribeShell" -> chunk(webSocket, id, """{"kind":"snapshot","snapshot":{"projects":[{"id":"p","title":"P","workspaceRoot":"/w"}],"threads":[{"id":"t1","projectId":"p","title":"One"},{"id":"t2","projectId":"p","title":"Two"}]}},{"kind":"synchronized"}""")
+                                "orchestration.subscribeShell" -> if (holdResumedShell && frame.obj("payload")["afterSequence"] != null) resumedShells.trySend(Request(webSocket, id, frame.obj("payload")))
+                                    else chunk(webSocket, id, """{"kind":"snapshot","snapshot":{"snapshotSequence":10,"projects":[{"id":"p","title":"P","workspaceRoot":"/w"}],"threads":[{"id":"t1","projectId":"p","title":"One"},{"id":"t2","projectId":"p","title":"Two"}]}},{"kind":"synchronized"}""")
                                 "orchestration.subscribeThread" -> {
                                     val threadId = frame.obj("payload").string("threadId")
                                     chunk(webSocket, id, """{"kind":"snapshot","projection":{"thread":{"id":"$threadId"},"messages":[],"runs":[],"turnItems":[],"runtimeRequests":[]}},{"kind":"synchronized"}""")
@@ -175,6 +184,70 @@ class PromptSuggestionSessionTest {
             assertNull(f.client.state.value.promptSuggestion)
             Fixture.chunk(config.ws, config.id, """{"type":"settingsUpdated","payload":{"settings":{"promptSuggestionsEnabled":true}}}""")
             assertEquals("t1", f.nextSuggestionStream().payload.string("threadId"))
+        }
+    }
+
+    @Test fun reconnectNeverRestoresTheSuggestionFromRetainedState() = runBlocking<Unit> {
+        Fixture("""{"promptSuggestionsEnabled":true}""").use { f ->
+            f.connect(); f.open("t1")
+            val stream = f.nextSuggestionStream()
+            Fixture.chunk(stream.ws, stream.id, """{"runId":"run-1","text":"Suggestion"}""")
+            f.awaitSuggestion(PromptSuggestion("run-1", "Suggestion"))
+            // Every state shown while the next connection comes up, and the retained state it starts from.
+            val seen = java.util.concurrent.CopyOnWriteArrayList<ClientState>()
+            val watcher = f.scope.launch(start = CoroutineStart.UNDISPATCHED) { f.client.state.collect { if (it.connection != ConnectionStatus.Connected) seen += it } }
+            var atPublish: PromptSuggestion? = PromptSuggestion("unset", "unset")
+            f.client.beforeConnectPublished = { atPublish = f.client.state.value.promptSuggestion }
+            // A direct reconnect, without a disconnect first: the connect itself retains and restores the state.
+            f.connect()
+            withTimeout(5000) { f.client.state.first { it.selectedThreadId == "t1" && it.canWrite } }
+            val next = f.nextSuggestionStream()
+            watcher.cancel()
+            assertNull(atPublish)
+            assertTrue(seen.any { it.connection == ConnectionStatus.Connecting })
+            assertTrue(seen.none { it.promptSuggestion != null })
+            assertNull(f.client.state.value.promptSuggestion)
+            Fixture.chunk(next.ws, next.id, """{"runId":"run-2","text":"Fresh"}""")
+            f.awaitSuggestion(PromptSuggestion("run-2", "Fresh"))
+        }
+    }
+
+    @Test fun lostConfigStreamTurnsSuggestionsOff() = runBlocking<Unit> {
+        Fixture("""{"promptSuggestionsEnabled":true}""").use { f ->
+            f.connect(); f.open("t1")
+            val stream = f.nextSuggestionStream()
+            Fixture.chunk(stream.ws, stream.id, """{"runId":"run-1","text":"Suggestion"}""")
+            f.awaitSuggestion(PromptSuggestion("run-1", "Suggestion"))
+            val config = withTimeout(5000) { f.configStream.receive() }
+            config.ws.send("""{"_tag":"Exit","requestId":"${config.id}","exit":{"_tag":"Success","value":null}}""")
+            f.awaitSuggestion(null)
+            withTimeout(5000) { while (f.interrupts.receive() != stream.id) {} }
+            f.open("t2")
+            delay(150)
+            assertTrue("no stream without a live setting", f.suggestions.tryReceive().isFailure)
+            val state = f.client.state.value
+            assertEquals(ConnectionStatus.Connected, state.connection); assertNull(state.error); assertNull(state.promptSuggestion)
+        }
+    }
+
+    @Test fun resumedShellStartsTheStreamOnlyAfterItsSynchronizedMarker() = runBlocking<Unit> {
+        Fixture("""{"promptSuggestionsEnabled":true}""").use { f ->
+            f.serverVersion = "1.2.3"
+            f.connect(); f.open("t1")
+            f.nextSuggestionStream()
+            f.client.disconnect()
+            f.holdResumedShell = true
+            f.client.connect(SavedEnvironment("env", "Fixture", f.server.url("/").toString(), "bearer-secret"))
+            val shell = withTimeout(5000) { f.resumedShells.receive() }
+            assertEquals(10L, shell.payload["afterSequence"]?.jsonPrimitive?.longOrNull)
+            delay(150)
+            assertTrue("the thread and its suggestions wait for the marker", f.suggestions.tryReceive().isFailure)
+            assertNull(f.client.state.value.promptSuggestion)
+            Fixture.chunk(shell.ws, shell.id, """{"kind":"synchronized"}""")
+            val stream = f.nextSuggestionStream()
+            assertEquals("t1", stream.payload.string("threadId"))
+            Fixture.chunk(stream.ws, stream.id, """{"runId":"run-1","text":"After resume"}""")
+            f.awaitSuggestion(PromptSuggestion("run-1", "After resume"))
         }
     }
 

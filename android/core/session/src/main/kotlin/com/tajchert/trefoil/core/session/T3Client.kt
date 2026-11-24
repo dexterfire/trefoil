@@ -199,7 +199,7 @@ class T3Client(
         val current = state.value
         current.environment?.id?.let { id ->
             environmentStates.remove(id)
-            environmentStates[id] = current.copy(canWrite = false, canWriteThreads = false, canWriteSettings = false, canRead = false, shellLive = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = null, screens = ScreenCatalog(), localServers = LocalServerCatalog(), portForwards = emptyList())
+            environmentStates[id] = current.copy(canWrite = false, canWriteThreads = false, canWriteSettings = false, canRead = false, shellLive = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = null, screens = ScreenCatalog(), localServers = LocalServerCatalog(), portForwards = emptyList(), promptSuggestion = null)
             evictRetained()
         }
     }
@@ -487,7 +487,7 @@ class T3Client(
             val retained = environmentStates[environment.id] ?: ClientState()
             projection = JsonObject(emptyMap())
             update { retained.copy(environment = environment, connection = ConnectionStatus.Connecting, canWrite = false, canWriteThreads = false, canWriteSettings = false, modelPreferences = ModelPreferences(), canRead = false, shellLive = false, canReadUsage = false, queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, busy = false, error = null, settlementUndo = null, threadActionsConfigured = false, activeRoute = null,
-                localServers = LocalServerCatalog(), previewTunnelSetting = null, previewTunnelDisabled = false, portForwards = emptyList()) }
+                localServers = LocalServerCatalog(), previewTunnelSetting = null, previewTunnelDisabled = false, portForwards = emptyList(), promptSuggestion = null) }
         }
         // Set once the session check succeeded: any later failure is [ConnectFailure.AfterSession].
         var sessionChecked = false
@@ -656,9 +656,13 @@ class T3Client(
 
     /**
      * The config stream is not live (it never started, ended or failed), so nothing keeps the connect-time setting and
-     * policy current: they stop counting, and the `TunnelDisabled` handshake decides. Caller holds [lifecycleLock].
+     * policy current: they stop counting, and the `TunnelDisabled` handshake decides. Prompt suggestions turn off, so a
+     * setting switched off meanwhile never keeps them running. Caller holds [lifecycleLock].
      */
-    private fun configStreamLost() = applyTunnelConfig(tunnelConfig.copy(settingEnabled = null, policyAllows = null))
+    private fun configStreamLost() {
+        applyTunnelConfig(tunnelConfig.copy(settingEnabled = null, policyAllows = null))
+        applyPromptSuggestionsSetting(false)
+    }
 
     /** Adopts the model preferences of server [settings] (a missing key keeps the last value). Caller holds [lifecycleLock]. */
     private fun applyModelPreferences(settings: JsonObject?) {
@@ -2072,7 +2076,7 @@ class T3Client(
         if (environmentStates[id]?.shellLoaded == true) return false
         val base = (if (shown) current else environmentStates[id]) ?: ClientState()
         val restored = base.copy(projects = shell.projects, threads = shell.threads, shellLoaded = true, shellLive = false,
-            canWrite = false, canWriteThreads = false, canWriteSettings = false, canRead = false, canReadUsage = false, busy = false)
+            canWrite = false, canWriteThreads = false, canWriteSettings = false, canRead = false, canReadUsage = false, busy = false, promptSuggestion = null)
         if (shown) mutable.value = restored
         environmentStates.remove(id)
         environmentStates[id] = restored
