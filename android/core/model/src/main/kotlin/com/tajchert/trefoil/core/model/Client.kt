@@ -221,6 +221,8 @@ data class ClientState(
     val settlementUndo: SettlementUndo? = null,
     val providers: List<ProviderInstance> = emptyList(),
     val runs: List<ConversationRun> = emptyList(),
+    /** Raw `orchestration.subscribePromptSuggestion` value for the selected thread; read it through [offeredPromptSuggestion]. Cleared on thread switch and disconnect. */
+    val promptSuggestion: PromptSuggestion? = null,
     val attempts: List<RunAttempt> = emptyList(),
     val screens: ScreenCatalog = ScreenCatalog(),
     /** Selected thread's current runtime mode, from its projection; null when unknown. */
