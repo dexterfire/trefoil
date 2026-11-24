@@ -29,6 +29,15 @@ class OpenThreadIntentTest {
         assertNull(parseOpenThreadIntent(open(thread = "")))
     }
 
+    @Test fun agentNotificationPermissionIsAskedOnceOnAndroid13PlusWhileConnectedAndOn() {
+        assertEquals(true, shouldAskAgentNotificationPermission(33, connected = true, settingOn = true, granted = false, asked = false))
+        assertEquals(false, shouldAskAgentNotificationPermission(32, connected = true, settingOn = true, granted = false, asked = false))
+        assertEquals(false, shouldAskAgentNotificationPermission(33, connected = false, settingOn = true, granted = false, asked = false))
+        assertEquals(false, shouldAskAgentNotificationPermission(33, connected = true, settingOn = false, granted = false, asked = false))
+        assertEquals(false, shouldAskAgentNotificationPermission(33, connected = true, settingOn = true, granted = true, asked = false))
+        assertEquals(false, shouldAskAgentNotificationPermission(33, connected = true, settingOn = true, granted = false, asked = true))
+    }
+
     @Test fun ignoresWrongTypedExtrasOversizedIdsAndRecentsRedelivery() {
         assertNull(parseOpenThreadIntent(Intent("com.tajchert.trefoil.action.OPEN_THREAD").putExtra("environmentId", 5).putExtra("threadId", "t")))
         assertNull(parseOpenThreadIntent(open(thread = "t".repeat(513))))

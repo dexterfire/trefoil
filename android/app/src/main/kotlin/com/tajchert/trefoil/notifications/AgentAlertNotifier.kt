@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.tajchert.trefoil.MainActivity
@@ -26,9 +27,10 @@ internal interface AgentAlertSink {
 data class OpenThreadRequest(val environmentId: String, val threadId: String)
 
 /**
- * Local notifications for threads that need the user or ended. One notification per thread (tag [TAG], id from environment
- * and thread). Thread and project titles are conversation content: they show in the notification shade only, never on a locked
- * screen (the public version carries the status alone) and never in logs.
+ * Local notifications for threads that need the user or ended. One notification per thread: its tag names the environment and
+ * thread ([tag]) and the id is the fixed [NOTIFICATION_ID], so two threads never share a notification. Thread and project titles
+ * are conversation content and never logged; the notification is `VISIBILITY_PRIVATE`, so where the device hides sensitive
+ * notification content on the lock screen only the public version (the status alone) shows there.
  */
 internal class AgentAlertNotifier(private val context: Context) : AgentAlertSink {
     private val manager get() = context.getSystemService(NotificationManager::class.java)
@@ -38,29 +40,34 @@ internal class AgentAlertNotifier(private val context: Context) : AgentAlertSink
     override fun post(alert: AgentAlert, projectTitle: String?) {
         val manager = manager ?: return
         ensureChannel(context)
-        try { manager.notify(TAG, notificationId(alert.environmentId, alert.threadId), build(context, alert, projectTitle)) }
+        try { manager.notify(tag(alert.environmentId, alert.threadId), NOTIFICATION_ID, build(context, alert, projectTitle)) }
         catch (_: RuntimeException) { /* A refused notification must not fail connection handling. */ }
     }
 
     override fun cancel(environmentId: String, threadId: String) {
-        try { manager?.cancel(TAG, notificationId(environmentId, threadId)) } catch (_: RuntimeException) {}
+        try { manager?.cancel(tag(environmentId, threadId), NOTIFICATION_ID) } catch (_: RuntimeException) {}
     }
 
     override fun cancelAll() {
         val manager = manager ?: return
-        try { manager.activeNotifications.filter { it.tag == TAG }.forEach { manager.cancel(TAG, it.id) } } catch (_: RuntimeException) {}
+        try { manager.activeNotifications.filter { it.tag?.startsWith(TAG_PREFIX) == true }.forEach { manager.cancel(it.tag, it.id) } } catch (_: RuntimeException) {}
     }
 
     companion object {
         const val CHANNEL_ID = "agent_alerts"
-        const val TAG = "agent-alert"
+        /** Every agent alert's tag starts with this; nothing else of the app uses it. */
+        const val TAG_PREFIX = "agent-alert:"
+        const val NOTIFICATION_ID = 1
+        /** Scheme of the data URI that keeps each thread's PendingIntent distinct; the activity declares no filter for it. */
+        const val URI_SCHEME = "trefoil-alert"
         const val ACTION_OPEN_THREAD = "com.tajchert.trefoil.action.OPEN_THREAD"
         const val EXTRA_ENVIRONMENT_ID = "environmentId"
         const val EXTRA_THREAD_ID = "threadId"
         const val UNTITLED = "Untitled conversation"
         const val MAX_TITLE_LENGTH = 120
 
-        fun notificationId(environmentId: String, threadId: String): Int = (environmentId + "\n" + threadId).hashCode()
+        /** Each part is URI-encoded, so the "/" between them is unambiguous: distinct (environment, thread) pairs never share a tag. */
+        fun tag(environmentId: String, threadId: String): String = TAG_PREFIX + Uri.encode(environmentId) + "/" + Uri.encode(threadId)
 
         fun ensureChannel(context: Context) {
             val manager = context.getSystemService(NotificationManager::class.java) ?: return
@@ -77,7 +84,9 @@ internal class AgentAlertNotifier(private val context: Context) : AgentAlertSink
         fun title(raw: String): String = raw.trim().ifBlank { UNTITLED }.let { if (it.length > MAX_TITLE_LENGTH) it.take(MAX_TITLE_LENGTH - 1).trimEnd() + "…" else it }
 
         fun openIntent(context: Context, environmentId: String, threadId: String): Intent =
+            // Explicit; the data URI only makes intents of different threads unequal (filterEquals), so their PendingIntents never merge.
             Intent(context, MainActivity::class.java).setAction(ACTION_OPEN_THREAD)
+                .setData(Uri.fromParts(URI_SCHEME, tag(environmentId, threadId), null))
                 .putExtra(EXTRA_ENVIRONMENT_ID, environmentId).putExtra(EXTRA_THREAD_ID, threadId)
                 .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
 
@@ -85,7 +94,7 @@ internal class AgentAlertNotifier(private val context: Context) : AgentAlertSink
             val status = status(alert.kind)
             val project = projectTitle?.trim()?.takeIf { it.isNotEmpty() }
             val open = PendingIntent.getActivity(
-                context, notificationId(alert.environmentId, alert.threadId), openIntent(context, alert.environmentId, alert.threadId),
+                context, 0, openIntent(context, alert.environmentId, alert.threadId),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
             val lockScreen = NotificationCompat.Builder(context, CHANNEL_ID)

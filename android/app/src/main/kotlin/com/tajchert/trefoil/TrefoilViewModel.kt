@@ -32,6 +32,7 @@ import com.tajchert.trefoil.core.ssh.SshTunnelConnector
 import com.tajchert.trefoil.keepalive.ConnectionKeepAlive
 import com.tajchert.trefoil.notifications.AgentAlertDriver
 import com.tajchert.trefoil.notifications.AgentAlertNotifier
+import com.tajchert.trefoil.notifications.OpenThreadRequest
 import com.tajchert.trefoil.security.DeviceDpopKey
 import com.tajchert.trefoil.security.ComposerDraftFileStore
 import com.tajchert.trefoil.security.EnvironmentStore
@@ -210,6 +211,12 @@ class TrefoilViewModel internal constructor(
     val agentNotifications: StateFlow<Boolean> = _agentNotifications.asStateFlow()
     /** Posts those notifications; takes the foreground and shown-thread facts from the lifecycle hooks below. */
     private val agentAlerts = AgentAlertDriver(viewModelScope, client.state, AgentAlertNotifier(application), _agentNotifications)
+    /** The notification tap still waiting for its machine and thread; lives here so cold start and rotation keep it. */
+    private var pendingOpen: OpenThreadRequest? = null
+    private var pendingOpenJob: Job? = null
+    private val _openedThread = MutableStateFlow<OpenThreadRequest?>(null)
+    /** A thread a notification tap selected; the UI brings it on screen once and then calls [consumeOpenedThread]. */
+    val openedThread: StateFlow<OpenThreadRequest?> = _openedThread.asStateFlow()
     /** Drives the keep-alive service; replaced only by tests. */
     internal var keepAliveControl: KeepAliveControl = ServiceKeepAliveControl
         set(value) { field = value; watchKeepAliveService() }
@@ -583,6 +590,12 @@ class TrefoilViewModel internal constructor(
      * connects (and [connectThroughPlan] closes the previous one first).
      */
     fun selectMachine(environment: SavedEnvironment) {
+        // Picking another machine abandons a notification tap still waiting for its own.
+        if (pendingOpen?.environmentId != environment.id) dropPendingOpen()
+        chooseMachine(environment)
+    }
+
+    private fun chooseMachine(environment: SavedEnvironment) {
         // A tap on the machine the cold-start connect is reaching makes that attempt the user's: it then asks for an SSH
         // login and reports a failure like any connect.
         if (quietAttemptEpoch == connectionEpoch && _working.value && attemptEnvironmentId == environment.id) { quietAttemptEpoch = null; return }
@@ -779,6 +792,7 @@ class TrefoilViewModel internal constructor(
     }
 
     fun selectThread(id: String) {
+        dropPendingOpen()
         clearDraft()
         action("Could not open the thread. Reconnect and try again.") { client.selectThread(id) }
     }
@@ -854,6 +868,7 @@ class TrefoilViewModel internal constructor(
     fun respond(id: String, decision: String, answers: Map<String,List<String>>) = mutation("Response outcome is uncertain. Check the request status before responding again.") { client.respond(id, decision, answers) }
     /** Opens a local draft; no server mutation until the first send. */
     fun startDraft(draft: ThreadDraft) {
+        dropPendingOpen()
         // A draft whose earlier launch is still uncertain relaunches with the same ids, so the server resumes instead of duplicating.
         val launch = state.value.environment?.id?.let { composerDraftStore.get(ComposerDraftKey.NewThread(it, draft.projectId))?.pendingLaunch }
         drafts.start(if (launch == null) draft else draft.copy(threadId = launch.threadId, commandId = launch.commandId))
@@ -936,7 +951,48 @@ class TrefoilViewModel internal constructor(
         }
     }
 
+    /**
+     * A tap on an agent notification (untrusted ids, see `parseOpenThreadIntent`). Waits for the saved machines to load, drops a
+     * request for an unknown machine, switches to the named machine when needed and selects the thread once that machine lists
+     * it. The client checks the machine and the listing together with the selection ([TrefoilClient.selectThreadIn]), so another
+     * machine's thread is never opened by id. Consumed once; dropped when the user picks another machine or thread, starts a
+     * new thread, disconnects, forgets the machine, or the connection moves to another machine.
+     */
+    fun openThreadFromNotification(request: OpenThreadRequest) {
+        dropPendingOpen()
+        pendingOpen = request
+        pendingOpenJob = viewModelScope.launch {
+            initialized.await()
+            val machine = _environments.value.firstOrNull { it.id == request.environmentId }
+            if (machine == null) { if (pendingOpen === request) pendingOpen = null; return@launch }
+            if (state.value.environment?.id != machine.id) chooseMachine(machine)
+            var seen = state.value.environment?.id
+            client.state.map { it.environment?.id to it.threads.any { thread -> thread.id == request.threadId } }
+                .distinctUntilChanged()
+                .first { (environmentId, listed) ->
+                    // The connection moved to a third machine (or the switch was replaced): the request no longer applies.
+                    if (environmentId != null && environmentId != seen && environmentId != request.environmentId) return@first true
+                    seen = environmentId
+                    if (environmentId != request.environmentId || !listed) return@first false
+                    clearDraft()
+                    val opened = try { client.selectThreadIn(request.environmentId, request.threadId) }
+                        catch (e: CancellationException) { throw e } catch (_: Exception) { false }
+                    if (opened) _openedThread.value = request
+                    opened
+                }
+            if (pendingOpen === request) pendingOpen = null
+        }
+    }
+
+    /** The UI has shown the thread from [openedThread]. */
+    fun consumeOpenedThread() { _openedThread.value = null }
+
+    private fun dropPendingOpen() {
+        pendingOpenJob?.cancel(); pendingOpenJob = null; pendingOpen = null
+    }
+
     fun disconnect() {
+        dropPendingOpen()
         liveEnvironment = null; reconnectWhenOnline = null
         autoReconnectJob?.cancel(); autoReconnectJob = null
         agentAlerts.cancelAll()
@@ -976,6 +1032,7 @@ class TrefoilViewModel internal constructor(
     fun forget(environment: SavedEnvironment) = action("Could not remove saved credentials.") {
         // Before anything suspends: a cache read still running for this machine is never restored.
         shellCacheRead += environment.id
+        if (pendingOpen?.environmentId == environment.id) dropPendingOpen()
         composerDraftStore.clearEnvironment(environment.id)
         if (drafts.environmentId == environment.id || state.value.environment?.id == environment.id) clearDraft()
         if (selectedEnvironment?.id == environment.id || state.value.environment?.id == environment.id) { cancelSsh(); keepAliveLatched = true; agentAlerts.cancelAll() }
@@ -1397,6 +1454,8 @@ class TrefoilViewModel internal constructor(
 
     override fun onCleared() {
         flushComposerDrafts() // on the store's own scope; viewModelScope is already cancelled
+        // Nothing observes the connection after this, so no alert could be cleared any more.
+        agentAlerts.cancelAll()
         if (keepAlive) { _keepAliveActive.value = false; try { keepAliveControl.stop(getApplication()) } catch (_: Exception) {} }
         widgetSync.close()
         probeJob?.cancel()

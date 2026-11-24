@@ -24,6 +24,9 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import android.net.Uri
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import androidx.activity.enableEdgeToEdge
 import com.tajchert.trefoil.ui.adaptive.ProvideWindowFold
 import androidx.activity.viewModels
@@ -52,10 +55,10 @@ class MainActivity : ComponentActivity() {
         // The link is a single-use credential: drop it from the activity intent so nothing can replay it.
         setIntent(Intent(Intent.ACTION_MAIN))
     }
-    private var openThreadRequest by mutableStateOf<Pair<Long, OpenThreadRequest>?>(null)
     private fun handleOpenThreadIntent(intent: Intent?) {
         val request = parseOpenThreadIntent(intent) ?: return
-        openThreadRequest = ((openThreadRequest?.first ?: 0) + 1) to request
+        // Held by the view model, so a cold start (machines still loading) or a rotation while the machine connects keeps it.
+        model.openThreadFromNotification(request)
         // Consumed once: recreation or a later resume must not reopen the thread.
         setIntent(Intent(Intent.ACTION_MAIN))
     }
@@ -110,6 +113,18 @@ class MainActivity : ComponentActivity() {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
+    private val uiPrefs by lazy { getSharedPreferences("trefoil.ui", MODE_PRIVATE) }
+    /**
+     * Agent notifications are on by default, so on Android 13+ the permission is asked once without a toggle: the first time a
+     * machine is connected while the setting is on and the permission is missing. Denial changes nothing else.
+     */
+    private fun askNotificationPermissionOnce() {
+        val granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        if (!shouldAskAgentNotificationPermission(Build.VERSION.SDK_INT, connected = true, model.agentNotifications.value, granted, uiPrefs.getBoolean(AGENT_NOTIFICATION_PERMISSION_ASKED, false))) return
+        uiPrefs.edit().putBoolean(AGENT_NOTIFICATION_PERMISSION_ASKED, true).apply()
+        notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
     /** The "Keep connected in background" toggle; turning it on asks for the notification permission on Android 13+. */
     fun onKeepConnectedChange(enabled: Boolean) {
         model.setKeepConnected(enabled)
@@ -152,6 +167,13 @@ class MainActivity : ComponentActivity() {
             }
         }
         lifecycleScope.launch {
+            // The permission dialog needs a started activity; a connection made in the background asks on the next start.
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                combine(model.state.map { it.connection == com.tajchert.trefoil.core.model.ConnectionStatus.Connected }.distinctUntilChanged(), model.agentNotifications) { connected, on -> connected && on }
+                    .collect { if (it) askNotificationPermissionOnce() }
+            }
+        }
+        lifecycleScope.launch {
             // Keep-alive ending in the background: stop listening for network changes until the next start.
             model.keepAliveActive.collect { active -> if (!active && !lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) unregisterNetworkCallback() }
         }
@@ -174,6 +196,7 @@ class MainActivity : ComponentActivity() {
             val usage by model.usage.collectAsStateWithLifecycle()
             val keepConnected by model.keepConnected.collectAsStateWithLifecycle()
             val agentNotifications by model.agentNotifications.collectAsStateWithLifecycle()
+            val openedThread by model.openedThread.collectAsStateWithLifecycle()
             val portBrowser by model.portForwards.browser.collectAsStateWithLifecycle()
             val stoppedForwards by model.portForwards.stoppedNotices.collectAsStateWithLifecycle()
             val refreshing by model.isRefreshing.collectAsStateWithLifecycle()
@@ -191,7 +214,8 @@ class MainActivity : ComponentActivity() {
                 onThreadShown = model::setThreadShown,
                 usageOpenRequest = usageRequest,
                 pairLinkRequest = pairLinkRequest,
-                openThreadRequest = openThreadRequest,
+                openedThread = openedThread,
+                onOpenedThreadShown = model::consumeOpenedThread,
                 usage = usage,
                 onOpenUsage = model.usageController::open,
                 onUsageRange = model.usageController::selectRange,
@@ -271,6 +295,13 @@ class MainActivity : ComponentActivity() {
 }
 
 private const val MAX_PAIR_LINK_LENGTH = 4096
+
+/** `SharedPreferences("trefoil.ui")` key: the one-time agent-notification permission request was made. */
+internal const val AGENT_NOTIFICATION_PERMISSION_ASKED = "agentNotificationPermissionAsked"
+
+/** Ask for `POST_NOTIFICATIONS` without a toggle: Android 13+, connected, setting on, not granted, and never asked before. */
+internal fun shouldAskAgentNotificationPermission(sdk: Int, connected: Boolean, settingOn: Boolean, granted: Boolean, asked: Boolean): Boolean =
+    sdk >= Build.VERSION_CODES.TIRAMISU && connected && settingOn && !granted && !asked
 
 /**
  * The `t3code://pair…` link of a browser/app VIEW intent, or null. Untrusted: only the data string is read, and it is

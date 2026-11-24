@@ -117,7 +117,8 @@ class ThreadListUiTest {
         val env = SavedEnvironment("fixture", "Fixture", "https://fixture.invalid", "fixture-token")
         val quiet = ThreadSummary("late", "trefoil", "Late bloomer", "completed")
         val already = ThreadSummary("early", "trefoil", "Already waiting", "running", pendingRequestKind = "approval")
-        val state = androidx.compose.runtime.mutableStateOf(fixture.copy(environment = env, canRead = true, threads = listOf(quiet, already)))
+        // The live shell counts, not canRead: an open conversation still loading its detail must not hold announcements back.
+        val state = androidx.compose.runtime.mutableStateOf(fixture.copy(environment = env, canRead = false, shellLive = true, threads = listOf(quiet, already)))
         compose.setContent { TrefoilApp(state.value, emptyList(), { _, _, _ -> }, {},
             { id -> state.value = state.value.copy(selectedThreadId = id) }, {}, {}, { _, _, _ -> }, null, {}, {}, {}, {}, {}, {}, {}) }
         compose.waitForIdle()
@@ -133,7 +134,7 @@ class ThreadListUiTest {
     @Test fun snackbarIsDroppedWhenTheConnectionIsLost() {
         val env = SavedEnvironment("fixture", "Fixture", "https://fixture.invalid", "fixture-token")
         val quiet = ThreadSummary("late", "trefoil", "Late bloomer", "completed")
-        val state = androidx.compose.runtime.mutableStateOf(fixture.copy(environment = env, canRead = true, threads = listOf(quiet)))
+        val state = androidx.compose.runtime.mutableStateOf(fixture.copy(environment = env, canRead = true, shellLive = true, threads = listOf(quiet)))
         compose.setContent { TrefoilApp(state.value, emptyList(), { _, _, _ -> }, {},
             { id -> state.value = state.value.copy(selectedThreadId = id) }, {}, {}, { _, _, _ -> }, null, {}, {}, {}, {}, {}, {}, {}) }
         compose.waitForIdle()

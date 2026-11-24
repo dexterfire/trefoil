@@ -28,12 +28,14 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import com.tajchert.trefoil.ui.screens.ScreenViewerState
 import com.tajchert.trefoil.ui.screens.ScreenSessionsScreen
 import com.tajchert.trefoil.notifications.OpenThreadRequest
+import com.tajchert.trefoil.notifications.shellFresh
 import com.tajchert.trefoil.ui.ports.PortBrowserState
 import com.tajchert.trefoil.ui.ports.PortsActions
 import com.tajchert.trefoil.ui.ports.DevServersPane
@@ -112,6 +114,9 @@ data class ShellStart(
     val sidePanelTab: String? = null,
 )
 
+/** How long a notification tap's selected thread may take to reach this composition before it is shown. */
+private const val OPENED_THREAD_WAIT_MS = 2_000L
+
 @Composable
 fun TrefoilApp(
     state: ClientState, savedEnvironments: List<SavedEnvironment>,
@@ -129,7 +134,7 @@ fun TrefoilApp(
     keepConnected: Boolean = false, onSetModelOption: (String, Any) -> Unit = { _, _ -> }, onSetModelFavorite: (ModelKey, Boolean) -> Unit = { _, _ -> },
     onKeepConnectedChange: (Boolean) -> Unit = {},
     agentNotifications: Boolean = false, onAgentNotificationsChange: (Boolean) -> Unit = {},
-    openThreadRequest: Pair<Long, OpenThreadRequest>? = null,
+    openedThread: OpenThreadRequest? = null, onOpenedThreadShown: () -> Unit = {},
     onSshConnect: (SshConnectionInput) -> Unit = {},
     sshHostKey: SshHostKey? = null,
     onTrustSsh: () -> Unit = {},
@@ -334,8 +339,10 @@ fun TrefoilApp(
         // message; one long-lived collector shows them in turn so a state update never dismisses a snackbar on screen.
         val attention = remember { Channel<AttentionMessage>(Channel.UNLIMITED) }
         var attentionTrack by remember { mutableStateOf(AttentionTrack()) }
-        LaunchedEffect(state.threads, state.environment?.id, state.connection, state.canRead, openThreadId) {
-            val step = attentionStep(attentionTrack, state.environment?.id, state.connection == ConnectionStatus.Connected, state.canRead, state.threads, openThreadId)
+        // Fresh is the live shell (shared with the notification driver), not canRead, which also waits for the open conversation's detail.
+        val shellFresh = shellFresh(state)
+        LaunchedEffect(state.threads, state.environment?.id, state.connection, shellFresh, openThreadId) {
+            val step = attentionStep(attentionTrack, state.environment?.id, state.connection == ConnectionStatus.Connected, shellFresh, state.threads, openThreadId)
             attentionTrack = step.track
             attentionMessage(step.announce)?.let { attention.trySend(it) }
         }
@@ -343,25 +350,17 @@ fun TrefoilApp(
             navigate(ShellDestination.Threads); onClosePortBrowser()
             if (id != null && state.threads.any { it.id == id }) select(id) else { cancelDraft(); showThread = false }
         }
-        // A tap on an agent notification: switch to its saved machine first, then open the thread once that machine lists it. Never a
-        // thread of another machine by id alone; an unknown machine does nothing, and the request is dropped when the machine changes to another one.
-        var pendingOpen by remember { mutableStateOf<OpenThreadRequest?>(null) }
-        val currentEnvironmentId by rememberUpdatedState(state.environment?.id)
-        LaunchedEffect(openThreadRequest) {
-            val request = openThreadRequest?.second ?: return@LaunchedEffect
-            val machine = savedEnvironments.firstOrNull { it.id == request.environmentId }
-            if (machine == null) { pendingOpen = null; return@LaunchedEffect }
-            pendingOpen = request
-            if (currentEnvironmentId != machine.id) onConnect(machine)
-        }
-        LaunchedEffect(state.environment?.id) {
-            val pending = pendingOpen
-            val now = state.environment?.id
-            if (pending != null && now != null && now != pending.environmentId) pendingOpen = null
-        }
-        LaunchedEffect(pendingOpen, state.environment?.id, state.threads) {
-            val pending = pendingOpen ?: return@LaunchedEffect
-            if (state.environment?.id == pending.environmentId && state.threads.any { it.id == pending.threadId }) { pendingOpen = null; openAttention(pending.threadId) }
+        // A tap on an agent notification: the view model switched machines and selected the thread (checked against the machine it
+        // names); this only brings that thread on screen, once. A request of another machine or thread than the current one is just consumed.
+        val latestState by rememberUpdatedState(state)
+        LaunchedEffect(openedThread) {
+            val opened = openedThread ?: return@LaunchedEffect
+            // The selection is in the client state already; this composition may just not have seen it yet.
+            val selected = withTimeoutOrNull(OPENED_THREAD_WAIT_MS) {
+                snapshotFlow { latestState.environment?.id == opened.environmentId && latestState.selectedThreadId == opened.threadId }.first { it }
+            } != null
+            if (selected) { navigate(ShellDestination.Threads); onClosePortBrowser(); showThread = true }
+            onOpenedThreadShown()
         }
         val attentionRelevant by rememberUpdatedState<(AttentionMessage) -> Boolean> {
             state.connection == ConnectionStatus.Connected && attentionStillRelevant(it, needsYouThreads, openThreadId)

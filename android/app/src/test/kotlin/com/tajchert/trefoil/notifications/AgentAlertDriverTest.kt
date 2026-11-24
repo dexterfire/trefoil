@@ -38,7 +38,7 @@ class AgentAlertDriverTest {
 
     private class Harness(scope: TestScope, enabled: Boolean = true, allowed: Boolean = true) {
         val environment = SavedEnvironment("env1", "Machine", "https://fixture.invalid", "fixture")
-        val state = MutableStateFlow(ClientState(environment = environment, connection = ConnectionStatus.Connected, canRead = true))
+        val state = MutableStateFlow(ClientState(environment = environment, connection = ConnectionStatus.Connected, canRead = true, shellLive = true))
         val setting = MutableStateFlow(enabled)
         val sink = FakeSink(allowed)
         val calls = mutableListOf<StepCall>()
@@ -140,7 +140,11 @@ class AgentAlertDriverTest {
     @Test fun stepReceivesConnectedAndFreshFromTheClientState() = runTest(UnconfinedTestDispatcher()) {
         val h = harness()
         assertTrue(h.calls.last().connected); assertTrue(h.calls.last().fresh)
-        h.state.value = h.state.value.copy(canRead = false)
+        // The selected conversation refreshing its detail (canRead false) leaves the live shell fresh: other threads still alert.
+        h.state.value = h.state.value.copy(canRead = false, selectedThreadId = "open", threads = listOf(ThreadSummary("t1", "p1", "x")))
+        runCurrent()
+        assertTrue(h.calls.last().connected); assertTrue(h.calls.last().fresh)
+        h.state.value = h.state.value.copy(shellLive = false)
         runCurrent()
         assertTrue(h.calls.last().connected); assertTrue(!h.calls.last().fresh)
         h.state.value = h.state.value.copy(connection = ConnectionStatus.Reconnecting)
@@ -161,6 +165,51 @@ class AgentAlertDriverTest {
         assertEquals(5_000L, h.calls.last().now)
         advanceTimeBy(60_000)
         assertEquals(before + 1, h.calls.size)
+    }
+
+    @Test fun recheckTickReadsTheLatestStateAndPresenceAtTheDeadline() = runTest(UnconfinedTestDispatcher()) {
+        val h = harness()
+        h.driver.setForeground(false)
+        h.respond = { call -> if (call.now >= 5_000) AgentAlertStep(call.track, alerts = listOf(alert(kind = AgentAlertKind.Finished)))
+            else AgentAlertStep(call.track, recheckAtMillis = 5_000L) }
+        h.state.value = h.state.value.copy(threads = listOf(ThreadSummary("t1", "p1", "old")))
+        runCurrent()
+        advanceTimeBy(3_000); runCurrent()
+        h.state.value = h.state.value.copy(threads = listOf(ThreadSummary("t1", "p1", "new")))
+        runCurrent()
+        val before = h.calls.size
+        advanceTimeBy(2_000); runCurrent()
+        // Exactly one observation at the deadline (the replaced tick never fires), and it sees the newest rows.
+        assertEquals(before + 1, h.calls.size)
+        assertEquals("new", h.calls.last().threads.single().title)
+        assertEquals(AgentAlertKind.Finished, h.sink.posts.single().first.kind)
+    }
+
+    @Test fun recheckTickInTheForegroundPostsNothing() = runTest(UnconfinedTestDispatcher()) {
+        val h = harness()
+        h.driver.setForeground(false)
+        h.respond = { call -> if (call.now >= 5_000) AgentAlertStep(call.track, alerts = listOf(alert(kind = AgentAlertKind.Finished)))
+            else AgentAlertStep(call.track, recheckAtMillis = 5_000L) }
+        h.state.value = h.state.value.copy(threads = listOf(ThreadSummary("t1", "p1", "x")))
+        runCurrent()
+        advanceTimeBy(4_000); runCurrent()
+        h.driver.setForeground(true)
+        advanceTimeBy(1_000); runCurrent()
+        assertTrue(h.calls.any { it.now >= 5_000 })
+        assertTrue(h.sink.posts.isEmpty())
+    }
+
+    @Test fun recheckTickAfterNotificationsWereBlockedPostsNothing() = runTest(UnconfinedTestDispatcher()) {
+        val h = harness()
+        h.driver.setForeground(false)
+        h.respond = { call -> if (call.now >= 5_000) AgentAlertStep(call.track, alerts = listOf(alert(kind = AgentAlertKind.Finished)))
+            else AgentAlertStep(call.track, recheckAtMillis = 5_000L) }
+        h.state.value = h.state.value.copy(threads = listOf(ThreadSummary("t1", "p1", "x")))
+        runCurrent()
+        h.sink.allowed = false
+        advanceTimeBy(5_000); runCurrent()
+        assertTrue(h.calls.any { it.now >= 5_000 })
+        assertTrue(h.sink.posts.isEmpty())
     }
 
     @Test fun recheckAlertPostsInTheBackground() = runTest(UnconfinedTestDispatcher()) {
