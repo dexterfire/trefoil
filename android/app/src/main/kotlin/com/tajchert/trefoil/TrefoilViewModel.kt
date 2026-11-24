@@ -33,6 +33,7 @@ import com.tajchert.trefoil.keepalive.ConnectionKeepAlive
 import com.tajchert.trefoil.notifications.AgentAlertDriver
 import com.tajchert.trefoil.notifications.AgentAlertNotifier
 import com.tajchert.trefoil.notifications.OpenThreadRequest
+import com.tajchert.trefoil.notifications.shellFresh
 import com.tajchert.trefoil.security.DeviceDpopKey
 import com.tajchert.trefoil.security.ComposerDraftFileStore
 import com.tajchert.trefoil.security.EnvironmentStore
@@ -190,7 +191,11 @@ class TrefoilViewModel internal constructor(
     private var backgroundDisconnectJob: Job? = null
     private var selectedEnvironment: SavedEnvironment? = null
     private var resumeEnvironment: SavedEnvironment? = null
-    private var foreground = true
+    private val foregroundState = MutableStateFlow(true)
+    /** Between [resume] and [pause]; a flow too, so a held notification tap can wait for it. */
+    private var foreground: Boolean
+        get() = foregroundState.value
+        set(value) { foregroundState.value = value }
     /** The machine and message of the app-wide banner last posted for lost forwards, so clearing the notice clears it. */
     private var forwardBanner: Pair<String, String>? = null
     /** A connection failure took the banner from [forwardBanner] before the user acted on it; the next attempt restores it. */
@@ -952,11 +957,15 @@ class TrefoilViewModel internal constructor(
     }
 
     /**
-     * A tap on an agent notification (untrusted ids, see `parseOpenThreadIntent`). Waits for the saved machines to load, drops a
-     * request for an unknown machine, switches to the named machine when needed and selects the thread once that machine lists
-     * it. The client checks the machine and the listing together with the selection ([TrefoilClient.selectThreadIn]), so another
-     * machine's thread is never opened by id. Consumed once; dropped when the user picks another machine or thread, starts a
-     * new thread, disconnects, forgets the machine, or the connection moves to another machine.
+     * A tap on an agent notification (authenticated by `parseOpenThreadIntent`, ids still checked here). Waits for the saved
+     * machines to load and for the foreground (a connect started in the background would stop at its foreground guard), drops a
+     * request for an unknown machine, switches to (or reconnects) the named machine when needed and selects the thread once that
+     * machine's live shell is synchronized: retained or cached rows may list a thread deleted meanwhile, and a selection tried
+     * against them while disconnected would never be retried. The first synchronized shell that does not list the thread drops
+     * the request; a selection that fails is retried at the next synchronized state. The client checks the machine, freshness and
+     * listing together with the selection ([TrefoilClient.selectThreadIn]), so another machine's thread is never opened by id.
+     * While held it takes precedence over resuming the previous machine ([resume]). Consumed once; dropped when the user picks
+     * another machine or thread, starts a new thread, disconnects, forgets the machine, or the connection moves to another machine.
      */
     fun openThreadFromNotification(request: OpenThreadRequest) {
         dropPendingOpen()
@@ -965,15 +974,19 @@ class TrefoilViewModel internal constructor(
             initialized.await()
             val machine = _environments.value.firstOrNull { it.id == request.environmentId }
             if (machine == null) { if (pendingOpen === request) pendingOpen = null; return@launch }
-            if (state.value.environment?.id != machine.id) chooseMachine(machine)
+            foregroundState.first { it }
+            val current = state.value
+            if (current.environment?.id != machine.id || current.connection == ConnectionStatus.Disconnected || current.connection == ConnectionStatus.Error) chooseMachine(machine)
             var seen = state.value.environment?.id
-            client.state.map { it.environment?.id to it.threads.any { thread -> thread.id == request.threadId } }
+            client.state.map { Triple(it.environment?.id, shellFresh(it), it.threads.any { thread -> thread.id == request.threadId }) }
                 .distinctUntilChanged()
-                .first { (environmentId, listed) ->
+                .first { (environmentId, fresh, listed) ->
                     // The connection moved to a third machine (or the switch was replaced): the request no longer applies.
                     if (environmentId != null && environmentId != seen && environmentId != request.environmentId) return@first true
                     seen = environmentId
-                    if (environmentId != request.environmentId || !listed) return@first false
+                    if (environmentId != request.environmentId || !fresh) return@first false
+                    // The server's own list does not have it (deleted, archived away): nothing to open.
+                    if (!listed) return@first true
                     clearDraft()
                     val opened = try { client.selectThreadIn(request.environmentId, request.threadId) }
                         catch (e: CancellationException) { throw e } catch (_: Exception) { false }
@@ -1159,7 +1172,9 @@ class TrefoilViewModel internal constructor(
         postKeepAliveCheck()
         screenSessions.resume()
         refreshRouteMonitor()
-        val environment = resumeEnvironment
+        // A held notification tap names the machine to bring back instead of the one used before the background.
+        val openTarget = pendingOpen?.let { open -> _environments.value.firstOrNull { it.id == open.environmentId } }
+        val environment = openTarget ?: resumeEnvironment
         resumeEnvironment = null
         // A running attempt (of a background reconnect episode or not) goes on; connecting would cancel it. An episode that
         // only waits out its backoff is replaced by one connect now (offline it keeps waiting for the network). An episode

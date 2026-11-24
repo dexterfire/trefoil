@@ -340,13 +340,15 @@ interface TrefoilClient {
     suspend fun disconnect()
     suspend fun selectThread(threadId: String)
     /**
-     * Selects [threadId] only while [environmentId] is the current environment and its shell lists the thread; otherwise
-     * nothing changes and the result is false. For requests that name a machine (a notification tap): the check and the
-     * selection happen together, so a machine switch in between never opens another machine's thread.
+     * Selects [threadId] only while [environmentId] is the current, connected environment and its live (synchronized, see
+     * [ClientState.shellLive]) shell lists the thread; otherwise nothing changes and the result is false. For requests that name
+     * a machine (a notification tap): the check and the selection happen together, so a machine switch in between never opens
+     * another machine's thread.
      */
     suspend fun selectThreadIn(environmentId: String, threadId: String): Boolean {
         val current = state.value
-        if (current.environment?.id != environmentId || current.threads.none { it.id == threadId }) return false
+        if (current.environment?.id != environmentId || current.connection != ConnectionStatus.Connected || !current.shellLive ||
+            current.threads.none { it.id == threadId }) return false
         selectThread(threadId)
         return true
     }

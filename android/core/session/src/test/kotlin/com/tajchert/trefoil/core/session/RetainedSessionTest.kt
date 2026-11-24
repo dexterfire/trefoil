@@ -198,6 +198,20 @@ class RetainedSessionTest {
             assertEquals(1, f.subscriptions.get())
         }
     }
+    @Test fun selectThreadInWaitsForTheSynchronizedShell() = runBlocking {
+        Fixture().use { f ->
+            val shell = f.connect()
+            // Rows listed before the synchronized marker may name a thread deleted meanwhile.
+            f.chunk(shell, """{"kind":"snapshot","snapshot":{"projects":[{"id":"p","title":"Project"}],"threads":[{"id":"working","projectId":"p","title":"working","status":"running"}]}}""")
+            assertTrue(f.client.state.value.threads.any { it.id == "working" })
+            assertFalse(f.client.state.value.shellLive)
+            assertFalse(f.client.selectThreadIn("env", "working"))
+            assertNull(f.client.state.value.selectedThreadId)
+            f.chunk(shell, """{"kind":"synchronized"}""")
+            assertTrue(f.client.selectThreadIn("env", "working"))
+            assertEquals("working", f.client.state.value.selectedThreadId)
+        }
+    }
     @Test fun sameEnvironmentReconnectKeepsShellAndConversationUntilFreshSnapshots() = runBlocking {
         Fixture().use { f ->
             f.shell(f.connect()); f.client.selectThread("working")

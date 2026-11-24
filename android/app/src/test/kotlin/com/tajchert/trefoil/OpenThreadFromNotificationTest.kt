@@ -71,9 +71,16 @@ class OpenThreadFromNotificationTest {
     @After fun tearDown() { store.loaded.countDown(); model.viewModelScope.cancel(); client.close() }
 
     private fun live(environment: SavedEnvironment, vararg threads: String) {
-        mutable.value = ClientState(environment = environment, connection = ConnectionStatus.Connected, shellLoaded = true,
+        mutable.value = ClientState(environment = environment, connection = ConnectionStatus.Connected, shellLoaded = true, shellLive = true,
             threads = threads.map { ThreadSummary(it, "p", it) })
     }
+    /** Rows retained (or cached) while the connection comes back: listed, but not synchronized with the server. */
+    private fun retained(environment: SavedEnvironment, connection: ConnectionStatus, vararg threads: String) {
+        mutable.value = ClientState(environment = environment, connection = connection, shellLoaded = true, shellLive = false,
+            threads = threads.map { ThreadSummary(it, "p", it) })
+    }
+    private fun attemptEnvironmentId() =
+        TrefoilViewModel::class.java.getDeclaredField("attemptEnvironmentId").apply { isAccessible = true }.get(model) as String?
     private fun idle(times: Int = 20) = repeat(times) { shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(5) }
     private fun awaitTrue(condition: () -> Boolean) {
         val deadline = System.currentTimeMillis() + 5_000
@@ -99,14 +106,45 @@ class OpenThreadFromNotificationTest {
         assertNull(model.openedThread.value)
     }
 
-    @Test fun waitsUntilTheMachineListsTheThread() {
+    @Test fun waitsForTheSynchronizedShellAndRetriesAfterAReconnect() {
         store.loaded.countDown()
+        // The background connection expired: the retained rows still list the thread.
+        retained(alpha, ConnectionStatus.Reconnecting, "t1")
         model.openThreadFromNotification(request)
         idle()
-        assertNull(model.openedThread.value)
+        assertNull("never selected against retained rows", model.openedThread.value)
+        assertNull(model.state.value.selectedThreadId)
+        retained(alpha, ConnectionStatus.Connected, "t1")
+        idle()
+        assertNull("connected, but the shell is still catching up", model.openedThread.value)
         live(alpha, "t1")
         awaitTrue { model.openedThread.value == request }
         assertEquals("t1", model.state.value.selectedThreadId)
+    }
+
+    @Test fun aSynchronizedShellWithoutTheThreadDropsTheRequest() {
+        store.loaded.countDown()
+        retained(alpha, ConnectionStatus.Reconnecting, "t1")
+        model.openThreadFromNotification(request)
+        idle()
+        live(alpha, "other")
+        idle()
+        live(alpha, "other", "t1")
+        idle()
+        assertNull(model.openedThread.value)
+        assertNull(model.state.value.selectedThreadId)
+    }
+
+    @Test fun aTapDeliveredInTheBackgroundWaitsForTheForegroundAndWinsOverResume() {
+        store.loaded.countDown()
+        idle()
+        model.pause()
+        model.openThreadFromNotification(OpenThreadRequest("beta", "t1"))
+        idle()
+        assertNull("no connect is started in the background", attemptEnvironmentId())
+        model.resume()
+        // Resume brings back the tapped machine, not the one shown before the background.
+        awaitTrue { attemptEnvironmentId() == "beta" }
     }
 
     @Test fun anUnknownMachineIsDropped() {
