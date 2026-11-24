@@ -33,7 +33,7 @@ class ShellCacheTest {
             "ThreadSummary" to ThreadSummary.serializer().descriptor.elementNames.toList(),
             "CachedShellCursor" to CachedShellCursor.serializer().descriptor.elementNames.toList(),
         )
-        assertEquals("Bump ShellCacheCodec.VERSION when the persisted fields change", 1, ShellCacheCodec.VERSION)
+        assertEquals("Bump ShellCacheCodec.VERSION when the persisted fields change", 2, ShellCacheCodec.VERSION)
         assertEquals("Persisted fields changed: bump ShellCacheCodec.VERSION, then update this list", mapOf(
             "Project" to listOf("id", "title", "path"),
             "ThreadSummary" to listOf("id", "projectId", "title", "status", "createdAt", "updatedAt", "latestUserMessageAt",
@@ -44,7 +44,8 @@ class ShellCacheTest {
                 "modelInstanceId", "providerInstanceHistory", "parentThreadId", "relationshipToParent", "sideChat", "creationSource",
                 "deletedAt", "activeProviderThreadId", "activityRunStatusPresent", "snoozedAt", "pendingRequestId",
                 "pendingRequestCreatedAt", "pendingRequestBlocking", "pendingGuestMessageCount", "interactionMode",
-                "hasActionableProposedPlan", "latestUserAuthoredMessageAtPresent", "completionHeldBackgroundWork"),
+                "hasActionableProposedPlan", "latestUserAuthoredMessageAtPresent", "completionHeldBackgroundWork",
+                "latestRunStopRequested", "latestRunBackgroundWake", "pendingRequestUserOnly", "workflowStep", "monitorHoldsWakeCompletion"),
             "CachedShellCursor" to listOf("serverVersion", "databaseMigration", "sequence", "snapshotAtMillis"),
         ), persisted)
     }
@@ -68,7 +69,7 @@ class ShellCacheTest {
     }
 
     @Test fun unknownFieldsAreIgnoredAndMissingOnesDefault() {
-        val text = """{"version":1,"environmentId":"env","future":{"x":1},"projects":[{"id":"p","title":"P","extra":true}],
+        val text = """{"version":${ShellCacheCodec.VERSION},"environmentId":"env","future":{"x":1},"projects":[{"id":"p","title":"P","extra":true}],
             "threads":[{"id":"a","projectId":"p","title":"T","newField":"v"}]}"""
         val decoded = ShellCacheCodec.decode(text.encodeToByteArray(), "env")!!
         assertEquals(listOf(Project("p", "P")), decoded.projects)
@@ -79,8 +80,10 @@ class ShellCacheTest {
 
     @Test fun unusableFilesDecodeToNull() {
         val good = ShellCacheCodec.encode(shell)!!.decodeToString()
-        for (bad in listOf("", "null", "[]", "{", good.dropLast(1), good.replace("\"version\":1", "\"version\":2"),
-            good.replace("\"version\":1", "\"version\":\"1\""), good.replace("\"version\":1,", ""),
+        val version = "\"version\":${ShellCacheCodec.VERSION}"
+        for (bad in listOf("", "null", "[]", "{", good.dropLast(1), good.replace(version, "\"version\":1"),
+            good.replace(version, "\"version\":${ShellCacheCodec.VERSION + 1}"),
+            good.replace(version, "\"version\":\"${ShellCacheCodec.VERSION}\""), good.replace("$version,", ""),
             good.replace("\"title\":\"Second\"", "\"title\":5,\"x\":[")))
             assertNull(bad.take(40), ShellCacheCodec.decode(bad.encodeToByteArray(), "env"))
         assertNull(ShellCacheCodec.decode(byteArrayOf(-1, -2, 0, 7), "env"))

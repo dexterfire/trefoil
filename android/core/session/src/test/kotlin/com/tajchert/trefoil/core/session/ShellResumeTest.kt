@@ -663,7 +663,7 @@ class ShellResumeTest {
             val bytes = ShellCacheCodec.encode(f.client.shellCacheEntry("env")!!)!!
             f.restart()
             assertNull(ShellCacheCodec.decode(bytes.copyOf(bytes.size / 2), "env"))
-            assertNull(ShellCacheCodec.decode(bytes.decodeToString().replace("\"version\":1", "\"version\":2").encodeToByteArray(), "env"))
+            assertNull(ShellCacheCodec.decode(bytes.decodeToString().replace("\"version\":${ShellCacheCodec.VERSION}", "\"version\":${ShellCacheCodec.VERSION + 1}").encodeToByteArray(), "env"))
             assertNull("Another environment's file", ShellCacheCodec.decode(bytes, "other"))
             val fresh = f.connect()
             assertNull(fresh.afterSequence)

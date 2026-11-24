@@ -145,7 +145,17 @@ internal fun threadSummary(value: JsonObject, archived: Boolean = false) = Threa
     hasActionableProposedPlan = (value["hasActionableProposedPlan"] as? JsonPrimitive)?.booleanOrNull == true,
     latestUserAuthoredMessageAtPresent = "latestUserAuthoredMessageAt" in value,
     completionHeldBackgroundWork = pendingBackgroundWorkHoldsCompletion(value.objects("pendingBackgroundTasks")),
+    latestRunStopRequested = (value["latestRunStopRequested"] as? JsonPrimitive)?.booleanOrNull == true,
+    latestRunBackgroundWake = (value["latestRunBackgroundWake"] as? JsonPrimitive)?.booleanOrNull == true,
+    pendingRequestUserOnly = (value.obj("pendingRuntimeRequest")["userOnly"] as? JsonPrimitive)?.booleanOrNull == true,
+    workflowStep = (value.obj("lineage")["workflowStep"] as? JsonPrimitive)?.booleanOrNull == true,
+    monitorHoldsWakeCompletion = (value["latestRunBackgroundWake"] as? JsonPrimitive)?.booleanOrNull == true &&
+        value.objects("pendingBackgroundTasks").any { pendingMonitorHoldsWake(it) },
 )
+
+/** T3 `monitorHoldsWakeCompletion` task test: a monitor that is not a pull request watch (those wake only on news). */
+private fun pendingMonitorHoldsWake(task: JsonObject): Boolean =
+    task.optionalText("kind") == "monitor" && !task.string("taskId").startsWith("pull-request-watch:")
 
 /** T3's contract decodes absent and unknown kinds as background_task before checking completion. */
 private fun pendingBackgroundWorkHoldsCompletion(tasks: List<JsonObject>): Boolean = tasks.any { task ->

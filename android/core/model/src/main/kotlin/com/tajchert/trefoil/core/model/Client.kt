@@ -52,6 +52,16 @@ data class ThreadSummary(
     val interactionMode: String? = null, val hasActionableProposedPlan: Boolean = false,
     val latestUserAuthoredMessageAtPresent: Boolean = false,
     val completionHeldBackgroundWork: Boolean = false,
+    /** T3 `latestRunStopRequested`: the user stopped the latest run, so its completion is not news. */
+    val latestRunStopRequested: Boolean = false,
+    /** T3 `latestRunBackgroundWake`: the latest run was started by a background task waking the agent. */
+    val latestRunBackgroundWake: Boolean = false,
+    /** T3 `pendingRuntimeRequest.userOnly`: a card only the user can answer (secret, link), not the coordinator. */
+    val pendingRequestUserOnly: Boolean = false,
+    /** T3 `lineage.workflowStep`: an agent step of a workflow run, listed only inside the run. */
+    val workflowStep: Boolean = false,
+    /** T3 `monitorHoldsWakeCompletion`: a background-wake run whose non-pull-request-watch monitor is still pending. */
+    val monitorHoldsWakeCompletion: Boolean = false,
     /** Derived from child shells for presentation; never supplied by a shell row, so never cached. */
     @Transient val pendingChildRequestKind: String? = null,
 )

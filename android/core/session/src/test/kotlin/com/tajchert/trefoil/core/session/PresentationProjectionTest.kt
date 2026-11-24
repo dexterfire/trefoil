@@ -109,6 +109,35 @@ class PresentationProjectionTest {
         assertFalse(threadSummary(fixture("""{}""")).completionHeldBackgroundWork)
     }
 
+    @Test fun awarenessShellFieldsParseAndTolerateAbsentOrWrongTypes() {
+        val thread = threadSummary(fixture("""{"latestRunStopRequested":true,"latestRunBackgroundWake":true,
+            "pendingRuntimeRequest":{"kind":"user_input","userOnly":true},"lineage":{"workflowStep":true},
+            "pendingBackgroundTasks":[{"taskId":"tail","kind":"monitor"}]}"""))
+        assertTrue(thread.latestRunStopRequested); assertTrue(thread.latestRunBackgroundWake)
+        assertTrue(thread.pendingRequestUserOnly); assertTrue(thread.workflowStep); assertTrue(thread.monitorHoldsWakeCompletion)
+        for (legacy in listOf("""{}""", """{"latestRunStopRequested":"yes","latestRunBackgroundWake":1,
+            "pendingRuntimeRequest":{"userOnly":{}},"lineage":{"workflowStep":null},"pendingBackgroundTasks":"x"}""")) {
+            val row = threadSummary(fixture(legacy))
+            assertFalse(legacy, row.latestRunStopRequested || row.latestRunBackgroundWake || row.pendingRequestUserOnly ||
+                row.workflowStep || row.monitorHoldsWakeCompletion)
+        }
+    }
+
+    @Test fun monitorHoldsWakeCompletionMatchesT3() {
+        val cases = listOf(
+            """true,"pendingBackgroundTasks":[{"taskId":"tail","kind":"monitor"}]""" to true,
+            """true,"pendingBackgroundTasks":[{"kind":"monitor"}]""" to true,
+            """true,"pendingBackgroundTasks":[{"taskId":"pull-request-watch:github.com/o/r#1","kind":"monitor","awaited":true}]""" to false,
+            """true,"pendingBackgroundTasks":[{"taskId":"pull-request-watch:x","kind":"monitor"},{"taskId":"tail","kind":"monitor"}]""" to true,
+            """true,"pendingBackgroundTasks":[{"taskId":"cmd","kind":"command"},{"taskId":"agent","kind":"subagent"}]""" to false,
+            """false,"pendingBackgroundTasks":[{"taskId":"tail","kind":"monitor"}]""" to false,
+            """true,"pendingBackgroundTasks":[]""" to false,
+        )
+        for ((tail, expected) in cases) {
+            assertEquals(tail, expected, threadSummary(fixture("""{"latestRunBackgroundWake":$tail}""")).monitorHoldsWakeCompletion)
+        }
+    }
+
     @Test fun providerCatalogAndThreadMetadataKeepRoutingIdentitySeparateFromModelNames() {
         val providers = providerInstances(fixture("""{"providers":[
           {"instanceId":"work-account","driver":"codex","displayName":"Work","accentColor":"#123456","enabled":false},
