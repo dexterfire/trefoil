@@ -399,4 +399,77 @@ class AgentAwarenessTest {
         assertEquals(emptyList<AgentAlert>(), step.alerts)
         assertEquals(mapOf<String, AwarenessPhase>(), step.track.phases)
     }
+
+    @Test fun aFinishedAlertKeptAcrossAReconnectIsClearedWhenAnotherRunFinishedMeanwhile() {
+        val t0 = java.time.Instant.parse("2026-11-24T10:00:00Z").toEpochMilli()
+        val running = thread("a", "running").copy(latestRunId = "A")
+        val doneA = thread("a", "completed").copy(latestRunId = "A", latestRunCompletedAt = "2026-11-24T10:00:00Z")
+        val doneB = doneA.copy(latestRunId = "B", latestRunCompletedAt = "2026-11-24T10:01:00Z")
+        val alerted = run(t0 to listOf(running), t0 + 1_000 to listOf(doneA), t0 + 6_000 to listOf(doneA))
+        assertEquals(listOf("a" to Finished), alerted.last().kinds())
+        val offline = agentAlertStep(alerted.last().track, env, connected = false, fresh = false, threads = listOf(doneA), now = t0 + 7_000).track
+        // Run B finished while offline: run A's alert no longer applies, and adoption posts nothing new.
+        val other = agentAlertStep(offline, env, true, true, listOf(doneB), t0 + 70_000)
+        assertEquals(setOf("a"), other.clear); assertEquals(emptyList<AgentAlert>(), other.alerts)
+        assertEquals(emptyMap<String, AgentAlertKind>(), other.track.alerted)
+        // Still run A: kept.
+        val same = agentAlertStep(offline, env, true, true, listOf(doneA), t0 + 70_000)
+        assertEquals(emptySet<String>(), same.clear); assertEquals(mapOf("a" to Finished), same.track.alerted)
+        // Run B replacing run A between two live observations also clears it.
+        val live = agentAlertStep(same.track, env, true, true, listOf(doneB.copy(latestRunCompletedAt = "2026-11-24T10:00:00Z")), t0 + 71_000)
+        assertEquals(setOf("a"), live.clear)
+    }
+
+    @Test fun anAnsweredNewerChildRequestDoesNotReAlertTheOlderOne() {
+        val parent = thread("parent", "running")
+        val a = child("ca", "parent", updatedAt = "2026-11-24T10:00:00Z").copy(pendingRequestId = "A")
+        val b = child("cb", "parent", updatedAt = "2026-11-24T10:00:05Z").copy(pendingRequestId = "B")
+        val steps = run(
+            0L to listOf(parent), 1L to listOf(parent, a), 2L to listOf(parent, a, b),
+            // B answered: A decides again, already alerted, same kind as the posted alert.
+            3L to listOf(parent, a), 4L to listOf(parent, a),
+        )
+        assertEquals(listOf("parent" to Approval), steps[1].kinds())
+        assertEquals(listOf("parent" to Approval), steps[2].kinds())
+        assertEquals(emptyList<Any>(), steps[3].kinds()); assertEquals(emptySet<String>(), steps[3].clear)
+        assertEquals(mapOf("parent" to Approval), steps[3].track.alerted)
+        assertEquals(emptyList<Any>(), steps[4].kinds()); assertEquals(emptySet<String>(), steps[4].clear)
+        assertEquals(mapOf("parent" to setOf("A")), steps[3].track.alertedRequests)
+        // A answered too: the alert clears and nothing is remembered.
+        val done = agentAlertStep(steps[4].track, env, true, true, listOf(parent), 5)
+        assertEquals(setOf("parent"), done.clear); assertEquals(emptyMap<String, Set<String>>(), done.track.alertedRequests)
+        // A different kind than the posted one still alerts.
+        val input = child("ci", "parent", kind = "user_input", updatedAt = "2026-11-24T10:00:00Z").copy(pendingRequestId = "I", pendingRequestUserOnly = true)
+        val mixed = run(0L to listOf(parent), 1L to listOf(parent, input), 2L to listOf(parent, input, b), 3L to listOf(parent, input))
+        assertEquals(listOf("parent" to Input), mixed[1].kinds())
+        assertEquals(listOf("parent" to Approval), mixed[2].kinds())
+        assertEquals(listOf("parent" to Input), mixed[3].kinds()); assertEquals(setOf("parent"), mixed[3].clear)
+    }
+
+    @Test fun aRunThatStartsAndEndsBetweenTwoObservationsAlerts() {
+        val t0 = java.time.Instant.parse("2026-11-24T10:00:00Z").toEpochMilli()
+        val idle = thread("a", "idle").copy(latestRunId = "r0", latestRunCompletedAt = "2026-11-24T09:00:00Z")
+        val failed = thread("a", "failed").copy(latestRunId = "r1", latestRunCompletedAt = "2026-11-24T10:00:00Z")
+        assertEquals(listOf("a" to Failed), run(t0 to listOf(idle), t0 + 1_000 to listOf(failed), start = baseline(listOf(idle))).last().kinds())
+        val done = thread("a", "completed").copy(latestRunId = "r1", latestRunCompletedAt = "2026-11-24T10:00:00Z")
+        val steps = run(t0 to listOf(idle), t0 + 1_000 to listOf(done), t0 + 6_000 to listOf(done), t0 + 7_000 to listOf(done), start = baseline(listOf(idle)))
+        assertEquals(emptyList<Any>(), steps[1].kinds()); assertEquals(t0 + 6_000, steps[1].recheckAtMillis)
+        assertEquals(listOf("a" to Finished), steps[2].kinds())
+        assertEquals(emptyList<Any>(), steps[3].kinds())
+        // Completed -> another completed run in one update: a newer completion time of the same thread.
+        val again = done.copy(latestRunId = "r2", latestRunCompletedAt = "2026-11-24T10:00:30Z")
+        val next = run(t0 + 31_000 to listOf(again), t0 + 36_000 to listOf(again), start = steps[3].track)
+        // The earlier run's alert no longer applies at once; the new completion alerts once confirmed.
+        assertEquals(setOf("a"), next[0].clear); assertEquals(emptyList<Any>(), next[0].kinds())
+        assertEquals(listOf("a" to Finished), next[1].kinds())
+        // Same run id, completion time newly set (the run never showed as working).
+        val sameRun = thread("a", "idle").copy(latestRunId = "r1")
+        assertEquals(listOf("a" to Failed), run(t0 + 1_000 to listOf(failed), start = baseline(listOf(sameRun))).last().kinds())
+        // Already terminal at adoption, or an old completion: silent.
+        assertEquals(emptyList<Any>(), run(t0 to listOf(failed), t0 + 1_000 to listOf(failed), start = baseline(listOf(failed))).flatMap { it.kinds() })
+        val old = failed.copy(latestRunCompletedAt = "2026-11-24T09:50:00Z")
+        assertEquals(emptyList<Any>(), run(t0 to listOf(old), start = baseline(listOf(idle))).flatMap { it.kinds() })
+        // A thread with no earlier observation is not eligible either.
+        assertEquals(emptyList<Any>(), run(t0 to listOf(failed)).flatMap { it.kinds() })
+    }
 }

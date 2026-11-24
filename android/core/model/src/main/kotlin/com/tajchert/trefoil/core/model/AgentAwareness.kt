@@ -42,7 +42,19 @@ data class AgentAlertTrack(
     val attention: Map<String, AgentAttention> = emptyMap(),
     /** The attention behind each approval or input entry of [alerted]. */
     val alertedAttention: Map<String, AgentAttention> = emptyMap(),
+    /** Which run (`latestRunId` and `latestRunCompletedAt`) each finished or failed entry of [alerted] is about. */
+    val alertedRuns: Map<String, String> = emptyMap(),
+    /**
+     * Per top-level thread, the still-pending request ids (its own and its subagents') that already alerted, whichever of them
+     * decides the phase now; ids no longer pending are dropped at every observation.
+     */
+    val alertedRequests: Map<String, Set<String>> = emptyMap(),
+    /** The run of every listed thread at the last observation since the baseline, to spot runs that started and ended in between. */
+    val runs: Map<String, AgentRun> = emptyMap(),
 )
+
+/** A thread's latest run as the shell reports it: `latestRunId` and `latestRunCompletedAt`. */
+data class AgentRun(val runId: String?, val completedAt: String?)
 
 /**
  * Result of one observation. Post [alerts], cancel the notifications of the thread ids in [clear], and observe
@@ -75,10 +87,14 @@ fun threadAwareness(thread: ThreadSummary, threads: List<ThreadSummary>, now: Lo
  * One observation of the client state. [connected] is a live connection and [fresh] means the shell snapshot is
  * current, not the cache kept across a reconnect. Rules follow T3's relay alerts:
  * - a move into attention, or to another request or kind while waiting, alerts;
- * - a terminal phase alerts only for a thread seen working since the baseline and only while its completion time is
- *   at most two minutes old, a completion only once the same completion held for [AGENT_COMPLETION_CONFIRM_MS]
+ * - a terminal phase alerts only for a thread seen working since the baseline, or whose latest run changed since the
+ *   previous observation (a new run id or a newer completion time: a run that started and ended between two shell
+ *   updates), and only while its completion time is at most two minutes old, a completion only once the same completion held for [AGENT_COMPLETION_CONFIRM_MS]
  *   (settling it inside that window does not cancel it, but that alert is one-shot: it is not remembered, so no later
  *   step clears it, because a settled thread has no phase that could show it no longer applies);
+ * - a request that already alerted and is still pending does not alert again when it decides the phase once more (a
+ *   newer subagent request was answered) and the posted alert has the same kind;
+ * - a finished or failed alert applies only to the run it was about: a different run's completion clears it;
  * - a thread whose earlier alert no longer applies is in `clear`, also when it gets a new alert in the same step, so
  *   cancelling `clear` before posting `alerts` never leaves a stale notification;
  * - a connection loss forgets the baseline but keeps posted alerts until the next fresh snapshot shows whether they
@@ -96,7 +112,10 @@ fun agentAlertStep(
         return AgentAlertStep(adopt(reset, threads).first, clear = clear)
     }
     if (!connected) {
-        val kept = AgentAlertTrack(environmentId, alerted = track.alerted, alertedAttention = track.alertedAttention)
+        val kept = AgentAlertTrack(
+            environmentId, alerted = track.alerted, alertedAttention = track.alertedAttention, alertedRuns = track.alertedRuns,
+            alertedRequests = track.alertedRequests,
+        )
         return AgentAlertStep(kept)
     }
     val previous = track.phases
@@ -111,8 +130,12 @@ fun agentAlertStep(
     }
 
     val children = waitingChildren(threads)
+    val requests = pendingRequests(threads)
     val phases = LinkedHashMap<String, AwarenessPhase>()
     val worked = HashSet<String>()
+    val runs = LinkedHashMap<String, AgentRun>()
+    val alertedRuns = LinkedHashMap<String, String>()
+    val alertedRequests = LinkedHashMap<String, Set<String>>()
     val pending = LinkedHashMap<String, Long>()
     val pendingRuns = LinkedHashMap<String, String>()
     val attention = LinkedHashMap<String, AgentAttention>()
@@ -127,8 +150,15 @@ fun agentAlertStep(
         if (phase != null) phases[id] = phase
         val waiting = attentionOf(row, child, phase)
         if (waiting != null) attention[id] = waiting
-        var working = id in track.worked || countsAsWork(row, phase, waiting)
+        val run = AgentRun(row.latestRunId, row.latestRunCompletedAt)
+        runs[id] = run
+        // A run that started and ended between two observations never showed a working phase; it counts for its terminal phase only.
+        val advanced = runAdvanced(track.runs[id], run)
+        var working = id in track.worked || countsAsWork(row, phase, waiting) ||
+            (advanced && (phase == AwarenessPhase.Completed || phase == AwarenessPhase.Failed))
         var kind: AgentAlertKind? = null
+        /** The deciding request already alerted and the posted alert has its kind: keep that alert, retargeted, without a new one. */
+        var keepFor: AgentAttention? = null
         /** Settled during its confirm window: alerted once and never tracked, since nothing later could clear it. */
         var oneShot = false
 
@@ -143,17 +173,20 @@ fun agentAlertStep(
         val prior = track.pendingCompletions[id]
         val sameRun = prior != null && track.pendingCompletionRuns[id] == runIdentity(row)
         when {
-            waiting != null -> if (!waiting.sameAs(track.attention[id])) kind = waiting.kind
-            // T3 alerts terminal moves from a non-terminal phase only; Completed -> Failed reaches here only while that
-            // completion is still unconfirmed, because a confirmed one already took the thread out of `worked`.
-            phase == AwarenessPhase.Failed -> if (previous[id] != AwarenessPhase.Failed && working) {
+            waiting != null -> if (!waiting.sameAs(track.attention[id])) {
+                val alreadyAlerted = waiting.requestId != null && waiting.requestId in track.alertedRequests[id].orEmpty()
+                if (alreadyAlerted && track.alerted[id] == waiting.kind) keepFor = waiting else kind = waiting.kind
+            }
+            // T3 alerts terminal moves from a non-terminal phase only (or a new run that failed meanwhile); Completed -> Failed
+            // reaches here only while that completion is still unconfirmed, because a confirmed one already took the thread out of `worked`.
+            phase == AwarenessPhase.Failed -> if ((previous[id] != AwarenessPhase.Failed || advanced) && working) {
                 working = false
                 if (terminalIsFresh(row, now)) kind = AgentAlertKind.Failed
             }
             phase == AwarenessPhase.Completed -> if (working) {
                 val firstSeen = when {
                     sameRun -> prior
-                    prior != null || previous[id] != AwarenessPhase.Completed -> now
+                    prior != null || previous[id] != AwarenessPhase.Completed || advanced -> now
                     else -> null
                 }
                 if (firstSeen != null) holdCompletion(firstSeen, runIdentity(row))
@@ -167,22 +200,33 @@ fun agentAlertStep(
         }
         if (working) worked += id
         val old = track.alerted[id]
+        val stillPending = requests[id].orEmpty()
+        track.alertedRequests[id]?.intersect(stillPending)?.takeIf { it.isNotEmpty() }?.let { alertedRequests[id] = it }
         if (kind != null) {
             alerts += AgentAlert(environmentId, id, kind!!, row.title, row.projectId)
             if (!oneShot) alerted[id] = kind!!
-            if (waiting != null) alertedAttention[id] = waiting
+            if (waiting != null) {
+                alertedAttention[id] = waiting
+                waiting.requestId?.let { alertedRequests[id] = alertedRequests[id].orEmpty() + it }
+            } else if (!oneShot) alertedRuns[id] = runIdentity(row)
             if (old != null) clear += id
+        } else if (old != null && keepFor != null) {
+            alerted[id] = old
+            alertedAttention[id] = keepFor!!
         } else if (old != null) {
-            if (alertStillApplies(old, track.alertedAttention[id], phase, waiting)) {
+            if (alertStillApplies(old, track.alertedAttention[id], phase, waiting, track.alertedRuns[id], row)) {
                 alerted[id] = old
                 track.alertedAttention[id]?.let { alertedAttention[id] = it }
+                track.alertedRuns[id]?.let { alertedRuns[id] = it }
             } else clear += id
         }
     }
     // Alerts of threads gone from the list (deleted, or dropped from the shell).
     track.alerted.keys.forEach { if (it !in alerted) clear += it }
     val recheck = pending.values.minOrNull()?.plus(AGENT_COMPLETION_CONFIRM_MS)
-    val next = AgentAlertTrack(environmentId, phases, worked, pending, alerted, pendingRuns, attention, alertedAttention)
+    val next = AgentAlertTrack(
+        environmentId, phases, worked, pending, alerted, pendingRuns, attention, alertedAttention, alertedRuns, alertedRequests, runs,
+    )
     return AgentAlertStep(next, alerts, clear, recheck)
 }
 
@@ -192,10 +236,15 @@ fun agentAlertStep(
  */
 private fun adopt(track: AgentAlertTrack, threads: List<ThreadSummary>): Pair<AgentAlertTrack, Set<String>> {
     val children = waitingChildren(threads)
+    val requests = pendingRequests(threads)
     val phases = LinkedHashMap<String, AwarenessPhase>()
     val attention = LinkedHashMap<String, AgentAttention>()
     val worked = HashSet<String>()
+    val runs = LinkedHashMap<String, AgentRun>()
+    val rows = HashMap<String, ThreadSummary>()
     for (row in threads.distinctBy { it.id }) {
+        runs[row.id] = AgentRun(row.latestRunId, row.latestRunCompletedAt)
+        rows[row.id] = row
         val child = children[row.id]
         val phase = awarenessOf(row, child?.kind) ?: continue
         phases[row.id] = phase
@@ -203,10 +252,16 @@ private fun adopt(track: AgentAlertTrack, threads: List<ThreadSummary>): Pair<Ag
         if (waiting != null) attention[row.id] = waiting
         if (countsAsWork(row, phase, waiting)) worked += row.id
     }
-    val alerted = track.alerted.filter { (id, kind) -> alertStillApplies(kind, track.alertedAttention[id], phases[id], attention[id]) }
+    val alerted = track.alerted.filter { (id, kind) ->
+        alertStillApplies(kind, track.alertedAttention[id], phases[id], attention[id], track.alertedRuns[id], rows[id])
+    }
+    val alertedRequests = track.alertedRequests.mapNotNull { (id, ids) ->
+        ids.intersect(requests[id].orEmpty()).takeIf { it.isNotEmpty() }?.let { id to it }
+    }.toMap()
     val adopted = track.copy(
         phases = phases, worked = worked, pendingCompletions = emptyMap(), pendingCompletionRuns = emptyMap(),
         attention = attention, alerted = alerted, alertedAttention = track.alertedAttention.filterKeys { it in alerted },
+        alertedRuns = track.alertedRuns.filterKeys { it in alerted }, alertedRequests = alertedRequests, runs = runs,
     )
     return adopted to (track.alerted.keys - alerted.keys)
 }
@@ -227,14 +282,28 @@ private fun attentionOf(row: ThreadSummary, child: WaitingChild?, phase: Awarene
     return AgentAttention(kind, if (row.hasOwnRequest()) row.pendingRequestId else child?.requestId)
 }
 
-private fun alertStillApplies(kind: AgentAlertKind, alertedFor: AgentAttention?, phase: AwarenessPhase?, waiting: AgentAttention?) =
-    when (kind) {
-        AgentAlertKind.Approval, AgentAlertKind.Input -> waiting != null && (alertedFor ?: AgentAttention(kind, null)).sameAs(waiting)
-        AgentAlertKind.Finished -> phase == AwarenessPhase.Completed
-        AgentAlertKind.Failed -> phase == AwarenessPhase.Failed
-    }
+/** A finished or failed alert applies only to the run in [alertedRun] (unknown: any run); [row] is the thread now, if listed. */
+private fun alertStillApplies(
+    kind: AgentAlertKind, alertedFor: AgentAttention?, phase: AwarenessPhase?, waiting: AgentAttention?, alertedRun: String?,
+    row: ThreadSummary?,
+) = when (kind) {
+    AgentAlertKind.Approval, AgentAlertKind.Input -> waiting != null && (alertedFor ?: AgentAttention(kind, null)).sameAs(waiting)
+    AgentAlertKind.Finished -> phase == AwarenessPhase.Completed && sameRunAs(alertedRun, row)
+    AgentAlertKind.Failed -> phase == AwarenessPhase.Failed && sameRunAs(alertedRun, row)
+}
+
+private fun sameRunAs(alertedRun: String?, row: ThreadSummary?) = alertedRun == null || (row != null && runIdentity(row) == alertedRun)
 
 private fun runIdentity(row: ThreadSummary) = "${row.latestRunId}\n${row.latestRunCompletedAt}"
+
+/** The latest run changed since [before]: another run id, or a completion time newer than the one recorded (or newly set). */
+private fun runAdvanced(before: AgentRun?, now: AgentRun): Boolean {
+    if (before == null) return false
+    if (now.runId != null && now.runId != before.runId) return true
+    val completedAt = epochMillis(now.completedAt) ?: return false
+    val earlier = epochMillis(before.completedAt) ?: return true
+    return completedAt > earlier
+}
 
 /** Relay `isFreshTerminalNotification`; an unreadable completion time counts as fresh, so the alert is not lost. */
 private fun terminalIsFresh(row: ThreadSummary, now: Long): Boolean {
@@ -271,6 +340,23 @@ private fun waitingChildren(threads: List<ThreadSummary>): Map<String, WaitingCh
         if (current == null || updated > current.updatedAt) newest[top] = WaitingChild(child.pendingRequestKind!!, child.pendingRequestId, updated)
     }
     return newest
+}
+
+/** Top-level thread id to every pending request id that may decide its phase: its own and those of all its waiting subagents. */
+private fun pendingRequests(threads: List<ThreadSummary>): Map<String, Set<String>> {
+    val byId = HashMap<String, ThreadSummary>()
+    threads.forEach { byId.putIfAbsent(it.id, it) }
+    val result = HashMap<String, MutableSet<String>>()
+    for (row in threads) {
+        val requestId = row.pendingRequestId ?: continue
+        val top = when {
+            row.subagentAwaitsUser() -> topLevelOf(row, byId)
+            row.hasOwnRequest() -> row.id
+            else -> null
+        } ?: continue
+        result.getOrPut(top) { HashSet() } += requestId
+    }
+    return result
 }
 
 private fun topLevelOf(child: ThreadSummary, byId: Map<String, ThreadSummary>): String? {
