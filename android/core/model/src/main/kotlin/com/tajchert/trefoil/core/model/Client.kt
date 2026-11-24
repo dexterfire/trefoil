@@ -85,6 +85,8 @@ data class ToolActivity(
     val subagentId: String? = null,
     /** The turn item's last update; T3 times a work entry from `startedAt ?? updatedAt`. */
     val updatedAt: String? = null,
+    /** `system_notice` items only: T3 `level` (`info`, or absent/other for a warning). */
+    val noticeLevel: String? = null,
 )
 /** How a message sent while the thread works is delivered (T3 `ActiveTurnComposerAction` `queue` / `steer`). */
 enum class FollowUpMode { Queue, Steer }

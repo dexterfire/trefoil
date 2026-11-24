@@ -100,7 +100,8 @@ private val WorkIcon.vector: ImageVector get() = when (this) {
 @Composable
 private fun WorkRow(
     icon: ImageVector, iconTint: Color, label: String, labelColor: Color, expanded: Boolean?, onClick: (() -> Unit)?, onClickLabel: String,
-    spinner: Boolean = false, description: String? = null, trailing: @Composable RowScope.() -> Unit = {},
+    spinner: Boolean = false, description: String? = null, wrapLabel: Boolean = false, labelWeight: FontWeight? = null,
+    trailing: @Composable RowScope.() -> Unit = {},
 ) {
     val c = Tf.colors
     Row(Modifier.fillMaxWidth().heightIn(min = 32.dp)
@@ -109,9 +110,14 @@ private fun WorkRow(
             description?.let { contentDescription = it }
             if (expanded != null && onClick != null) stateDescription = if (expanded) "Expanded" else "Collapsed"
         } else Modifier)
-        .padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (spinner) WorkingSpinner(size = 16.dp) else Icon(icon, null, Modifier.size(16.dp), tint = iconTint)
-        Text(label, Modifier.weight(1f, fill = false), style = WorkRowText, color = labelColor, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        .padding(vertical = 4.dp), verticalAlignment = if (wrapLabel) Alignment.Top else Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // A wrapped label's icon centres on its first line (18sp line height) rather than the whole block.
+        val iconModifier = if (wrapLabel) Modifier.padding(top = 1.dp).size(16.dp) else Modifier.size(16.dp)
+        if (spinner) WorkingSpinner(size = 16.dp) else Icon(icon, null, iconModifier, tint = iconTint)
+        val style = if (labelWeight != null) WorkRowText.copy(fontWeight = labelWeight) else WorkRowText
+        // Wrapped labels are notices: the whole text is the content, so it stays selectable (e.g. a login command to copy).
+        if (wrapLabel) SelectionContainer(Modifier.weight(1f, fill = false)) { Text(label, style = style, color = labelColor) }
+        else Text(label, Modifier.weight(1f, fill = false), style = style, color = labelColor, maxLines = 1, overflow = TextOverflow.Ellipsis)
         trailing()
         if (expanded != null) Icon(if (expanded) TfIcons.ChevronDown else TfIcons.ChevronRight, null, Modifier.size(14.dp), tint = c.muted)
     }
@@ -187,20 +193,24 @@ internal fun WorkGroup(activities: List<ToolActivity>, live: Boolean = false, ca
 private fun WorkEntry(activity: ToolActivity, single: Boolean, live: Boolean, canLoadActivity: Boolean, onLoadActivity: (String) -> Unit, initiallyExpanded: Boolean = false) {
     val c = Tf.colors
     val severe = activity.severeFailure
+    // T3 `system_notice`: the row is the whole message, wrapped, so it never expands to repeat itself.
+    val notice = activity.kind == "system_notice"
+    val warning = activity.isWarningNotice
     val running = live && activity.isRunning
     val stale = !live && activity.isRunning
-    val hasDetail = activity.hasExpandableDetail()
+    val hasDetail = !notice && activity.hasExpandableDetail()
     var expanded by rememberSaveable(activity.id) { mutableStateOf(initiallyExpanded) }
     val label = remember(activity, running, single) { if (running && single) liveWorkLabel(activity) else if (single) singleWorkLabel(activity) else workEntryLabel(activity) }
     val failed = remember(activity) { activity.displayFailure }
     val icon = remember(activity) { workEntryIcon(activity) }
     val stats = remember(activity.diffStr) { if (activity.kind == "file_change") diffStats(activity.diffStr) else null }
     Column(Modifier.fillMaxWidth()) {
-        WorkRow(if (severe) TfIcons.Alert else icon.vector,
-            if (severe) c.red else if (failed) c.red.copy(alpha = .4f) else c.muted.copy(alpha = if (stale) .45f else .7f),
-            label, if (severe) c.red else c.muted, if (hasDetail) expanded else null, if (hasDetail) ({ expanded = !expanded }) else null,
+        WorkRow(if (severe || warning) TfIcons.Alert else if (notice) TfIcons.Bolt else icon.vector,
+            if (severe) c.red else if (warning) c.amber else if (failed) c.red.copy(alpha = .4f) else c.muted.copy(alpha = if (stale) .45f else .7f),
+            label, if (severe) c.red else if (warning) c.amber else c.muted, if (hasDetail) expanded else null, if (hasDetail) ({ expanded = !expanded }) else null,
             if (expanded) "Collapse details" else "Expand details", spinner = running,
-            description = entryDescription(label, failed, stale, stats)) {
+            description = if (warning) "Warning: $label" else entryDescription(label, failed, stale, stats),
+            wrapLabel = notice, labelWeight = if (warning) FontWeight.Medium else null) {
             if (stale) Text("· outcome unknown", style = WorkRowText, color = c.muted.copy(alpha = .7f), maxLines = 1)
             stats?.let { (added, removed) ->
                 Text("+$added", style = TrefoilType.mono, color = c.green)

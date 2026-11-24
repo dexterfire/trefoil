@@ -377,6 +377,7 @@ internal fun toolActivities(projection: JsonObject): List<ToolActivity> {
             images = images, htmlRender = htmlRender,
             subagentId = if (kind == "subagent") item.optionalText("subagentId") else null,
             updatedAt = item.optionalText("updatedAt"),
+            noticeLevel = if (kind == "system_notice") item.optionalText("level") else null,
         )
     }
 }

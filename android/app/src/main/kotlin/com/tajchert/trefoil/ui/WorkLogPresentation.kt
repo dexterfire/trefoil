@@ -91,6 +91,7 @@ internal fun summarizeWorkGroup(activities: List<ToolActivity>): WorkGroupSummar
 
 /** Label for a group holding exactly one visible activity (no header): T3 `singleToolCallLabel`, with edits summarised ("Changed 1 file"). */
 internal fun singleWorkLabel(activity: ToolActivity): String {
+    if (activity.kind == "system_notice") return activity.noticeMessage
     if (activity.kind == "reasoning") return thoughtPreview(activity.reasoningText).ifBlank { "Thought" }
     if (activity.workAction == WorkAction.Edit) return summarizeWorkGroup(listOf(activity)).label
     t3ToolDisplayName(activity, activity.lifecycle)?.let { return it }
@@ -100,7 +101,7 @@ internal fun singleWorkLabel(activity: ToolActivity): String {
 
 /** Label for one row inside an expanded group (T3 `workEntryDisplayLabel`): command text, "Read <path>", file path, search, thought preview, tool title. */
 internal fun workEntryLabel(activity: ToolActivity): String {
-    if (activity.kind == "system_notice") return activity.title
+    if (activity.kind == "system_notice") return activity.noticeMessage
     if (activity.kind == "reasoning") return thoughtPreview(activity.reasoningText).ifBlank { "Thought" }
     t3ToolDisplayName(activity, activity.lifecycle)?.let { return it }
     val command = activity.input?.takeIf { activity.kind == "command_execution" && it.isNotBlank() }
@@ -118,6 +119,12 @@ internal fun workEntryLabel(activity: ToolActivity): String {
         else -> normalizeCompactToolLabel(activity.title).replaceFirstChar { it.uppercaseChar() }
     }
 }
+
+/** T3 labels a `system_notice` row with its message (`session-logic` `label: item.message`), falling back to the title. */
+internal val ToolActivity.noticeMessage: String get() = detail.trim().ifBlank { title }
+
+/** T3 shows every `system_notice` except `level: "info"` as a `runtime.warning`: amber alert icon and amber label. */
+internal val ToolActivity.isWarningNotice: Boolean get() = kind == "system_notice" && noticeLevel != "info"
 
 internal fun workEntryIcon(activity: ToolActivity): WorkIcon = when (activity.kind) {
     "error" -> WorkIcon.Error

@@ -112,4 +112,12 @@ class ToolImagesTest {
         val activity = toolActivities(projection("""{"id":"i","type":"dynamic_tool","output":{"type":"image","source":[],"mimeType":"image/png"}}""")).single()
         assertTrue(activity.images.isEmpty())
     }
+
+    @Test fun systemNoticeKeepsItsMessageAndLevel() {
+        val notice = toolActivities(projection("""{"id":"n","type":"system_notice","status":"completed","title":"MCP server X failed to start","message":"Run `codex mcp login X`.","level":"info"}""")).single()
+        assertEquals("Run `codex mcp login X`.", notice.detail)
+        assertEquals("info", notice.noticeLevel)
+        assertNull(toolActivities(projection("""{"id":"n","type":"system_notice","message":"m"}""")).single().noticeLevel)
+        assertNull(toolActivities(projection("""{"id":"t","type":"dynamic_tool","level":"info"}""")).single().noticeLevel)
+    }
 }

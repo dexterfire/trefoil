@@ -37,6 +37,7 @@ import com.tajchert.trefoil.ui.agentRows
 import com.tajchert.trefoil.ui.subagentPill
 import com.tajchert.trefoil.core.model.ClientState
 import com.tajchert.trefoil.core.model.ConversationMessage
+import com.tajchert.trefoil.core.model.ToolActivity
 
 private val fx = ConversationFixtures
 
@@ -343,3 +344,27 @@ fun InlineImage_Loaded_Dark() = FileCard(dark = true, ui = fx.downloadUi()) { Lo
 @Preview(showBackground = true, widthDp = 400, heightDp = 300)
 @Composable
 fun InlineImage_Loading_Light() = FileCard(ui = fx.downloadUi()) { InlineImageLoading(canDownload = true) }
+
+// ---------- System notices (T3 `system_notice`: warnings amber, `info` muted) ----------
+
+@Composable
+private fun SystemNotices() {
+    val mcp = ToolActivity("notice-mcp", "MCP server RevenueCat failed to start", kind = "system_notice", status = "completed",
+        detail = "The RevenueCat MCP server is not logged in. Run `codex mcp login RevenueCat`.")
+    val info = ToolActivity("notice-info", "Branch renamed", kind = "system_notice", status = "completed", noticeLevel = "info",
+        detail = "Renamed the worktree branch to feat/paywall.")
+    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        WorkGroup(listOf(mcp))
+        WorkGroup(listOf(info))
+    }
+}
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400)
+@Composable
+fun Conversation_SystemNotices_Light() = Frame { SystemNotices() }
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 400, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun Conversation_SystemNotices_Dark() = Frame(dark = true) { SystemNotices() }

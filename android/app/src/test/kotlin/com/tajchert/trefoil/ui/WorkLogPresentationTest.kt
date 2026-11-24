@@ -205,4 +205,16 @@ class WorkLogPresentationTest {
         val viewed = ToolActivity("v", "Read /tmp/a.png", kind = "dynamic_tool", images = listOf(image))
         assertEquals(listOf(image), viewedImages(listOf(viewed, viewed.copy(id = "v2"), command())))
     }
+
+    @Test fun systemNoticesReadTheirMessageAndWarnUnlessInfo() {
+        val message = "The RevenueCat MCP server is not logged in. Run `codex mcp login RevenueCat`."
+        val warning = ToolActivity("n", "MCP server RevenueCat failed to start", detail = message, kind = "system_notice", status = "completed")
+        assertEquals(message, singleWorkLabel(warning))
+        assertEquals(message, workEntryLabel(warning))
+        assertTrue(warning.isWarningNotice)
+        assertFalse(warning.copy(noticeLevel = "info").isWarningNotice)
+        assertTrue(warning.copy(noticeLevel = "warning").isWarningNotice)
+        assertFalse(command().isWarningNotice)
+        assertEquals("MCP server RevenueCat failed to start", singleWorkLabel(warning.copy(detail = " ")))
+    }
 }
