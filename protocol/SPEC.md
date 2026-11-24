@@ -28,6 +28,10 @@ The selected thread projection's `subagents[]` (`OrchestrationV2Subagent`) is pa
 
 Stop is offered only while writable, for app-owned agents and Claude-native agents with a strong native ref. Each command is sent once and never replayed. Provider-native and app-owned agents send `subagent.stop {runId, subagentId}` on the parent. For an app-owned agent, the child is then stopped with `thread.stop` only when the server advertises `environment.capabilities.threadStop`; otherwise the child gets T3's run-less fallback: `run.interrupt {runId, holdQueue: true}` on its active run, else on the run its pending background work hangs off, else its pull request watches are unwatched; work that remains with nothing to stop it (for example a nested agent this client cannot stop) is reported as a partial failure. Older servers may reject `subagent.stop`; after that definite rejection the child is still stopped.
 
+## Prompt suggestions
+
+`orchestration.subscribePromptSuggestion` `{threadId}` streams `null` or `{runId, text}` (`OrchestrationV2PromptSuggestion`, unpersisted): the provider's predicted next message for the run that produced it. The method and the server setting `promptSuggestionsEnabled` are newer than this pin and optional. Only a JSON `true` in `server.getConfig` or `subscribeServerConfig` settings (snapshot or `settingsUpdated`) enables it; older servers omit the setting, so `true` also proves the method exists. The client subscribes the selected thread only, after that thread's own subscription is live and while the setting stays true; it interrupts the stream on thread switch, deselect, disconnect and when the setting turns false. A malformed item counts as `null`; the stream's end or rejection clears the suggestion, never fails the session and is not retried for that thread. The composer offers it only while its run is the thread's latest completed run (T3 `offeredPromptSuggestion`, skipping a run cancelled before it started), never auto-sends it, and the text is never logged or stored.
+
 ## SSH transport (0.2.0 source)
 
 SSH is a transport wrapper around the same V2 HTTP/Effect RPC protocol. Native

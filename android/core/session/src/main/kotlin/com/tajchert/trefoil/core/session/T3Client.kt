@@ -81,6 +81,14 @@ class T3Client(
     @Volatile private var generation = 0L
     private var heartbeat: Job? = null
     private var threadSubscription: String? = null
+    /** Server setting `promptSuggestionsEnabled` of the live connection (missing or not a boolean: false). Guarded by [lifecycleLock]. */
+    private var promptSuggestionsEnabled = false
+    /** Request id of the live `orchestration.subscribePromptSuggestion` stream; null once it ended. */
+    private var suggestionSubscription: String? = null
+    /** Thread the suggestion stream was started for; kept after the stream ends so it is never retried for that thread. */
+    private var suggestionThread: String? = null
+    /** Bumped on every suggestion stream start and stop; a handler of an older stream never publishes. */
+    private var suggestionGeneration = 0L
     private val visits = ThreadVisitTracker()
     private var visitTimer: Job? = null
     private var threadViewing = false
@@ -557,9 +565,11 @@ class T3Client(
             val origin = shellOrigin(environment.id, config)
             val providers = providerInstances(config)
             val endpoints = directEndpointHints(config)
+            val suggestions = promptSuggestionsSetting(config["settings"] as? JsonObject)
             beforeConnectPublished?.invoke()
             synchronized(lifecycleLock) {
                 check(epoch == generation) { "Connection was cancelled" }
+                promptSuggestionsEnabled = suggestions
                 authorized = mayOperate; previewAuthorized = mayPreview; settingsAuthorized = mayWriteSettings; serverPreferences = preferences; serverBrowser = browserCapable
                 directEndpoints = endpoints; tunnelConfig = tunnel; liveShellOrigin = origin; shellResume.originKnown(origin)
                 // An early shell synchronized before its origin was known has a checkpoint without its cursor.
@@ -569,6 +579,7 @@ class T3Client(
                 // Route hints (a second config snapshot and the link-state read) would compete with the snapshot on a slow
                 // link; they wait for the shell's synchronized marker.
                 pendingRouteHints = { startRouteHints(epoch, environment, base) }
+                syncPromptSuggestion()
             }
             if (!early) subscribeShell(epoch, environment.id, origin)
             // An early shell may already be synchronized; writes still needed Connected, so re-evaluate them now.
@@ -633,8 +644,8 @@ class T3Client(
     private fun serverConfigEvent(epoch: Long, environmentId: String, event: JsonObject) {
         if (epoch != generation) return
         when (event.string("type")) {
-            "settingsUpdated" -> ((event["payload"] as? JsonObject)?.get("settings") as? JsonObject)?.let { applyTunnelConfig(tunnelConfig.withSettings(it)); applyModelPreferences(it) }
-            "snapshot" -> (event["config"] as? JsonObject)?.let { applyTunnelConfig(tunnelConfig.withConfig(it)); applyModelPreferences(it["settings"] as? JsonObject) }
+            "settingsUpdated" -> ((event["payload"] as? JsonObject)?.get("settings") as? JsonObject)?.let { applyTunnelConfig(tunnelConfig.withSettings(it)); applyModelPreferences(it); applyPromptSuggestionsSetting(promptSuggestionsSetting(it)) }
+            "snapshot" -> (event["config"] as? JsonObject)?.let { applyTunnelConfig(tunnelConfig.withConfig(it)); applyModelPreferences(it["settings"] as? JsonObject); applyPromptSuggestionsSetting(promptSuggestionsSetting(it["settings"] as? JsonObject)) }
         }
         if (event.string("type") != "snapshot") return
         val endpoints = directEndpointHints(event.obj("config")) ?: return
@@ -667,6 +678,47 @@ class T3Client(
     private fun applyTunnelConfig(config: PreviewTunnelConfig) {
         tunnelConfig = config
         if (state.value.previewTunnelDisabled != config.disabled) update { it.copy(previewTunnelDisabled = config.disabled) }
+    }
+
+    /** Adopts a `promptSuggestionsEnabled` value from a config snapshot or settings update. Caller holds [lifecycleLock]. */
+    private fun applyPromptSuggestionsSetting(enabled: Boolean) {
+        if (promptSuggestionsEnabled == enabled) return
+        promptSuggestionsEnabled = enabled
+        syncPromptSuggestion()
+    }
+
+    /**
+     * Keeps `orchestration.subscribePromptSuggestion` running for the selected thread exactly while the setting is on, the
+     * connection is up and that thread's own subscription is live. The stream is optional: its end or rejection clears the
+     * suggestion and is never retried for the same thread (a thread switch, setting change or reconnect starts afresh).
+     * Caller holds [lifecycleLock].
+     */
+    private fun syncPromptSuggestion() {
+        val threadId = state.value.selectedThreadId
+        val wanted = promptSuggestionsEnabled && socket != null && state.value.connection == ConnectionStatus.Connected &&
+            threadId != null && threadSubscription != null
+        if (wanted && suggestionThread == threadId) return
+        stopPromptSuggestion()
+        if (!wanted) return
+        val epoch = generation
+        val token = suggestionGeneration
+        suggestionThread = threadId
+        suggestionSubscription = runCatching {
+            subscribe("orchestration.subscribePromptSuggestion", buildJsonObject { put("threadId", threadId) }) { item ->
+                if (epoch == generation && token == suggestionGeneration && state.value.selectedThreadId == threadId) {
+                    val value = promptSuggestion(item)
+                    if (state.value.promptSuggestion != value) update { it.copy(promptSuggestion = value) }
+                }
+            }
+        }.getOrNull()
+    }
+
+    /** Interrupts the suggestion stream and clears its value. Caller holds [lifecycleLock]. */
+    private fun stopPromptSuggestion() {
+        suggestionGeneration++
+        suggestionSubscription?.let { streams.remove(it); runCatching { send(EffectRpc.signal("Interrupt", it)) } }
+        suggestionSubscription = null; suggestionThread = null
+        if (state.value.promptSuggestion != null) update { it.copy(promptSuggestion = null) }
     }
 
     /** `GET /api/connect/link-state` on the verified route; any failure is [TunnelHint.Unknown] and never fails the connection. */
@@ -735,7 +787,12 @@ class T3Client(
         val id = frame.string("requestId")
         when (frame.string("_tag")) {
             "Pong" -> { pongAt = System.currentTimeMillis(); pongs.update { it + 1 } }
-            "Chunk" -> { frame.objects("values").forEach { streams[id]?.invoke(it) }; send(EffectRpc.signal("Ack", id)) }
+            "Chunk" -> {
+                // The suggestion stream's items may be `null` (no suggestion); it gets them as an empty object.
+                if (id == suggestionSubscription) (frame["values"] as? JsonArray)?.forEach { streams[id]?.invoke(it as? JsonObject ?: JsonObject(emptyMap())) }
+                else frame.objects("values").forEach { streams[id]?.invoke(it) }
+                send(EffectRpc.signal("Ack", id))
+            }
             "Exit" -> {
                 val exit = frame.obj("exit")
                 val result = pending.remove(id)
@@ -744,6 +801,8 @@ class T3Client(
                 if (streams.remove(id) != null) {
                     // Route hints are optional: an older server rejecting the config stream, or its end, leaves the session alone.
                     if (id == configSubscription) { configSubscription = null; configStreamLost() }
+                    // Prompt suggestions are optional too: an end or rejection clears the value, without a retry.
+                    else if (id == suggestionSubscription) { suggestionSubscription = null; suggestionGeneration++; if (state.value.promptSuggestion != null) update { it.copy(promptSuggestion = null) } }
                     else if (id == discoverySubscription) discoveryEnded(exit)
                     else if (optionalScreenStreams.remove(id)) {
                         if (id == previewScreenSubscription) { previewScreenSubscription = null; browserScreensFresh = false }
@@ -770,7 +829,9 @@ class T3Client(
         pending.values.forEach { it.completeExceptionally(IllegalStateException(message)) }; pending.clear()
         streams.clear(); heartbeat?.cancel(); socket?.cancel(); socket = null
     }
-    private fun resetRoute() { endDiscovery(); tunnelConfig = PreviewTunnelConfig(); activeBase = null; liveShellOrigin = null; pendingRouteHints = null; directEndpoints = null; initialHintSent = false; configSubscription = null; linkStateJob?.cancel(); linkStateJob = null; renewJob?.cancel(); renewJob = null }
+    private fun resetRoute() { endDiscovery(); tunnelConfig = PreviewTunnelConfig(); activeBase = null; liveShellOrigin = null; pendingRouteHints = null; directEndpoints = null; initialHintSent = false; configSubscription = null; linkStateJob?.cancel(); linkStateJob = null; renewJob?.cancel(); renewJob = null
+        // The socket is gone with its streams; the next connection reads the setting again.
+        promptSuggestionsEnabled = false; stopPromptSuggestion() }
     override suspend fun disconnect() = disconnectNow()
     /** [reason] replaces any stale error when the disconnect was not requested by the user. */
     private fun disconnectNow(reason: String? = null) = synchronized(lifecycleLock) {
@@ -879,6 +940,7 @@ class T3Client(
         if (state.value.selectedThreadId == threadId && (threadSubscription != null || deferredThread == threadId)) return@synchronized
         threadSubscription?.let { streams.remove(it); send(EffectRpc.signal("Interrupt", it)) }
         threadSubscription = null
+        syncPromptSuggestion()
         threadReady = false
         val selection = ++threadGeneration
         visits.reset(threadId); visitTimer?.cancel()
@@ -919,12 +981,14 @@ class T3Client(
                 }
             }
         }
+        syncPromptSuggestion()
     }
     private fun showEmptySelection(threadId: String?) = update { it.copy(selectedThreadId = threadId, messages = emptyList(), requests = emptyList(), activities = emptyList(), runs = emptyList(), attempts = emptyList(), subagents = emptyList(), backgroundWork = emptyList(), queuedMessages = emptyList(), queueHeld = false, canSteer = false, canStop = false, activeRunId = null, canWrite = false, selectedRuntimeMode = null, selectedModel = null, selectedModelOptions = emptyMap(), selectedProviderLocked = false) }
     /** Drops the selection of a thread the synchronized shell no longer lists, without touching the connection. Caller holds [lifecycleLock]. */
     private fun clearThreadSelection() {
         threadSubscription?.let { streams.remove(it); runCatching { send(EffectRpc.signal("Interrupt", it)) } }
         threadSubscription = null; deferredThread = null; threadReady = false; threadGeneration++
+        stopPromptSuggestion()
         refreshSignals?.close(); refreshJob?.cancel(); visits.reset(null); visitTimer?.cancel(); visitTimer = null
         projection = JsonObject(emptyMap())
         resetScreens(interrupt = true)
@@ -2042,6 +2106,17 @@ class T3Client(
 private const val CREATION_SOURCE = "mobile"
 /** No pong or frame for this long (two missed 15 s heartbeats) means a timed-out shell refresh sits on a dead link. */
 internal const val SHELL_REFRESH_STALE_LINK_MS = 30_000L
+
+/** Server setting `promptSuggestionsEnabled`; only a JSON `true` counts (older servers omit it and lack the method). */
+internal fun promptSuggestionsSetting(settings: JsonObject?): Boolean =
+    (settings?.get("promptSuggestionsEnabled") as? JsonPrimitive)?.takeUnless { it.isString }?.booleanOrNull == true
+
+/** One `orchestration.subscribePromptSuggestion` item; `null`, a malformed item or blank text is no suggestion. */
+internal fun promptSuggestion(item: JsonObject): PromptSuggestion? {
+    val runId = (item["runId"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() } ?: return null
+    val text = (item["text"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() } ?: return null
+    return PromptSuggestion(runId, text)
+}
 
 /** Stable per launch command, so an explicit resend of the same draft names the same first message. */
 internal fun initialMessageId(commandId: String): String = UUID.nameUUIDFromBytes("$commandId:initial-message".toByteArray()).toString()
