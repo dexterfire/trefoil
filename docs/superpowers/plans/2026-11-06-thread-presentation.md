@@ -1,5 +1,7 @@
 # T3-aligned thread presentation
 
+**Status:** Implemented.
+
 Reference: local T3 Code mobile threadListV2 and ThreadFeed, plus pinned protocol contracts.
 
 Use native Compose, existing dependencies, and existing security/session boundaries.

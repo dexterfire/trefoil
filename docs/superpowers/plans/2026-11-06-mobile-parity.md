@@ -1,5 +1,7 @@
 # Native parity with T3 Code mobile
 
+**Status:** Implemented.
+
 User-selected reference: `/Users/mtajchert/coding/priv/t3code/apps/mobile` (React Native/Expo Android), backed by contracts and shared client-runtime rules. Keep native Compose and port the behavior; embedding RN would discard existing native security/session work.
 
 1. Read provider identity/history, timer, work-log and successful-run folding source. Record concrete rules in docs/reference/mobile-presentation.md.

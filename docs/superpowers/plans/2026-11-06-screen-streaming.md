@@ -1,5 +1,7 @@
 # T3 browser and device screens in Trefoil
 
+**Status:** Implemented.
+
 Reference thread: <t3-thread://v2/2df2a6ce-833d-4d9f-988c-8d64f0565d43/ee098a67-7266-4f5a-ade1-51598054ddab>. Source baseline T3 `46449b5379`.
 
 Use T3's bundled mobile stream viewers in a hardened Android WebView, as its React Native mobile app does. This preserves JPEG/H.264/MJPEG decoding, coordinate mapping and remote input protocol without reimplementing codecs. Native Compose owns discovery, lifecycle, controls and immersive phone fullscreen. Keep the viewer mounted when toggling fullscreen.

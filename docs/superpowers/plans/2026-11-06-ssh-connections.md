@@ -1,5 +1,7 @@
 # SSH connections implementation plan
 
+**Status:** Implemented.
+
 > **For agentic workers:** Use subagent-driven development. The user requested parallel work; agents own disjoint transport and UI files while the parent integrates.
 
 **Goal:** Connect a native T3 client through a verified persistent SSH tunnel.
