@@ -1,5 +1,7 @@
 # Background CPU runaway
 
+**Status:** Implemented.
+
 Prioritize the reported six-core sustained load over the remaining live thread-count comparison.
 Inspect worker loops/dependencies and media lifecycle; reproduce using isolated SSH/T3 fixtures.
 

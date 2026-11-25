@@ -1,5 +1,7 @@
 # Thread shelf parity correction
 
+**Status:** Implemented.
+
 Trace shell projection through native grouping against current T3 desktop/mobile source.
 Keep server settlement authoritative; preserve lineage and hide subagents/side chats before
 search, totals and shelves. Forks stay listed. Match snooze → settled → pinned → working

@@ -1,5 +1,7 @@
 # Connection form corrections
 
+**Status:** Implemented.
+
 User-reported defects: submit destroys the form before result; .pub import accepted;
 errors offscreen; trailing username spaces rejected; private-LAN HTTP pairing blocked.
 
