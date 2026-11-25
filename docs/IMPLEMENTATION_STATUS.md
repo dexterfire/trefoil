@@ -9,6 +9,15 @@ basic supported live approvals/user questions, server model selection for new
 threads, explicit reconnect, foreground session lifecycle and safe uncertain
 mutation behavior. Phone and wide layouts use Compose Material 3.
 
+Added in 0.25.0: the thread list groups threads by project with per-project pins, folds and a remembered
+list order; projects carry their own icon and colour from the project menu; six theme families with an
+explicit brightness; a settings screen (overflow menu and the 600-779 dp drawer) with a width override;
+Russian list chrome (accessibility labels, drawer entries, project headers, filters). The composer offers
+the provider's T3 slash commands after `/` and its invocable skills after `$`; a typed `$name` is sent with
+the dispatch as T3 `composerContext` (200 records, 16 MB, unique context IDs). A layout switch between the
+two-pane and phone layouts with a thread open keeps one composition for the list and the conversation, so
+saveable-state keys are never re-registered.
+
 Verification includes JVM protocol/session tests with MockWebServer, Android
 credential-envelope and profile persistence tests, Android lint/debug assembly, emulator launch/pairing
 form/error presentation, and an [isolated actual T3 wire/auth check](reference/live-wire-validation.md).

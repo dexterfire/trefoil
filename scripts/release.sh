@@ -31,7 +31,7 @@ ROOT="$(git rev-parse --show-toplevel)"
 ANDROID="$ROOT/android"
 GRADLE_FILE="$ANDROID/app/build.gradle.kts"
 TAG="v$VERSION"
-REPO="tajchert/trefoil"
+REPO="dexterfire/trefoil"
 
 # Preconditions
 [ -f "$ANDROID/keystore.properties" ] || die "android/keystore.properties is missing (copy it from the main checkout; see .worktreeinclude)"

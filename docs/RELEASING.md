@@ -1,5 +1,7 @@
 # Android releases
 
+Release `0.25.0` (`versionCode = 44`) groups the thread list by project with per-project pins, folds and a remembered list order; each project can carry its own icon and colour from the project menu; six theme families with an explicit brightness; a settings screen (overflow menu and the 600-779 dp drawer) with a width override; and Russian list chrome (accessibility labels, drawer entries, project headers, filters). The composer offers the provider's T3 slash commands after `/` and its invocable skills after `$`; a typed `$name` rides along with the dispatch as T3 `composerContext`, so the server loads that skill for the turn (200 records and 16 MB per message, unique context IDs), while `/commands` and ordinary messages stay plain text. A layout switch between the two-pane and phone layouts with a thread open no longer re-registers the saveable-state keys and keeps the scroll position. Check the grouped list, project colours, `$` skill dispatch and the settings width override against a real environment on a device.
+
 Release `0.24.1` (`versionCode = 43`) stops a thread too large for mobile from breaking the connection. A
 thread whose snapshot exceeded the 16 MB frame cap used to fail the whole session with "Invalid server RPC
 response", and reconnecting reselected the same thread, so the app looped. Now only that thread closes, with a
