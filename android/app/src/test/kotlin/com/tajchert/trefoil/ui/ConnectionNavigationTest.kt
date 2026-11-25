@@ -97,12 +97,12 @@ class ConnectionNavigationTest {
                 { state.value = state.value.copy(selectedThreadId = it) }, {}, {}, { _, _, _ -> }, null, {}, {}, {}, {}, {}, {}, {})
         }
         compose.onNodeWithText("Fixture thread").performClick()
-        compose.onNodeWithContentDescription("Search").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Поиск").assertDoesNotExist()
         // Simulate process recreation: save the detail destination, but restore a fresh client state.
         restoring = true
         restoration.emulateSavedInstanceStateRestore()
         compose.onNodeWithText("Pick a thread").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Search").assertExists()
+        compose.onNodeWithContentDescription("Поиск").assertExists()
         compose.onNodeWithText("Fixture thread").assertExists()
     }
 

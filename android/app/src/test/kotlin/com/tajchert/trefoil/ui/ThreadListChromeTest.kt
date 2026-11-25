@@ -50,45 +50,45 @@ class ThreadListChromeTest {
 
     @Test fun defaultChromeIsThePhoneHeader() {
         show(380, ThreadListChrome())
-        compose.onNodeWithContentDescription("Switch machine").assertExists()
+        compose.onNodeWithContentDescription("Сменить машину").assertExists()
         compose.onNodeWithContentDescription("More").assertExists()
-        compose.onNodeWithContentDescription("New thread").assertExists()
-        compose.onNodeWithContentDescription("Hide thread list").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Open navigation").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Новый тред").assertExists()
+        compose.onNodeWithContentDescription("Скрыть список тредов").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Открыть навигацию").assertDoesNotExist()
     }
 
     @Test fun railChromeShowsTitleSearchAndCollapseOnly() {
         var collapses = 0
         show(300, ThreadListChrome(onCollapse = { collapses++ }, railPresent = true))
         compose.onNodeWithText("Workstation").assertExists()
-        compose.onNodeWithContentDescription("Search").assertExists()
-        compose.onNodeWithContentDescription("Switch machine").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Поиск").assertExists()
+        compose.onNodeWithContentDescription("Сменить машину").assertDoesNotExist()
         compose.onNodeWithContentDescription("More").assertDoesNotExist()
-        compose.onNodeWithContentDescription("New thread").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Open navigation").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Новый тред").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Открыть навигацию").assertDoesNotExist()
         compose.onNode(hasContentDescription("Limits and usage", substring = true)).assertDoesNotExist()
-        compose.onNodeWithContentDescription("Hide thread list").performClick()
+        compose.onNodeWithContentDescription("Скрыть список тредов").performClick()
         assertEquals(1, collapses)
     }
 
     @Test fun railChromeWithoutACollapseCallbackHasNoCollapseButton() {
         show(340, ThreadListChrome(railPresent = true))
-        compose.onNodeWithContentDescription("Search").assertExists()
-        compose.onNodeWithContentDescription("Hide thread list").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Поиск").assertExists()
+        compose.onNodeWithContentDescription("Скрыть список тредов").assertDoesNotExist()
     }
 
     @Test fun navigationChromeShowsMenuMachineLimitAndSearch() {
         var navigations = 0
         show(336, ThreadListChrome(onOpenNavigation = { navigations++ }, onCollapse = {}))
-        compose.onNodeWithContentDescription("Open navigation").performClick()
+        compose.onNodeWithContentDescription("Открыть навигацию").performClick()
         assertEquals(1, navigations)
-        compose.onNodeWithContentDescription("Switch machine").assertExists()
+        compose.onNodeWithContentDescription("Сменить машину").assertExists()
         compose.onNode(hasContentDescription("Limits and usage", substring = true)).assertExists()
-        compose.onNodeWithContentDescription("Search").assertExists()
+        compose.onNodeWithContentDescription("Поиск").assertExists()
         // The menu replaces the overflow button, and the list is too narrow for a collapse button.
         compose.onNodeWithContentDescription("More").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Hide thread list").assertDoesNotExist()
-        compose.onNodeWithContentDescription("New thread").assertExists()
+        compose.onNodeWithContentDescription("Скрыть список тредов").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Новый тред").assertExists()
     }
 
     @Test fun limitNumberAppearsFrom340dp() {
@@ -103,19 +103,19 @@ class ThreadListChromeTest {
 
     @Test fun collapseAppearsFrom360dpOnly() {
         show(359, ThreadListChrome(onOpenNavigation = {}, onCollapse = {}))
-        compose.onNodeWithContentDescription("Hide thread list").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Скрыть список тредов").assertDoesNotExist()
     }
 
     @Test fun collapseShownAt360dpAndCallsBack() {
         var collapses = 0
         show(360, ThreadListChrome(onOpenNavigation = {}, onCollapse = { collapses++ }))
-        compose.onNodeWithContentDescription("Hide thread list").performClick()
+        compose.onNodeWithContentDescription("Скрыть список тредов").performClick()
         assertEquals(1, collapses)
     }
 
     @Test fun navigationChromeWithoutMenuKeepsTheOverflowButton() {
         show(336, ThreadListChrome(onCollapse = {}))
-        compose.onNodeWithContentDescription("Open navigation").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Открыть навигацию").assertDoesNotExist()
         compose.onNodeWithContentDescription("More").assertExists()
     }
 
@@ -144,17 +144,16 @@ class ThreadListChromeTest {
 
     @Test fun compactHeightDropsTheMetaRowAndShrinksTheHeader() {
         show(340, ThreadListChrome(railPresent = true), compact = true)
-        assertEquals(0, compose.onAllNodesWithText("Trefoil").fetchSemanticsNodes().size)
+        // The project name is the group heading now, so its appearance no longer marks the thread meta row.
         compose.onNodeWithText("feat/list").assertDoesNotExist()
         compose.onNodeWithText("Polish the Android thread list").assertExists()
-        assertEquals(24.dp, compose.onNodeWithContentDescription("Search").getBoundsInRoot().let { (it.top + it.bottom) / 2 })
+        assertEquals(24.dp, compose.onNodeWithContentDescription("Поиск").getBoundsInRoot().let { (it.top + it.bottom) / 2 })
     }
 
     @Test fun regularHeightKeepsTheMetaRowAndTheTallHeader() {
         show(340, ThreadListChrome(railPresent = true))
-        assertEquals(2, compose.onAllNodesWithText("Trefoil").fetchSemanticsNodes().size)
         compose.onNodeWithText("feat/list").assertExists()
-        assertEquals(32.dp, compose.onNodeWithContentDescription("Search").getBoundsInRoot().let { (it.top + it.bottom) / 2 })
+        assertEquals(32.dp, compose.onNodeWithContentDescription("Поиск").getBoundsInRoot().let { (it.top + it.bottom) / 2 })
     }
 
     // ---- Round-3a items 10 and 15 ----
@@ -169,7 +168,7 @@ class ThreadListChromeTest {
 
     @Test fun filterChipsKeepA48dpTouchAreaInsideTheStripInRailChrome() {
         show(340, ThreadListChrome(railPresent = true))
-        val chip = compose.onNodeWithText("All").fetchSemanticsNode()
+        val chip = compose.onNodeWithText("Все").fetchSemanticsNode()
         with(compose.density) {
             val t = chip.touchBoundsInRoot
             assertTrue("touch height ${t.height.toDp()}", t.height.toDp() >= 48.dp)

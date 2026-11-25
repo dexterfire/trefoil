@@ -40,7 +40,7 @@ class ThreadActionsUiTest {
         compose.setContent { MaterialTheme { ThreadList(state, {}, {}, { _, operation, _ -> action = operation }) } }
         val row = compose.onNode(hasText("Row") and hasClickAction())
         val custom = row.fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsActions.CustomActions]
-        assertEquals(listOf("Thread actions for Row"), custom.map { it.label })
+        assertEquals(listOf("Действия для Row"), custom.map { it.label })
         compose.runOnUiThread { custom.single().action() }
         compose.onNodeWithText("Pin").performClick()
         assertEquals(ThreadAction.Pin, action)
@@ -71,13 +71,16 @@ class ThreadActionsUiTest {
         compose.onNodeWithText("Pin").assertIsNotEnabled()
         compose.onNodeWithText("Snooze…").assertIsNotEnabled()
     }
-    @Test fun projectFilterNarrowsList() {
+    @Test fun projectJumpChipListsEveryProjectWithoutNarrowingTheList() {
         val state = ClientState(environment = environment, projects = listOf(Project("a", "Alpha"), Project("b", "Beta")),
             threads = listOf(ThreadSummary("a", "a", "First"), ThreadSummary("b", "b", "Second")))
         compose.setContent { MaterialTheme { ThreadList(state, {}, {}) } }
-        compose.onNodeWithText("Project").performClick()
+        // The chip navigates to a project now: choosing one opens it and leaves the other project listed.
+        compose.onNodeWithText("К проекту").performClick()
+        compose.onNode(hasText("Alpha") and hasAnyAncestor(isPopup())).assertExists()
+        compose.onNode(hasText("Beta") and hasAnyAncestor(isPopup())).assertExists()
         compose.onNode(hasText("Alpha") and hasAnyAncestor(isPopup())).performClick()
         compose.onNodeWithText("First").assertExists()
-        compose.onNodeWithText("Second").assertDoesNotExist()
+        compose.onNodeWithText("Second").assertExists()
     }
 }

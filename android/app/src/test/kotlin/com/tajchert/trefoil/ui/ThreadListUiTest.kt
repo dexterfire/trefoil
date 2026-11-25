@@ -49,19 +49,19 @@ class ThreadListUiTest {
 
     @Test fun searchFindsProjectAndCollapseHidesEvenTheSelectedThread() {
         compose.setContent { TrefoilTheme { ThreadList(fixture.copy(selectedThreadId = "work"), {}, {}) } }
-        compose.onNodeWithContentDescription("Working shelf").assertExists().performClick()
+        compose.onNodeWithContentDescription("T3 Code project").assertExists().performClick()
         compose.onNodeWithText("Keep activity in the right order").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Working shelf").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Collapsed")).performClick()
+        compose.onNodeWithContentDescription("T3 Code project").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Свёрнуто")).performClick()
         compose.onNodeWithText("Keep activity in the right order").assertExists()
-        compose.onNodeWithContentDescription("Search").performClick()
-        compose.onNodeWithText("Search threads").performTextInput("T3 Code")
+        compose.onNodeWithContentDescription("Поиск").performClick()
+        compose.onNodeWithText("Поиск тредов").performTextInput("T3 Code")
         compose.onNodeWithText("Keep activity in the right order").assertExists()
         compose.onNodeWithText("Review the connection flow").assertDoesNotExist()
     }
     @Test fun newThreadFabSlidesAboveASnackbarAndBackDown() {
         val bounds = mutableStateOf<androidx.compose.ui.geometry.Rect?>(null)
         compose.setContent { TrefoilTheme { CompositionLocalProvider(LocalSnackbarBounds provides bounds) { ThreadList(fixture, {}, {}) } } }
-        val fab = compose.onNodeWithContentDescription("New thread")
+        val fab = compose.onNodeWithContentDescription("Новый тред")
         val rest = fab.getBoundsInRoot()
         val root = compose.onRoot().getBoundsInRoot()
         compose.runOnIdle { bounds.value = with(compose.density) { androidx.compose.ui.geometry.Rect(0f, (root.bottom - 72.dp).toPx(), root.right.toPx(), root.bottom.toPx()) } }
@@ -88,15 +88,15 @@ class ThreadListUiTest {
     }
     @Test fun needsYouIsPulledToTopAndSettledFoldsIntoAnExpandableRow() {
         compose.setContent { TrefoilTheme { ThreadList(fixture, {}, {}) } }
-        compose.onNodeWithContentDescription("Needs you shelf").assertExists()
+        // Projects are the top level now: the amber underline on a project heading is what marks needs-you.
+        compose.onNodeWithContentDescription("Trefoil project").assertExists()
         compose.onNodeWithText("Review the connection flow").assertExists()
-        compose.onNodeWithText("Secure environment storage").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Settled shelf").performScrollTo().performClick()
+        // Settled threads live under their project, not in a separate fold.
         compose.onNodeWithText("Secure environment storage").assertExists()
-        compose.onNode(hasText("Needs you") and hasText("1")).performClick()
+        compose.onNode(hasText("Нужен ответ") and hasText("1")).performClick()
         compose.onNodeWithText("Polish the Android thread list").assertDoesNotExist()
         compose.onNodeWithText("Review the connection flow").assertExists()
-        compose.onNode(hasText("Working") and hasText("1")).performClick()
+        compose.onNode(hasText("Работает") and hasText("1")).performClick()
         compose.onNodeWithText("Keep activity in the right order").assertExists()
         compose.onNodeWithText("Review the connection flow").assertDoesNotExist()
     }
@@ -109,7 +109,7 @@ class ThreadListUiTest {
         compose.setContent { TrefoilTheme { ThreadList(fixture.copy(threads = threads), {}, {}) } }
         compose.onNodeWithText("Needs approval").assertExists()
         compose.onNodeWithText(" · Run ./gradlew test?").assertExists()
-        compose.onNodeWithText("Needs input").assertExists()
+        compose.onNodeWithText("Нужен ответ").assertExists()
         compose.onNodeWithText("All green.").assertExists()
         compose.onNodeWithText("Failed").assertExists()
     }
@@ -144,19 +144,19 @@ class ThreadListUiTest {
         compose.waitUntil(5_000) { compose.onAllNodesWithText("Late bloomer needs approval").fetchSemanticsNodes().isEmpty() }
     }
 
-    @Test fun returningFromConversationRetainsCollapsedShelvesAndSearch() {
+    @Test fun returningFromConversationRetainsCollapsedProjectsAndSearch() {
         val state = androidx.compose.runtime.mutableStateOf(fixture.copy(environment = SavedEnvironment("fixture", "Fixture", "https://fixture.invalid", "fixture-token")))
         compose.setContent { TrefoilApp(state.value, emptyList(), { _, _, _ -> }, {},
             { id -> state.value = state.value.copy(selectedThreadId = id) }, {}, {}, { _, _, _ -> }, null, {}, {}, {}, {}, {}, {}, {}) }
-        compose.onNodeWithContentDescription("Working shelf").performClick()
-        compose.onNodeWithText("Keep activity in the right order").assertDoesNotExist()
-        compose.onNodeWithText("Polish the Android thread list").performClick()
-        compose.onNodeWithContentDescription("Search").assertDoesNotExist()
+        // Collapse Trefoil, open a thread from the still-expanded T3 Code group, then come back.
+        compose.onNodeWithContentDescription("Trefoil project").performClick()
+        compose.onNodeWithText("Polish the Android thread list").assertDoesNotExist()
+        compose.onNodeWithText("Secure environment storage").assertDoesNotExist()
         systemBack()
         compose.onAllNodes(selectedRow).assertCountEquals(0)
-        compose.onNodeWithText("Keep activity in the right order").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Search").performClick()
-        compose.onNodeWithText("Search threads").performTextInput("Polish")
+        compose.onNodeWithContentDescription("Trefoil project").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Свёрнуто"))
+        compose.onNodeWithContentDescription("Поиск").performClick()
+        compose.onNodeWithText("Поиск тредов").performTextInput("Polish")
         compose.onNodeWithText("Polish the Android thread list").performClick()
         systemBack()
         compose.onNode(hasSetTextAction()).assertTextContains("Polish")
@@ -169,7 +169,7 @@ class ThreadListUiTest {
         listOf("Screen sessions", "Limits & usage", "Machines", "Connect machine", "Disconnect machine").forEach { compose.onNodeWithText(it).assertExists() }
         compose.onNodeWithText("Screen sessions").performClick()
         compose.onNodeWithContentDescription("Back to conversations").performClick()
-        compose.onNodeWithContentDescription("Switch machine").assertExists()
+        compose.onNodeWithContentDescription("Сменить машину").assertExists()
     }
     @Test @Config(sdk = [35], qualifiers = "w840dp-h900dp") fun twoPaneHighlightsSelectionWithoutBackButton() {
         compose.setContent { TrefoilApp(fixture.copy(environment = SavedEnvironment("fixture", "Fixture", "https://fixture.invalid", "fixture-token"), selectedThreadId = "active"),
@@ -192,21 +192,21 @@ class ThreadListUiTest {
         val state = fixture.copy(threads = listOf(ThreadSummary("parent", "trefoil", "Parent conversation"),
             ThreadSummary("child", "trefoil", "Hidden fixture child", relationshipToParent = "subagent", parentThreadId = "parent")))
         compose.setContent { TrefoilTheme { ThreadList(state, {}, {}) } }
-        compose.onNode(hasText("All") and hasText("1")).assertExists()
+        compose.onNode(hasText("Все") and hasText("1")).assertExists()
         compose.onNodeWithText("Hidden fixture child").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Search").performClick()
-        compose.onNodeWithText("Search threads").performTextInput("Hidden fixture child")
-        compose.onNodeWithText("No matching threads").assertExists()
+        compose.onNodeWithContentDescription("Поиск").performClick()
+        compose.onNodeWithText("Поиск тредов").performTextInput("Hidden fixture child")
+        compose.onNodeWithText("Ничего не найдено").assertExists()
     }
     @Test fun aMachineWithoutAShellSnapshotShowsPlaceholdersInsteadOfTheEmptyState() {
         var state by mutableStateOf(fixture.copy(threads = emptyList(), projects = emptyList(), shellLoaded = false))
         compose.setContent { TrefoilTheme { ThreadList(state, {}, {}) } }
-        compose.onNodeWithContentDescription("Loading threads").assertExists()
-        compose.onNodeWithText("Your next idea starts here").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Загрузка тредов").assertExists()
+        compose.onNodeWithText("Здесь начнётся ваша следующая идея").assertDoesNotExist()
         // The first snapshot is empty: now "no threads" is true.
         state = state.copy(shellLoaded = true); compose.waitForIdle()
-        compose.onNodeWithContentDescription("Loading threads").assertDoesNotExist()
-        compose.onNodeWithText("Your next idea starts here").assertExists()
+        compose.onNodeWithContentDescription("Загрузка тредов").assertDoesNotExist()
+        compose.onNodeWithText("Здесь начнётся ваша следующая идея").assertExists()
     }
     @Test fun loadingAndEmptyRules() {
         val blank = ClientState(threads = emptyList())

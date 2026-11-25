@@ -61,12 +61,12 @@ class ConfigurationChangeStateTest {
     @Test fun threadListSearchAndFilterSurviveRecreation() {
         val restoration = StateRestorationTester(compose)
         restoration.setContent { TrefoilTheme { ThreadList(listState, {}, {}) } }
-        compose.onNodeWithText("Needs you", substring = true).performClick()
-        compose.onNodeWithContentDescription("Search").performClick()
-        compose.onNodeWithText("Search threads").performTextInput("answer")
+        compose.onNodeWithText("Нужен ответ", substring = true).performClick()
+        compose.onNodeWithContentDescription("Поиск").performClick()
+        compose.onNodeWithText("Поиск тредов").performTextInput("answer")
         restoration.emulateSavedInstanceStateRestore()
         compose.onNode(hasSetTextAction()).assertTextContains("answer")
-        compose.onNode(hasText("Needs you", substring = true) and isSelected()).assertExists()
+        compose.onNode(hasText("Нужен ответ", substring = true) and isSelected()).assertExists()
         compose.onNodeWithText("Needs an answer").assertExists()
         compose.onNodeWithText("Row 01").assertDoesNotExist()
     }

@@ -284,7 +284,7 @@ class ShortcutRegisteredActionsTest {
         press(Key.K, ctrl = true)
         searchField().assertIsFocused()
         // Closing the field with its own button, then the second chord does the same.
-        compose.onNodeWithContentDescription("Close search").performClick()
+        compose.onNodeWithContentDescription("Закрыть поиск").performClick()
         assertFalse(searchOpen())
         press(Key.F, ctrl = true)
         searchField().assertIsFocused()
