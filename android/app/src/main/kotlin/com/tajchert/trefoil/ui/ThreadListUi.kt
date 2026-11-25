@@ -51,7 +51,7 @@ internal fun threadIndicator(thread: ThreadSummary): ThreadIndicator {
         else -> ThreadIndicator("Ready", "ready")
     }
 }
-private fun timestamp(value: String?): Long = runCatching { Instant.parse(value).toEpochMilli() }.getOrDefault(0)
+internal fun timestamp(value: String?): Long = runCatching { Instant.parse(value).toEpochMilli() }.getOrDefault(0)
 internal fun relativeThreadTime(value: String?, now: Long = System.currentTimeMillis()): String {
     val time = timestamp(value)
     if (time == 0L) return ""
@@ -236,6 +236,9 @@ internal fun ThreadList(
     onOpenDraft: (String) -> Unit = {},
     onDiscardDraft: (ComposerDraft) -> Unit = {},
     chrome: ThreadListChrome = ThreadListChrome(),
+    preferences: ListPreferences = ListPreferences(),
+    onPreferencesChange: ((ListPreferences) -> ListPreferences) -> Unit = {},
+    onEditProject: (String) -> Unit = {},
 ) {
     var query by rememberSaveable(state.environment?.id) { mutableStateOf("") }
     var searching by rememberSaveable(state.environment?.id) { mutableStateOf(false) }
@@ -244,26 +247,33 @@ internal fun ThreadList(
     RegisterShortcut(ShortcutId.SearchThreads) {
         if (searching || query.isNotEmpty()) runCatching { searchFocus.requestFocus() } else searching = true
     }
-    var projectId by rememberSaveable(state.environment?.id) { mutableStateOf<String?>(null) }
     var filter by rememberSaveable(state.environment?.id) { mutableStateOf(ThreadFilter.All) }
     val projects = remember(state.projects) { state.projects.associateBy { it.id } }
-    LaunchedEffect(projects, projectId) { if (projectId != null && projectId !in projects) projectId = null }
     val listed = remember(state.threads) { threadListRows(state.threads) }
-    val inProject = remember(listed, projectId) { listed.filter { projectId == null || it.projectId == projectId } }
-    val filtered = remember(query, inProject, projects) {
-        inProject.filter { thread -> query.isBlank() || listOf(thread.title, thread.latestMessage, projects[thread.projectId]?.title.orEmpty(), thread.branch.orEmpty()).any { it.contains(query.trim(), ignoreCase = true) } }
+    val filtered = remember(query, listed, projects) {
+        listed.filter { thread -> query.isBlank() || listOf(thread.title, thread.latestMessage, projects[thread.projectId]?.title.orEmpty(), thread.branch.orEmpty()).any { it.contains(query.trim(), ignoreCase = true) } }
     }
-    var expanded by rememberSaveable(state.environment?.id) { mutableStateOf(defaultExpanded) }
+    // Expansion is remembered per project id in preferences, so it survives a restart the way the user left it. It is also
+    // saveable here: leaving for a conversation and coming back must not re-open a project the user folded. The set lives
+    // as a list because that is what the saved-state bundle can carry.
+    var expandedProjects by rememberSaveable(state.environment?.id) { mutableStateOf(preferences.expandedProjects.toList()) }
+    var expansionChosen by rememberSaveable(state.environment?.id) { mutableStateOf(preferences.expansionChosen) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    val shelves = remember(filtered, now) { threadShelves(filtered, now) }
-    val sections = remember(shelves, filter) { threadSections(shelves, filter) }
+    val groups = remember(filtered, state.projects, preferences.pinnedOrder, preferences.otherOrder, preferences.threadOrder, preferences.pinnedProjects, now) {
+        projectGroups(
+            threads = filtered, projects = state.projects,
+            pinned = preferences.pinnedProjects,
+            pinnedOrder = preferences.pinnedOrder, otherOrder = preferences.otherOrder, threadOrder = preferences.threadOrder,
+            now = now,
+        )
+    }
+    val counts = remember(groups) { projectGroupsFilterCounts(groups) }
     // Drafts belong to "All": the Needs you and Working chips are about threads.
     // Keyed on the new-thread drafts only (equal maps): typing a reply does not rebuild the shelf.
     val newThreadDrafts = remember(composerDrafts.drafts) { composerDrafts.drafts.filterKeys { it is ComposerDraftKey.NewThread } }
-    val draftRows = remember(newThreadDrafts, state.environment?.id, projects, projectId, query, filter) {
-        if (filter == ThreadFilter.All) threadDraftRows(newThreadDrafts, state.environment?.id, projects, projectId, query) else emptyList()
+    val draftRows = remember(newThreadDrafts, state.environment?.id, projects, filter, query) {
+        if (filter == ThreadFilter.All) threadDraftRows(newThreadDrafts, state.environment?.id, projects, null, query) else emptyList()
     }
-    val counts = remember(shelves) { threadFilterCounts(shelves) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val liveTiming = remember(filtered) { filtered.any { thread ->
         (threadIndicator(thread).kind == "working" && threadWorkStartedAt(thread) != null) ||
@@ -288,39 +298,74 @@ internal fun ThreadList(
             chrome = chrome, compactHeight = LocalCompactHeight.current)
         banner()
         if (searching || query.isNotEmpty()) Box(Modifier.focusRequester(searchFocus).focusGroup()) { ThreadSearchField(query, { query = it }) { query = ""; searching = false } }
-        ThreadFilterChips(filter, counts, state.projects, projects[projectId], { filter = it }, { projectId = it },
-            tabletChrome = chrome != ThreadListChrome())
+        ThreadFilterChips(filter, counts, state.projects, null, { filter = it }, { selected ->
+            // "Jump to project" scrolls rather than filters: the groups stay, selection opens the one asked for.
+            selected?.let { id ->
+                // Jumping opens one project and leaves the rest as they were: the "everything open" default is
+                // materialised first, so the first jump does not fold every other project.
+                val current = if (expansionChosen) expandedProjects.toSet() else groups.mapTo(mutableSetOf()) { it.key }
+                if (id !in current) {
+                    val next = current + id
+                    expandedProjects = next.toList()
+                    expansionChosen = true
+                    onPreferencesChange { it.copy(expandedProjects = next, expansionChosen = true) }
+                }
+            }
+        }, tabletChrome = chrome != ThreadListChrome())
         val loading = threadListLoading(state)
         if ((state.busy || loading) && state.threads.isEmpty() || threadListUpdating(state)) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp).height(2.dp), color = c.accent, trackColor = c.s2)
         PullToRefreshBox(isRefreshing, onRefresh, Modifier.weight(1f).fillMaxWidth()) {
             val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottomInset + if (railBeside) 24.dp else 96.dp)) {
-                if (sections.isEmpty() && draftRows.isEmpty()) {
+                if (groups.isEmpty() && draftRows.isEmpty()) {
                     if (loading) item(key = "loading") { ThreadListLoading() }
                     else if (threadListShowsEmpty(state)) item(key = "empty") {
-                        ThreadListEmpty(searching = query.isNotBlank() || filter != ThreadFilter.All || projectId != null)
+                        ThreadListEmpty(searching = query.isNotBlank() || filter != ThreadFilter.All)
                     }
                 }
                 if (draftRows.isNotEmpty()) {
-                    val draftsOpen = query.isNotBlank() || "Drafts" in expanded
+                    val draftsOpen = query.isNotBlank() || "Drafts" in defaultExpanded
                     item(key = "shelf:Drafts", contentType = "shelf") {
-                        ShelfLabel("Drafts", draftRows.size, draftsOpen, dot = null) { expanded = if ("Drafts" in expanded) expanded - "Drafts" else expanded + "Drafts" }
+                        ShelfLabel("Drafts", draftRows.size, draftsOpen, dot = null) { /* drafts keep their own single fold */ }
                     }
                     if (draftsOpen) items(draftRows, key = { (draft, _) -> "draft:${(draft.key as ComposerDraftKey.NewThread).projectId}" }, contentType = { "draft" }) { (draft, project) ->
                         DraftRow(draft, project, now, { onOpenDraft(project.id) }, tabletChrome = chrome != ThreadListChrome()) { onDiscardDraft(draft) }
                     }
                 }
-                sections.forEach { section ->
-                    val open = query.isNotBlank() || filter != ThreadFilter.All || section.title in expanded
-                    val toggle = { expanded = if (section.title in expanded) expanded - section.title else expanded + section.title }
-                    item(key = "shelf:${section.title}", contentType = "shelf") {
-                        if (section.folded) FoldedShelfRow(section.title, section.threads.size, open, toggle)
-                        else ShelfLabel(section.title, section.threads.size, open, dot = if (section.title == "Needs you") c.amber else null, toggle = toggle)
+                groups.forEach { group ->
+                    val visible = group.visibleThreads(filter)
+                    if (visible.isEmpty()) return@forEach
+                    // Searching or filtering overrides the saved fold: the matching rows must be on screen to be useful.
+                    // Until the user folds something, every project starts open.
+                    val open = query.isNotBlank() || filter != ThreadFilter.All ||
+                        (!expansionChosen && group.key !in expandedProjects) || group.key in expandedProjects
+                    val toggle = {
+                        val current = if (expansionChosen) expandedProjects.toSet() else groups.mapTo(mutableSetOf()) { it.key }
+                        val next = if (group.key in current) current - group.key else current + group.key
+                        expandedProjects = next.toList()
+                        expansionChosen = true
+                        onPreferencesChange { it.copy(expandedProjects = next, expansionChosen = true) }
                     }
-                    if (open) items(section.threads, key = { "thread:${section.title}:${it.id}" }, contentType = { "thread" }) { thread ->
+                    item(key = "project:${group.key}", contentType = "project") {
+                        ProjectHeader(
+                            group = group, open = open,
+                            icon = ProjectIcon.byId(preferences.projectIcons[group.key]),
+                            color = ProjectColor.byId(preferences.projectColors[group.key]?.let(::colorId)),
+                            pinned = group.key in preferences.pinnedProjects,
+                            onToggle = toggle,
+                            onLongPress = { onEditProject(group.key) },
+                            onTogglePin = {
+                                if (group.key != NoProjectKey) onPreferencesChange { prefs ->
+                                    val pins = if (group.key in prefs.pinnedProjects) prefs.pinnedProjects - group.key else prefs.pinnedProjects + group.key
+                                    prefs.copy(pinnedProjects = pins)
+                                }
+                            },
+                        )
+                    }
+                    if (open) items(visible, key = { "thread:${group.key}:${it.id}" }, contentType = { "thread" }) { thread ->
                         ThreadRow(state, thread, projects[thread.projectId], now, selected = thread.id == selectedId, onAction = onAction,
                             replyDraft = composerDrafts.drafts[ComposerDraftKey.Reply(state.environment?.id.orEmpty(), thread.id)]?.takeIf { it.hasContent() },
-                            tabletChrome = chrome != ThreadListChrome()) { select(thread.id) }
+                            tabletChrome = chrome != ThreadListChrome(), showProject = false) { select(thread.id) }
                     }
                 }
             }
@@ -328,3 +373,6 @@ internal fun ThreadList(
         }
     }
 }
+
+/** Stored colours are indices into [ProjectColor]; this maps one back for the tile. */
+private fun colorId(value: Int): String = ProjectColor.entries.getOrNull(value)?.id.orEmpty()

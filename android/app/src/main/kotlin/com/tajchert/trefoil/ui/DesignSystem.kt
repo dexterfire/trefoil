@@ -211,17 +211,38 @@ internal fun projectPaletteIndex(key: String): Int = abs(key.hashCode() % tileDa
 /**
  * Rounded-square tile with project initials. 40dp in lists, 20–24dp inline. [capFontScale] stops the monogram growing past 14dp of text
  * (a fixed tile cannot widen with the font, so "WE" would clip to "W"); it changes nothing up to a font scale of about 1.08.
+ *
+ * [icon] and [color] come from the project's saved appearance; without them the tile keeps the deterministic
+ * initials-and-palette look every existing project already has.
  */
 @Composable
-fun ProjectTile(title: String, modifier: Modifier = Modifier, size: Dp = 40.dp, key: String = title, capFontScale: Boolean = false) {
-    val (bg, fg) = (if (Tf.colors.isDark) tileDark else tileLight)[projectPaletteIndex(key)]
+internal fun ProjectTile(
+    title: String, modifier: Modifier = Modifier, size: Dp = 40.dp, key: String = title, capFontScale: Boolean = false,
+    icon: ProjectIcon? = null, color: ProjectColor? = null,
+) {
+    val dark = Tf.colors.isDark
+    val (fallbackBg, fallbackFg) = (if (dark) tileDark else tileLight)[projectPaletteIndex(key)]
     val radius = when { size >= 36.dp -> 12.dp; size >= 24.dp -> 7.dp; else -> 6.dp }
     val base = when { size >= 36.dp -> 13.sp; size >= 24.dp -> 10.sp; else -> 9.sp }
     val fontSize = if (capFontScale) with(LocalDensity.current) { minOf(base.toDp(), 14.dp).toSp() } else base
-    Box(modifier.size(size).background(Color(bg), RoundedCornerShape(radius)), contentAlignment = Alignment.Center) {
-        Text(projectInitials(title), color = Color(fg), fontSize = fontSize, fontWeight = FontWeight.Bold, fontFamily = InterFamily, letterSpacing = 0.02.sp, maxLines = 1, softWrap = !capFontScale)
+    val background = color?.background(dark) ?: Color(fallbackBg)
+    // A chosen colour replaces the palette's background but keeps its own contrast: light hues take dark ink and vice versa.
+    val foreground = color?.let { pickForeground(it, dark) } ?: Color(fallbackFg)
+    Box(modifier.size(size).background(background, RoundedCornerShape(radius)), contentAlignment = Alignment.Center) {
+        if (icon != null) {
+            Icon(icon.vector(), contentDescription = null, modifier = Modifier.size(size * .55f), tint = foreground)
+        } else {
+            Text(projectInitials(title), color = foreground, fontSize = fontSize, fontWeight = FontWeight.Bold, fontFamily = InterFamily, letterSpacing = 0.02.sp, maxLines = 1, softWrap = !capFontScale)
+        }
     }
 }
+
+/**
+ * Ink for a project's chosen tile colour. The palettes store a light and a dark variant of each hue, so the ink is
+ * picked from the same brightness the variant belongs to rather than measured per colour.
+ */
+internal fun pickForeground(color: ProjectColor, dark: Boolean): Color =
+    if (dark) Color(color.darkInk) else Color(color.lightInk)
 
 /* ---------- Status ---------- */
 
