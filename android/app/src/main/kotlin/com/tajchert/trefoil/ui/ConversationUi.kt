@@ -590,6 +590,13 @@ internal fun ConversationComposer(
         if (draft == null && (state.queuedMessages.isNotEmpty() || state.queueHeld)) QueuedMessagesStrip(state, canWriteNow && !queueBusy, onCancelQueued, onSteerQueued, onResumeQueue)
         Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = c.s1, contentColor = c.text, border = BorderStroke(1.dp, c.line)) {
             Column {
+                // `/` commands and `$` skills: the word at the caret decides, so a path or a price never opens the list.
+                val token = composerToken(value.text, value.selection.start)
+                val suggestions = composerSuggestions(state, token)
+                if (token != null && suggestions.isNotEmpty()) ComposerSuggestionsRow(suggestions) { picked ->
+                    val (next, at) = applyComposerSuggestion(value.text, token, picked.name)
+                    edited(TextFieldValue(next, TextRange(at)))
+                }
                 BasicTextField(
                     value = value, onValueChange = ::edited, maxLines = if (compactHeight) 2 else 6,
                     textStyle = MaterialTheme.typography.bodyLarge.copy(color = fieldColor), cursorBrush = SolidColor(c.accent),
@@ -615,6 +622,26 @@ internal fun ConversationComposer(
                     // Wide: the two follow-up deliveries are visible next to the button instead of behind its long press.
                     if (layout.wide && button.offersAlternate && text.isNotBlank()) FollowUpChoice(button.action, state.canSteer, button.enabled, onSend)
                     PrimaryComposerButton(button, state.canSteer, stop, onSend)
+                }
+            }
+        }
+    }
+}
+
+/** The `/` and `$` rows above the field: a name and what the server says it does. A tap writes the name into the draft. */
+@Composable
+private fun ComposerSuggestionsRow(suggestions: List<ComposerSuggestion>, onPick: (ComposerSuggestion) -> Unit) {
+    val c = Tf.colors
+    Column(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        suggestions.forEach { suggestion ->
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(c.s2).clickable { onPick(suggestion) }
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(suggestion.label, style = TrefoilType.meta, color = c.text, maxLines = 1)
+                suggestion.detail?.takeIf { it.isNotBlank() }?.let { detail ->
+                    Text(detail, Modifier.weight(1f), style = TrefoilType.meta, color = c.muted, maxLines = 1)
                 }
             }
         }

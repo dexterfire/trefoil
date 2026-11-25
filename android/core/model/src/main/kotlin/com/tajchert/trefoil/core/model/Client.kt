@@ -132,7 +132,20 @@ data class ProviderInstance(
     val displayName: String? = null, val accentColor: String? = null, val enabled: Boolean = true,
     /** Server `ServerProvider.usageLimits`; null when the provider reports none. Last good value is kept by the server. */
     val usageLimits: ProviderUsageLimits? = null,
+    /** Server `ServerProvider.slashCommands`, in wire order: what the composer offers after a `/`. */
+    val slashCommands: List<ProviderSlashCommand> = emptyList(),
+    /** Server `ServerProvider.skills`, in wire order: what the composer offers after a `$`. */
+    val skills: List<ProviderSkill> = emptyList(),
 )
+
+/** One `/command` a provider offers. [name] is inserted after the slash; [inputHint] is the server's own usage hint. */
+data class ProviderSlashCommand(val name: String, val description: String? = null, val inputHint: String? = null)
+
+/**
+ * One `$skill` a provider can load into a turn. [label] is the display name, [invocable] false when the server marks the
+ * skill as not offered to the user (disabled, or agent-invoked only).
+ */
+data class ProviderSkill(val name: String, val label: String, val description: String? = null, val invocable: Boolean = true)
 data class Question(val id: String, val title: String, val options: List<String> = emptyList(), val multiple: Boolean = false, val required: Boolean = true)
 data class RuntimeRequest(val id: String, val title: String, val detail: String = "", val questions: List<Question> = emptyList(), val canApprove: Boolean = true)
 /**

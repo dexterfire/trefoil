@@ -180,12 +180,7 @@ fun TrefoilApp(
 ) {
     val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
     // Brightness is an explicit setting: "System" is the only mode that follows the device.
-    val dark = when (preferences.brightness) {
-        BrightnessMode.System -> systemDark
-        BrightnessMode.Dark -> true
-        BrightnessMode.Light -> false
-    }
-    TrefoilTheme(darkTheme = dark, family = preferences.themeFamily) {
+    TrefoilTheme(darkTheme = resolveDarkTheme(preferences.brightness, systemDark), family = preferences.themeFamily) {
         // A project removed from the environment must not leave a stale pin, icon, colour or fold behind.
         LaunchedEffect(state.projects) {
             if (state.projects.isNotEmpty()) {

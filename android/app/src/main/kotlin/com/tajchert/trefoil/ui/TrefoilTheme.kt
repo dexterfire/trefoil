@@ -122,6 +122,16 @@ private fun TrefoilColors.toMaterial(): ColorScheme {
 }
 
 /**
+ * Turns the brightness setting into the half of a family to render: [BrightnessMode.System] follows the device, while
+ * Dark and Light ignore it. Pure so the mapping can be checked without composing the app.
+ */
+internal fun resolveDarkTheme(brightness: BrightnessMode, systemDark: Boolean): Boolean = when (brightness) {
+    BrightnessMode.System -> systemDark
+    BrightnessMode.Dark -> true
+    BrightnessMode.Light -> false
+}
+
+/**
  * Renders [content] with the chosen theme. [family] picks the accent identity, [darkTheme] its half; [rememberSaveable]d
  * callers pass the values the settings screen wrote, while previews and tests keep the original defaults.
  */

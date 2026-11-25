@@ -16,8 +16,30 @@ internal fun providerInstances(config: JsonObject): List<ProviderInstance> = con
         displayName = provider.optionalText("displayName"), accentColor = provider.optionalText("accentColor"),
         enabled = (provider["enabled"] as? JsonPrimitive)?.booleanOrNull != false,
         usageLimits = (provider["usageLimits"] as? JsonObject)?.let(::providerUsageLimits),
+        slashCommands = provider.entries("slashCommands").mapNotNull { command ->
+            val name = command.optionalText("name")?.removePrefix("/")?.trim().orEmpty()
+            if (name.isEmpty()) null else ProviderSlashCommand(
+                name = name, description = command.optionalText("description"),
+                inputHint = (command["input"] as? JsonObject)?.optionalText("hint"),
+            )
+        }.distinctBy { it.name },
+        skills = provider.entries("skills").mapNotNull { skill ->
+            val name = skill.optionalText("name")?.trim().orEmpty()
+            if (name.isEmpty()) null else ProviderSkill(
+                name = name,
+                label = skill.optionalText("displayName") ?: skill.optionalText("shortDescription") ?: name,
+                description = skill.optionalText("description") ?: skill.optionalText("shortDescription"),
+                // `enabled: false` hides a skill the server disabled; `userInvocable: false` keeps it for the agent only.
+                invocable = (skill["enabled"] as? JsonPrimitive)?.booleanOrNull != false &&
+                    (skill["userInvocable"] as? JsonPrimitive)?.booleanOrNull != false,
+            )
+        }.distinctBy { it.name },
     )
 }
+
+/** The object entries of [key]; a missing key, or anything else, reads as none. */
+private fun JsonObject.entries(key: String): List<JsonObject> =
+    (get(key) as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
 
 private val ACTIVITY_RUN_STATUSES = setOf("preparing", "starting", "running", "waiting")
 

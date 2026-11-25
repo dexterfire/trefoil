@@ -23,6 +23,11 @@ private const val FRESH_THREAD_WAIT_MS = 3_000L
 /** After a route verifies, how long better-ranked routes still in flight may take to answer before it is chosen. */
 internal const val ROUTE_HEAD_START_MS = 500L
 private const val LINK_STATE_TIMEOUT_MS = 5_000L
+/**
+ * A `$name` skill reference: a dollar, a name starting with a letter, and the characters a skill may hold. The look-behind
+ * keeps `$5`, a URL or a mid-word dollar out, so an ordinary message never resolves a skill by accident.
+ */
+private val SKILL_REFERENCE = Regex("(?<![\\w\$])\\$([A-Za-z][\\w.:-]*)")
 
 /** Local and Tailnet addresses answer fast or not at all; public HTTPS, the tunnel and SSH forwards get longer. */
 internal fun routePreflightTimeoutMillis(kind: RouteKind): Long = when (kind) {
@@ -1628,11 +1633,35 @@ class T3Client(
     }
     /** T3 requires creation provenance on every `message.dispatch`; the server stamps `createdBy` itself. */
     private fun JsonObjectBuilder.provenance() { put("createdBy", "user"); put("creationSource", CREATION_SOURCE) }
+    /**
+     * T3 `composerContext`: every `$name` in [text] that names an invocable skill of a known provider rides along with the
+     * dispatch, so the server loads that skill's instructions for this turn. Null when nothing matches, which keeps the
+     * wire identical for ordinary messages. Limits: 200 records and 16 MB per message, contextIds unique within it.
+     */
+    private fun skillContext(text: String): JsonObject? {
+        val skills = state.value.providers.flatMap { it.skills }.filter { it.invocable }
+        if (skills.isEmpty()) return null
+        val matched = SKILL_REFERENCE.findAll(text).map { it.groupValues[1] }.distinct()
+            .mapNotNull { name -> skills.firstOrNull { it.name == name } }.toList()
+        if (matched.isEmpty()) return null
+        return buildJsonObject {
+            put("version", 1)
+            put("records", buildJsonArray {
+                matched.forEachIndexed { index, skill ->
+                    add(buildJsonObject {
+                        put("contextId", "skill-$index-${skill.name}"); put("label", skill.label)
+                        put("kind", "skill"); put("name", skill.name)
+                    })
+                }
+            })
+        }
+    }
     override suspend fun sendMessage(text: String) {
         require(text.isNotBlank()) { "Message is empty" }
         dispatch("message.dispatch", "message") { buildJsonObject {
             provenance()
             put("messageId", UUID.randomUUID().toString()); put("text", text); put("attachments", JsonArray(emptyList()))
+            skillContext(text)?.let { put("context", it) }
             put("dispatchMode", buildJsonObject { put("type", messageDispatchMode(state.value)) })
         } }
     }
@@ -1651,6 +1680,7 @@ class T3Client(
             command("message.dispatch", buildJsonObject {
                 provenance()
                 put("messageId", UUID.randomUUID().toString()); put("text", text); put("attachments", JsonArray(emptyList()))
+                skillContext(text)?.let { put("context", it) }
                 if (steer) put("deliveryIntent", "steer")
                 put("dispatchMode", buildJsonObject { put("type", if (busy && !steer) "queue_after_active" else "start_immediately") })
             })
