@@ -57,6 +57,8 @@ class T3Client(
     private val scope: CoroutineScope,
     private val connectionTimeoutMillis: Long = 20_000,
     private val requestTimeoutMillis: Long = 30_000,
+    /** Frames longer than this are not parsed; tests lower it (a test server cannot send a 16 MB frame). */
+    private val maxFrameChars: Int = EffectRpc.MAX_FRAME_CHARS,
     private val usageClockMillis: () -> Long = System::currentTimeMillis,
     /** Descriptor preflight timeout per route kind during [connect]. */
     private val routeTimeoutMillis: (RouteKind) -> Long = ::routePreflightTimeoutMillis,
@@ -517,7 +519,7 @@ class T3Client(
                 override fun onMessage(webSocket: WebSocket, text: String) {
                     synchronized(lifecycleLock) {
                         if (epoch == generation) frameAt = System.currentTimeMillis()
-                        if (epoch == generation) try { EffectRpc.decode(text).forEach { if (epoch == generation) receive(it) } } catch (_: Exception) { fail(epoch, "Invalid server RPC response") }
+                        if (epoch == generation) try { EffectRpc.decode(text, maxFrameChars).forEach { if (epoch == generation) receive(it) } } catch (error: FrameTooLarge) { oversizedFrame(epoch, error) } catch (_: Exception) { fail(epoch, "Invalid server RPC response") }
                     }
                 }
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { opened.completeExceptionally(IllegalStateException("Connection failed")); fail(epoch, "Connection lost; any pending command outcome is uncertain. Reconnect to refresh.") }
@@ -818,6 +820,25 @@ class T3Client(
             "Defect", "ClientProtocolError" -> fail(generation, "Server protocol failure; reconnect to refresh")
         }
     }
+    /**
+     * A frame too large to parse. The open thread's snapshot or refresh only closes that thread, and any other reply fails
+     * only its own request; a frame of another stream, or one that names no request, fails the session as before.
+     * Caller holds [lifecycleLock].
+     */
+    private fun oversizedFrame(epoch: Long, error: FrameTooLarge) {
+        if (epoch != generation) return
+        val id = error.requestId
+        when {
+            id != null && id == threadSubscription -> threadTooLarge()
+            id != null && pending.containsKey(id) && !streams.containsKey(id) -> pending[id]?.completeExceptionally(error)
+            else -> fail(epoch, "The server sent more data than this app can load; reconnect to retry")
+        }
+    }
+    /** Drops the selected thread whose data exceeds [EffectRpc.MAX_FRAME_CHARS]; the connection stays up. Caller holds [lifecycleLock]. */
+    private fun threadTooLarge() {
+        clearThreadSelection()
+        update { it.copy(error = THREAD_TOO_LARGE) }
+    }
     private fun fail(epoch: Long, message: String) = synchronized(lifecycleLock) {
         if (epoch != generation) return@synchronized
         fileDownloads.forEach { it.cancel() }; fileDownloads.clear()
@@ -951,6 +972,7 @@ class T3Client(
             return@synchronized
         }
         if (state.value.selectedThreadId == threadId && (threadSubscription != null || deferredThread == threadId)) return@synchronized
+        if (state.value.error == THREAD_TOO_LARGE) update { it.copy(error = null) }
         threadSubscription?.let { streams.remove(it); send(EffectRpc.signal("Interrupt", it)) }
         threadSubscription = null
         syncPromptSuggestion()
@@ -982,6 +1004,7 @@ class T3Client(
                         }
                     }
                 } catch (error: CancellationException) { throw error }
+                catch (_: FrameTooLarge) { synchronized(lifecycleLock) { if (epoch == generation && selection == threadGeneration) threadTooLarge() }; break }
                 catch (_: Exception) { synchronized(lifecycleLock) { if (epoch == generation && selection == threadGeneration) fail(epoch, "Thread refresh failed; reconnect before writing") }; break }
             }
         }
@@ -2117,6 +2140,9 @@ class T3Client(
 }
 
 private const val CREATION_SOURCE = "mobile"
+/** Shown when the selected thread's data is larger than this app loads (no bounded snapshots yet). */
+internal const val THREAD_TOO_LARGE = "This thread is too large to open on mobile yet. Open it in T3 Code on your computer."
+
 /** No pong or frame for this long (two missed 15 s heartbeats) means a timed-out shell refresh sits on a dead link. */
 internal const val SHELL_REFRESH_STALE_LINK_MS = 30_000L
 
