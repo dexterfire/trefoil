@@ -37,3 +37,17 @@ Focused thread image coverage belongs in `:core:model:test`, `:core:session:test
 - Direct private-LAN HTTP requires explicit saved consent and literal RFC1918 IP validation. Public HTTP stays blocked; never bypass shared URL policy.
 - Preserve Flocket Apache-2.0 and T3 MIT attribution on adapted code.
 - Use Conventional Commits and verify relevant checks before committing.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live as GitHub issues in our fork, `dexterfire/trefoil`; `tajchert/trefoil` stays read-only upstream. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical roles use their default strings (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
