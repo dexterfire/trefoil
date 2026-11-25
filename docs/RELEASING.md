@@ -1,5 +1,11 @@
 # Android releases
 
+Release `0.24.1` (`versionCode = 43`) stops a thread too large for mobile from breaking the connection. A
+thread whose snapshot exceeded the 16 MB frame cap used to fail the whole session with "Invalid server RPC
+response", and reconnecting reselected the same thread, so the app looped. Now only that thread closes, with a
+"too large to open on mobile" notice; an oversized reply to any other request fails just that request. Check
+opening a very large thread and then a normal one against a real environment on a device.
+
 Release `0.24.0` (`versionCode = 42`) adds local agent activity notifications: while connected to a
 machine with the app in the background, Trefoil posts Android notifications when a thread or one of its
 subagents needs an approval or an answer, when a run finishes (after staying completed for 5 seconds) and when
