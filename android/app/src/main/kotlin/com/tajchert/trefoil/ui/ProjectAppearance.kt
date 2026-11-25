@@ -50,6 +50,7 @@ internal enum class ProjectIcon(val id: String, val paths: List<String>) {
     Mail("mail", listOf("M3 6h18v12H3z", "M3 7l9 6 9-6")),
     Phone("phone", listOf("M6 3h3l2 5-2.5 1.5a11 11 0 0 0 6 6L16 13l5 2v3a2 2 0 0 1-2 2A16 16 0 0 1 4 5a2 2 0 0 1 2-2z")),
     Key("key", listOf("M15 3a6 6 0 0 0-5.6 8.1L3 17.5V21h3.5l6.4-6.4A6 6 0 1 0 15 3z", "M17 7h.01")),
+    Tag("tag", listOf("M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z", "M7.5 7.5h.01")),
     ;
 
     val index: Int get() = ordinal

@@ -39,7 +39,7 @@ class PreferenceStoreTest {
                     expandedProjects = setOf("beta", NoProjectKey),
                     expansionChosen = true,
                     projectIcons = mapOf("alpha" to "flask", "beta" to "bolt"),
-                    projectColors = mapOf("alpha" to 3),
+                    projectColors = mapOf("alpha" to "blue"),
                 ),
             )
         }
@@ -56,7 +56,7 @@ class PreferenceStoreTest {
         assertEquals(setOf("beta", NoProjectKey), restored.list.expandedProjects)
         assertTrue(restored.list.expansionChosen)
         assertEquals(mapOf("alpha" to "flask", "beta" to "bolt"), restored.list.projectIcons)
-        assertEquals(mapOf("alpha" to 3), restored.list.projectColors)
+        assertEquals(mapOf("alpha" to "blue"), restored.list.projectColors)
     }
 
     @Test fun unknownStoredNamesFallBackToTheDefaults() {
@@ -92,9 +92,9 @@ class PreferenceStoreTest {
     @Test fun projectIconAndColourAreSetAndClearedWithNull() {
         val store = PreferenceStore(prefs)
         store.setProjectIcon("alpha", "flask")
-        store.setProjectColor("alpha", 4)
+        store.setProjectColor("alpha", "violet")
         assertEquals(mapOf("alpha" to "flask"), store.state.value.list.projectIcons)
-        assertEquals(mapOf("alpha" to 4), store.state.value.list.projectColors)
+        assertEquals(mapOf("alpha" to "violet"), store.state.value.list.projectColors)
         store.setProjectIcon("alpha", null)
         store.setProjectColor("alpha", null)
         assertTrue(store.state.value.list.projectIcons.isEmpty())
@@ -140,15 +140,15 @@ class PreferenceStoreTest {
         store.togglePinnedProject("deleted")
         store.setProjectIcon("alpha", "flask")
         store.setProjectIcon("deleted", "bolt")
-        store.setProjectColor("alpha", 2)
-        store.setProjectColor("deleted", 5)
+        store.setProjectColor("alpha", "teal")
+        store.setProjectColor("deleted", "slate")
         store.setExpandedProjects(setOf("alpha", "deleted"))
         assertTrue(store.pruneProjects(setOf("alpha")))
         val kept = PreferenceStore(prefs).state.value.list
         assertEquals(setOf("alpha"), kept.pinnedProjects)
         assertEquals(setOf("alpha"), kept.expandedProjects)
         assertEquals(mapOf("alpha" to "flask"), kept.projectIcons)
-        assertEquals(mapOf("alpha" to 2), kept.projectColors)
+        assertEquals(mapOf("alpha" to "teal"), kept.projectColors)
         // Pruning is not a fold: the user's choice to have folds at all stays recorded.
         assertTrue(kept.expansionChosen)
     }
@@ -158,5 +158,40 @@ class PreferenceStoreTest {
         store.setExpandedProjects(setOf("alpha", NoProjectKey))
         assertFalse(store.pruneProjects(setOf("alpha")))
         assertEquals(setOf("alpha", NoProjectKey), store.state.value.list.expandedProjects)
+    }
+
+    @Test fun aProjectsLookIsStoredByIdAndSurvivesARestart() {
+        val store = PreferenceStore(prefs)
+        store.setProjectIcon("alpha", ProjectIcon.Tag.id)
+        store.setProjectColor("alpha", ProjectColor.Teal.id)
+        // Ids, not ordinals: the file must say "teal" so a later reorder of the palette cannot repaint the project.
+        assertEquals(mapOf("alpha" to "tag"), store.state.value.list.projectIcons)
+        assertEquals(mapOf("alpha" to "teal"), store.state.value.list.projectColors)
+        val restarted = PreferenceStore(prefs).state.value.list
+        assertEquals(ProjectIcon.Tag, ProjectIcon.byId(restarted.projectIcons["alpha"]))
+        assertEquals(ProjectColor.Teal, ProjectColor.byId(restarted.projectColors["alpha"]))
+    }
+
+    @Test fun clearingALookLeavesNoEntryBehind() {
+        val store = PreferenceStore(prefs)
+        store.setProjectIcon("alpha", ProjectIcon.Home.id)
+        store.setProjectColor("alpha", ProjectColor.Red.id)
+        store.setProjectIcon("alpha", null)
+        store.setProjectColor("alpha", null)
+        val restarted = PreferenceStore(prefs).state.value.list
+        assertFalse(restarted.projectIcons.containsKey("alpha"))
+        assertFalse(restarted.projectColors.containsKey("alpha"))
+        assertNull(ProjectIcon.byId(restarted.projectIcons["alpha"]))
+        assertNull(ProjectColor.byId(restarted.projectColors["alpha"]))
+    }
+
+    @Test fun aDeletedProjectLosesItsIconAndColour() {
+        val store = PreferenceStore(prefs)
+        store.setProjectIcon("alpha", ProjectIcon.Tag.id)
+        store.setProjectColor("alpha", ProjectColor.Olive.id)
+        store.setProjectColor("deleted", ProjectColor.Red.id)
+        assertTrue(store.pruneProjects(setOf("alpha")))
+        assertEquals(mapOf("alpha" to "olive"), store.state.value.list.projectColors)
+        assertEquals(mapOf("alpha" to "tag"), store.state.value.list.projectIcons)
     }
 }

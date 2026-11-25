@@ -26,8 +26,17 @@ data class ListPreferences(
     /** False until the user folds something: a fresh install shows every project open rather than an empty screen. */
     val expansionChosen: Boolean = false,
     val projectIcons: Map<String, String> = emptyMap(),
-    val projectColors: Map<String, Int> = emptyMap(),
-)
+    /** Stored by [ProjectColor.id], never by ordinal: reordering the palette must not repaint a saved project. */
+    val projectColors: Map<String, String> = emptyMap(),
+) {
+    /** A copy with this project's icon set to [iconId], or cleared when it is null. */
+    fun withProjectIcon(projectId: String, iconId: String?): ListPreferences =
+        copy(projectIcons = if (iconId == null) projectIcons - projectId else projectIcons + (projectId to iconId))
+
+    /** A copy with this project's colour set to [colorId], or cleared when it is null. */
+    fun withProjectColor(projectId: String, colorId: String?): ListPreferences =
+        copy(projectColors = if (colorId == null) projectColors - projectId else projectColors + (projectId to colorId))
+}
 
 /** Everything the settings screen owns. Read once at startup, written through as each control changes. */
 data class AppPreferences(
@@ -71,7 +80,7 @@ class PreferenceStore(private val prefs: SharedPreferences) {
             expandedProjects = prefs.getStringSet(KEY_EXPANDED_PROJECTS, emptySet()).orEmpty(),
             expansionChosen = prefs.getBoolean(KEY_EXPANSION_CHOSEN, false),
             projectIcons = decodeMap(prefs.getString(KEY_PROJECT_ICONS, null)),
-            projectColors = decodeIntMap(prefs.getString(KEY_PROJECT_COLORS, null)),
+            projectColors = decodeMap(prefs.getString(KEY_PROJECT_COLORS, null)),
         )
         val width = prefs.getFloat(KEY_FORCED_WIDTH, 0f)
         return AppPreferences(
@@ -99,7 +108,7 @@ class PreferenceStore(private val prefs: SharedPreferences) {
             .putStringSet(KEY_EXPANDED_PROJECTS, list.expandedProjects)
             .putBoolean(KEY_EXPANSION_CHOSEN, list.expansionChosen)
             .putString(KEY_PROJECT_ICONS, encodeMap(list.projectIcons))
-            .putString(KEY_PROJECT_COLORS, encodeIntMap(list.projectColors))
+            .putString(KEY_PROJECT_COLORS, encodeMap(list.projectColors))
             .apply()
     }
 
@@ -109,13 +118,9 @@ class PreferenceStore(private val prefs: SharedPreferences) {
 
     fun setExpandedProjects(ids: Set<String>) = updateList { it.copy(expandedProjects = ids, expansionChosen = true) }
 
-    fun setProjectIcon(projectId: String, iconId: String?) = updateList { list ->
-        list.copy(projectIcons = if (iconId == null) list.projectIcons - projectId else list.projectIcons + (projectId to iconId))
-    }
+    fun setProjectIcon(projectId: String, iconId: String?) = updateList { it.withProjectIcon(projectId, iconId) }
 
-    fun setProjectColor(projectId: String, color: Int?) = updateList { list ->
-        list.copy(projectColors = if (color == null) list.projectColors - projectId else list.projectColors + (projectId to color))
-    }
+    fun setProjectColor(projectId: String, colorId: String?) = updateList { it.withProjectColor(projectId, colorId) }
 
     /**
      * Drops stored ids for projects the environment no longer reports. Called with the live project ids after every
@@ -154,12 +159,6 @@ class PreferenceStore(private val prefs: SharedPreferences) {
         fun decodeMap(raw: String?): Map<String, String> =
             raw?.let { runCatching { Json.decodeFromString(mapOfStringSerializer, it) }.getOrNull() }.orEmpty()
 
-        fun encodeIntMap(map: Map<String, Int>): String = Json.encodeToString(mapOfIntSerializer, map)
-
-        fun decodeIntMap(raw: String?): Map<String, Int> =
-            raw?.let { runCatching { Json.decodeFromString(mapOfIntSerializer, it) }.getOrNull() }.orEmpty()
-
         val mapOfStringSerializer: KSerializer<Map<String, String>> = MapSerializer(String.serializer(), String.serializer())
-        val mapOfIntSerializer: KSerializer<Map<String, Int>> = MapSerializer(String.serializer(), Int.serializer())
     }
 }

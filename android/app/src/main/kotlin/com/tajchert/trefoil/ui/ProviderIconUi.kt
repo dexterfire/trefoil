@@ -70,7 +70,7 @@ internal fun ThreadProviderStack(stack: List<ProviderInstance>, catalog: List<Pr
     val displayName = providerDisplayName(current)
     val accent = current.accentColor?.trim()?.takeIf { Regex("#[0-9a-fA-F]{6}").matches(it) }?.let { Color(android.graphics.Color.parseColor(it)) }
     val showBadge = accent != null || catalog.count { it.driver == current.driver && (!current.enabled || it.enabled) } > 1
-    Row(Modifier.semantics { contentDescription = "Agent: $displayName" }, verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.semantics { contentDescription = "Агент: $displayName" }, verticalAlignment = Alignment.CenterVertically) {
         stack.dropLast(1).forEach { provider -> ProviderMark(provider.driver, null, Modifier.size(14.dp).alpha(.3f)) }
         // Fixed slot so the current agent mark lands in the same spot on every row, badge or not.
         Box(Modifier.size(24.dp)) {
