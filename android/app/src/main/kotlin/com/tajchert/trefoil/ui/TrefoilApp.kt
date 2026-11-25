@@ -634,6 +634,11 @@ fun TrefoilApp(
                         }
                     }
                 }
+                // The list and the conversation each keep one composition across the two-pane and phone arms: a layout switch
+                // (rotation, a width override, a destination beside the hinge) must not re-register their saveable keys, and
+                // the scroll position survives the switch.
+                val listContent = rememberMovableSurface(list)
+                val detailContent = rememberMovableSurface(detail)
                 // Every destination but the thread list and the conversation; each fills the modifier it is given.
                 val secondary: @Composable (Modifier) -> Unit = { m ->
                     when {
@@ -667,10 +672,10 @@ fun TrefoilApp(
                     when {
                         // A separating hinge splits every destination: Threads' start region on the left (a brand panel without a machine), the destination on the right.
                         secondaryHosted && split && !fullscreenViewer -> ShellPanes(policy, panes, listState, banner = {},
-                            list = { if (connected) list(Modifier.fillMaxSize()) else BrandPanel(Modifier.fillMaxSize()) }, detail = { secondary(secondaryModifier) })
+                            list = { if (connected) listContent(Modifier.fillMaxSize()) else BrandPanel(Modifier.fillMaxSize()) }, detail = { secondary(secondaryModifier) })
                         secondaryHosted -> secondary(secondaryModifier)
                         twoPane -> ShellPanes(policy, panes, listState, banner = { ConnectionBanner(state, onReconnect) },
-                            list = { list(Modifier.fillMaxSize()) }, detail = { detail(Modifier.fillMaxSize()) }, transient = transient,
+                            list = { listContent(Modifier.fillMaxSize()) }, detail = { detailContent(Modifier.fillMaxSize()) }, transient = transient,
                             sidePanel = if (docked && panelTab != null) ({
                                 SidePanel(panelTabs, panelTab, panelDisabled, openPanelTab, closePanelToToggle, panelTabsFocus,
                                     Modifier.statusBarsPadding().windowInsetsPadding(BottomBarsAndIme), action = panelHost.action) { tab ->
@@ -682,8 +687,8 @@ fun TrefoilApp(
                                     }
                                 }
                             }) else null)
-                        showThread && (state.selectedThreadId != null || draft != null) -> detail(Modifier.fillMaxSize())
-                        else -> list(Modifier.fillMaxSize())
+                        showThread && (state.selectedThreadId != null || draft != null) -> detailContent(Modifier.fillMaxSize())
+                        else -> listContent(Modifier.fillMaxSize())
                     }
                 } } }
                 CompositionLocalProvider(LocalCompactHeight provides policy.compactHeight) {
@@ -748,16 +753,11 @@ fun TrefoilApp(
         editingProject?.let { id ->
             val project = state.projects.firstOrNull { it.id == id }
             val icon = ProjectIcon.byId(preferences.list.projectIcons[id])
-            val color = ProjectColor.byId(preferences.list.projectColors[id]?.let { index -> ProjectColor.entries.getOrNull(index)?.id })
+            val color = ProjectColor.byId(preferences.list.projectColors[id])
             ProjectAppearanceDialog(
                 title = project?.title ?: NoProjectTitle, icon = icon, color = color,
-                onPickIcon = { picked -> onPreferencesChange { it.copy(list = it.list.copy(projectIcons = it.list.projectIcons + (id to (picked?.id ?: "")))) } },
-                onPickColor = { picked ->
-                    onPreferencesChange {
-                        val colors = if (picked == null) it.list.projectColors - id else it.list.projectColors + (id to picked.ordinal)
-                        it.copy(list = it.list.copy(projectColors = colors))
-                    }
-                },
+                onPickIcon = { picked -> onPreferencesChange { it.copy(list = it.list.withProjectIcon(id, picked?.id)) } },
+                onPickColor = { picked -> onPreferencesChange { it.copy(list = it.list.withProjectColor(id, picked?.id)) } },
             ) { editingProject = null }
         }
     }
