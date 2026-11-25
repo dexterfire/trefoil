@@ -155,6 +155,25 @@ class ThreadListUiTest {
         assertEquals(1, counts("Beta", 1))
         assertEquals(0, counts("Beta", 0))
     }
+    @Test fun projectMenuPinsTheProjectAndUnpinsIt() {
+        var preferences by mutableStateOf(ListPreferences())
+        compose.setContent {
+            TrefoilTheme {
+                ThreadList(fixture, {}, {}, preferences = preferences, onPreferencesChange = { transform -> preferences = transform(preferences) })
+            }
+        }
+        // Two projects are on screen, so the menu is reached through the heading it belongs to.
+        fun menu() = compose.onNode(hasContentDescription("Меню проекта") and hasAnyAncestor(hasContentDescription("Trefoil project")))
+        menu().performClick()
+        compose.onNodeWithText("Закрепить проект").performClick()
+        assertEquals(setOf("trefoil"), preferences.pinnedProjects)
+        compose.onNodeWithContentDescription("Закреплённый проект").assertExists()
+        // The same menu offers the reverse once the project is pinned.
+        menu().performClick()
+        compose.onNodeWithText("Открепить проект").performClick()
+        assertTrue(preferences.pinnedProjects.isEmpty())
+        compose.onNodeWithContentDescription("Закреплённый проект").assertDoesNotExist()
+    }
     @Test @Config(sdk = [35], qualifiers = "w360dp-h800dp") fun jumpChipFitsA360dpPhoneWithoutNarrowingTheList() {
         compose.setContent { TrefoilTheme { ThreadList(fixture, {}, {}) } }
         val chip = compose.onNodeWithText("К проекту").getBoundsInRoot()

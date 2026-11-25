@@ -95,15 +95,60 @@ class ProjectGroupingTest {
     }
 
     @Test fun pinnedAndUnpinnedBandsTakeSeparateOrderRules() {
-        val threads = listOf(
-            thread("za", "a", latestRunCompletedAt = "2026-01-01T03:00:00Z"),
-            thread("pc", "c", latestRunCompletedAt = "2026-01-01T01:00:00Z"),
+        // Pinned by activity: Zebra (newest thread) before Apple, the reverse of alphabetical. Unpinned by
+        // alphabetical: apricot before Berry, the reverse of activity. Each band's rule is only satisfied by its own rule.
+        val named = listOf(
+            Project("x", "Zebra", "/x"), Project("y", "Apple", "/y"),
+            Project("z", "Berry", "/z"), Project("w", "apricot", "/w"),
         )
         val groups = projectGroups(
-            threads, projects, pinned = setOf("a"),
-            pinnedOrder = ProjectOrder.Alphabetical, otherOrder = ProjectOrder.Server,
+            listOf(
+                thread("x1", "x", latestRunCompletedAt = "2026-01-01T05:00:00Z"),
+                thread("y1", "y", latestRunCompletedAt = "2026-01-01T01:00:00Z"),
+                thread("z1", "z", latestRunCompletedAt = "2026-01-01T09:00:00Z"),
+                thread("w1", "w", latestRunCompletedAt = "2026-01-01T02:00:00Z"),
+            ),
+            named, pinned = setOf("x", "y"),
+            pinnedOrder = ProjectOrder.Activity, otherOrder = ProjectOrder.Alphabetical,
         )
-        assertEquals(listOf("a", "b", "c").filter { id -> groups.any { it.key == id } }, groups.map { it.key })
+        assertEquals(listOf("x", "y", "w", "z"), groups.map { it.key })
+    }
+
+    @Test fun serverOrderKeepsTheEnvironmentsProjectOrder() {
+        // Server order is the environment's own list, which is neither alphabetical nor by activity here.
+        val serverOrder = listOf(Project("z", "Zebra", "/z"), Project("a", "Apple", "/a"), Project("m", "Mango", "/m"))
+        val groups = projectGroups(
+            listOf(
+                thread("zt", "z"),
+                thread("at", "a", latestRunCompletedAt = "2026-01-01T09:00:00Z"),
+                thread("mt", "m"),
+            ),
+            serverOrder, otherOrder = ProjectOrder.Server,
+        )
+        assertEquals(listOf("z", "a", "m"), groups.map { it.key })
+    }
+
+    @Test fun projectActivityIsTheNewestOfItsThreads() {
+        // A project's anchor is the newest among its threads, not its first: only that maximum puts a (07:00) above
+        // b (05:00) here. The project's own rows follow the same rule, so its newest thread sits first.
+        val groups = projectGroups(
+            listOf(
+                thread("a-old", "a", latestRunCompletedAt = "2026-01-01T01:00:00Z"),
+                thread("b-only", "b", latestRunCompletedAt = "2026-01-01T05:00:00Z"),
+                thread("a-new", "a", latestRunCompletedAt = "2026-01-01T07:00:00Z"),
+            ),
+            projects, otherOrder = ProjectOrder.Activity,
+        )
+        assertEquals(listOf("a", "b"), groups.map { it.key })
+        assertEquals(listOf("a-new", "a-old"), groups[0].threads.map { it.id })
+    }
+
+    @Test fun orphanBucketTakesTheLastRowBelowThePinnedBand() {
+        val groups = projectGroups(
+            listOf(thread("pinned", "b"), thread("other", "a"), thread("gone", "deleted-project")),
+            projects, pinned = setOf("b"), otherOrder = ProjectOrder.Server,
+        )
+        assertEquals(listOf("b", "a", NoProjectKey), groups.map { it.key })
     }
 
     @Test fun activityOrderSortsProjectsByTheirNewestThreadActivity() {
