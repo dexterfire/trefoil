@@ -1642,7 +1642,7 @@ class T3Client(
         val skills = state.value.providers.flatMap { it.skills }.filter { it.invocable }
         if (skills.isEmpty()) return null
         val matched = SKILL_REFERENCE.findAll(text).map { it.groupValues[1] }.distinct()
-            .mapNotNull { name -> skills.firstOrNull { it.name == name } }.toList()
+            .mapNotNull { name -> skills.firstOrNull { it.name == name } }.take(200).toList() // wire limit: 200 records per message
         if (matched.isEmpty()) return null
         return buildJsonObject {
             put("version", 1)
