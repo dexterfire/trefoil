@@ -44,6 +44,10 @@ class ThreadListUiTest {
         ))
     /** Selected list rows; filter chips are tabs and carry their own selection. */
     private val selectedRow = isSelected() and SemanticsMatcher("is not a tab") { it.config.getOrNull(SemanticsProperties.Role) != Role.Tab }
+    /** Twelve projects of one thread each: taller than the phone window, so the last heading starts off-screen. */
+    private val manyProjects = ClientState(connection = ConnectionStatus.Connected, canWrite = true,
+        projects = (1..12).map { Project("p%02d".format(it), "Project %02d".format(it)) },
+        threads = (1..12).map { ThreadSummary("t%02d".format(it), "p%02d".format(it), "Thread %02d".format(it), "completed") })
 
     private fun systemBack() { compose.waitForIdle(); compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }; compose.waitForIdle() }
 
@@ -99,6 +103,65 @@ class ThreadListUiTest {
         compose.onNode(hasText("Работает") and hasText("1")).performClick()
         compose.onNodeWithText("Keep activity in the right order").assertExists()
         compose.onNodeWithText("Review the connection flow").assertDoesNotExist()
+    }
+    @Test fun jumpToProjectScrollsItsHeadingIntoView() {
+        compose.setContent { TrefoilTheme { ThreadList(manyProjects, {}, {}) } }
+        compose.onNodeWithContentDescription("Project 12 project").assertDoesNotExist()
+        compose.onNodeWithText("К проекту").performClick()
+        compose.onNodeWithText("Project 12").performClick()
+        compose.onNodeWithContentDescription("Project 12 project").assertIsDisplayed()
+    }
+    @Test fun jumpToAllProjectsOpensEveryGroupAndReturnsToTheTop() {
+        compose.setContent { TrefoilTheme { ThreadList(manyProjects, {}, {}) } }
+        compose.onNodeWithContentDescription("Project 01 project").performClick()
+        compose.onNodeWithText("Thread 01").assertDoesNotExist()
+        compose.onNodeWithText("К проекту").performClick()
+        compose.onNodeWithText("Project 12").performClick()
+        compose.onNodeWithContentDescription("Project 12 project").assertIsDisplayed()
+        compose.onNodeWithText("К проекту").performClick()
+        compose.onNodeWithText("Все проекты").performClick()
+        compose.onNodeWithContentDescription("Project 01 project").assertIsDisplayed()
+        compose.onNodeWithText("Thread 01").assertIsDisplayed()
+    }
+    @Test fun filterChipsOpenAFoldedProjectAndHideTheProjectsWithoutMatches() {
+        compose.setContent { TrefoilTheme { ThreadList(fixture, {}, {}) } }
+        // Both projects folded first: only a force-open can bring a matching row back.
+        compose.onNodeWithContentDescription("Trefoil project").performClick()
+        compose.onNodeWithContentDescription("T3 Code project").performClick()
+        compose.onNodeWithText("Review the connection flow").assertDoesNotExist()
+        compose.onNodeWithText("Keep activity in the right order").assertDoesNotExist()
+        compose.onNode(hasText("Нужен ответ") and hasText("1")).performClick()
+        compose.onNodeWithText("Review the connection flow").assertIsDisplayed()
+        compose.onNodeWithContentDescription("T3 Code project").assertDoesNotExist()
+        compose.onNode(hasText("Работает") and hasText("1")).performClick()
+        compose.onNodeWithText("Keep activity in the right order").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Trefoil project").assertDoesNotExist()
+    }
+    @Test fun projectHeaderHidesZeroCountsAndShowsTheOnesItHas() {
+        val state = ClientState(connection = ConnectionStatus.Connected, canWrite = true,
+            projects = listOf(Project("a", "Alpha"), Project("b", "Beta")),
+            threads = listOf(
+                ThreadSummary("needs", "a", "Needs a yes", "running", pendingRequestKind = "approval"),
+                ThreadSummary("a1", "a", "Quiet one", "completed"), ThreadSummary("a2", "a", "Quiet two", "completed"),
+                ThreadSummary("works", "b", "Running now", "running", latestRunId = "run"),
+                ThreadSummary("b1", "b", "Quiet three", "completed"), ThreadSummary("b2", "b", "Quiet four", "completed")))
+        compose.setContent { TrefoilTheme { ThreadList(state, {}, {}) } }
+        fun counts(project: String, count: Int) =
+            compose.onAllNodes(hasText(count.toString()) and hasAnyAncestor(hasContentDescription("$project project")), useUnmergedTree = true).fetchSemanticsNodes().size
+        // Alpha has one thread needing an answer and nothing working; Beta the other way round. The zero is not drawn,
+        // so the heading of a long-named project still fits a 360dp phone.
+        assertEquals(1, counts("Alpha", 1))
+        assertEquals(0, counts("Alpha", 0))
+        assertEquals(1, counts("Beta", 1))
+        assertEquals(0, counts("Beta", 0))
+    }
+    @Test @Config(sdk = [35], qualifiers = "w360dp-h800dp") fun jumpChipFitsA360dpPhoneWithoutNarrowingTheList() {
+        compose.setContent { TrefoilTheme { ThreadList(fixture, {}, {}) } }
+        val chip = compose.onNodeWithText("К проекту").getBoundsInRoot()
+        assertTrue("chip left edge ${chip.left}", chip.left >= 0.dp)
+        assertTrue("chip right edge ${chip.right}", chip.right <= 360.dp)
+        // The chip strip scrolls sideways, so it never takes width from the rows.
+        assertEquals(360f, compose.onNode(hasScrollToIndexAction()).getBoundsInRoot().right.value, 1f)
     }
     @Test fun waitingThreadShowsItsKindBeforeThePreviewAndOtherRowsStayUnchanged() {
         val threads = listOf(

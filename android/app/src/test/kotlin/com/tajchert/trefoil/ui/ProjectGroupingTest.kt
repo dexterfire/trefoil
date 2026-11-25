@@ -68,6 +68,23 @@ class ProjectGroupingTest {
         assertEquals(NoProjectKey, groups.last().key)
     }
 
+    @Test fun orphanBucketMergesEveryMissingProjectAndCountsWhatItHolds() {
+        val groups = projectGroups(
+            listOf(
+                thread("live", "a"),
+                thread("needs", "gone", pendingRequestKind = "approval"),
+                thread("works", "also-gone", status = "running", latestRunId = "run"),
+                thread("none", NoProjectKey),
+            ),
+            projects, otherOrder = ProjectOrder.Server,
+        )
+        assertEquals(listOf("a", NoProjectKey), groups.map { it.key })
+        val orphan = groups.last()
+        assertEquals(setOf("needs", "works", "none"), orphan.threads.map { it.id }.toSet())
+        assertEquals(1, orphan.needsYou)
+        assertEquals(1, orphan.working)
+    }
+
     @Test fun pinnedProjectsComeFirstInTheirOwnBand() {
         val groups = projectGroups(
             listOf(thread("t1", "a"), thread("t2", "b"), thread("t3", "c")),
@@ -178,7 +195,11 @@ class ProjectGroupingTest {
         val child = thread("child", "a").copy(parentThreadId = "parent", relationshipToParent = "subagent")
         val side = thread("side", "a").copy(parentThreadId = "parent", sideChat = true)
         val groups = projectGroups(listOf(thread("parent", "a"), child, side), projects, otherOrder = ProjectOrder.Server)
-        assertEquals(listOf("parent"), groups.single().threads.map { it.id })
+        val group = groups.single()
+        assertEquals(listOf("parent"), group.threads.map { it.id })
+        // The heading counts rows, not the children hidden under them.
+        assertEquals(0, group.needsYou)
+        assertEquals(0, group.working)
     }
 
     @Test fun archivedThreadsStayOutOfGroups() {

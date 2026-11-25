@@ -191,13 +191,8 @@ fun TrefoilApp(
             if (state.projects.isNotEmpty()) {
                 onPreferencesChange { current ->
                     val live = state.projects.mapTo(HashSet()) { it.id }
-                    val list = current.list
-                    current.copy(list = list.copy(
-                        pinnedProjects = list.pinnedProjects intersect live,
-                        expandedProjects = list.expandedProjects intersect live,
-                        projectIcons = list.projectIcons.filterKeys { it in live },
-                        projectColors = list.projectColors.filterKeys { it in live },
-                    ))
+                    val pruned = current.list.prunedTo(live)
+                    if (pruned == current.list) current else current.copy(list = pruned)
                 }
             }
         }

@@ -8,6 +8,7 @@ import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
@@ -218,6 +219,31 @@ internal fun threadListShowsEmpty(state: ClientState): Boolean = state.hasShellR
 /** Rows on screen came from a snapshot, also when a client does not report [ClientState.shellLoaded]. */
 private fun ClientState.hasShellRows() = shellLoaded || threads.isNotEmpty()
 
+/** A pending "К проекту" jump: the group whose heading to scroll to, or null for the top of the list (`Все проекты`). */
+private data class ProjectJump(val key: String?)
+
+/**
+ * Where each project's heading sits in the list, so `К проекту` can scroll to it. Mirrors the rows the LazyColumn
+ * builds: [leadingRows] covers the loading/empty row and the drafts section, then every group surviving [filter]
+ * contributes its heading and, while [isOpen], its threads.
+ */
+internal fun projectHeaderIndexes(
+    groups: List<ProjectGroup>,
+    filter: ThreadFilter,
+    leadingRows: Int = 0,
+    isOpen: (String) -> Boolean = { true },
+): Map<String, Int> {
+    var index = leadingRows
+    val indexes = LinkedHashMap<String, Int>()
+    groups.forEach { group ->
+        val visible = group.visibleThreads(filter)
+        if (visible.isEmpty()) return@forEach
+        indexes[group.key] = index
+        index += if (isOpen(group.key)) 1 + visible.size else 1
+    }
+    return indexes
+}
+
 /**
  * Threads list: header (machine pill or machine title on the rail layout), inline search, filter chips,
  * grouped rows and the New action. [selectedId] highlights a row only where the detail pane is visible.
@@ -258,6 +284,12 @@ internal fun ThreadList(
     // as a list because that is what the saved-state bundle can carry.
     var expandedProjects by rememberSaveable(state.environment?.id) { mutableStateOf(preferences.expandedProjects.toList()) }
     var expansionChosen by rememberSaveable(state.environment?.id) { mutableStateOf(preferences.expansionChosen) }
+    // Searching or filtering overrides the saved fold: the matching rows must be on screen to be useful. Until the user
+    // folds something, every project starts open.
+    fun isOpen(key: String): Boolean = query.isNotBlank() || filter != ThreadFilter.All ||
+        (!expansionChosen && key !in expandedProjects) || key in expandedProjects
+    val listState = rememberLazyListState()
+    var jump by remember { mutableStateOf<ProjectJump?>(null) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     val groups = remember(filtered, state.projects, preferences.pinnedOrder, preferences.otherOrder, preferences.threadOrder, preferences.pinnedProjects, now) {
         projectGroups(
@@ -299,24 +331,48 @@ internal fun ThreadList(
         banner()
         if (searching || query.isNotEmpty()) Box(Modifier.focusRequester(searchFocus).focusGroup()) { ThreadSearchField(query, { query = it }) { query = ""; searching = false } }
         ThreadFilterChips(filter, counts, state.projects, null, { filter = it }, { selected ->
-            // "Jump to project" scrolls rather than filters: the groups stay, selection opens the one asked for.
-            selected?.let { id ->
+            // "Jump to project" scrolls rather than filters: the groups stay, and the chosen heading comes into view.
+            if (selected == null) {
+                // "All projects" opens every group and returns to the top; it hides nothing.
+                val all = groups.mapTo(mutableSetOf()) { it.key }
+                if (!expansionChosen || expandedProjects.toSet() != all) {
+                    expandedProjects = all.toList()
+                    expansionChosen = true
+                    onPreferencesChange { it.copy(expandedProjects = all, expansionChosen = true) }
+                }
+                jump = ProjectJump(null)
+            } else {
                 // Jumping opens one project and leaves the rest as they were: the "everything open" default is
                 // materialised first, so the first jump does not fold every other project.
                 val current = if (expansionChosen) expandedProjects.toSet() else groups.mapTo(mutableSetOf()) { it.key }
-                if (id !in current) {
-                    val next = current + id
+                if (selected !in current) {
+                    val next = current + selected
                     expandedProjects = next.toList()
                     expansionChosen = true
                     onPreferencesChange { it.copy(expandedProjects = next, expansionChosen = true) }
                 }
+                jump = ProjectJump(selected)
             }
         }, tabletChrome = chrome != ThreadListChrome())
         val loading = threadListLoading(state)
+        // The heading's row index, computed from the same rows the LazyColumn below builds: jumping must land on the
+        // project's heading, so the scroll runs after the opening of the target has been composed.
+        val draftsOpen = query.isNotBlank() || "Drafts" in defaultExpanded
+        val emptyRow = if (groups.isEmpty() && draftRows.isEmpty() && (loading || threadListShowsEmpty(state))) 1 else 0
+        val draftRowsCount = if (draftRows.isEmpty()) 0 else 1 + if (draftsOpen) draftRows.size else 0
+        val headerIndexes = remember(groups, filter, emptyRow, draftRowsCount, query, expandedProjects, expansionChosen) {
+            projectHeaderIndexes(groups, filter, emptyRow + draftRowsCount, ::isOpen)
+        }
+        LaunchedEffect(jump, headerIndexes) {
+            val request = jump ?: return@LaunchedEffect
+            val index = if (request.key == null) 0 else headerIndexes[request.key]
+            if (index != null) listState.animateScrollToItem(index)
+            jump = null
+        }
         if ((state.busy || loading) && state.threads.isEmpty() || threadListUpdating(state)) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp).height(2.dp), color = c.accent, trackColor = c.s2)
         PullToRefreshBox(isRefreshing, onRefresh, Modifier.weight(1f).fillMaxWidth()) {
             val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottomInset + if (railBeside) 24.dp else 96.dp)) {
+            LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(bottom = bottomInset + if (railBeside) 24.dp else 96.dp)) {
                 if (groups.isEmpty() && draftRows.isEmpty()) {
                     if (loading) item(key = "loading") { ThreadListLoading() }
                     else if (threadListShowsEmpty(state)) item(key = "empty") {
@@ -324,7 +380,6 @@ internal fun ThreadList(
                     }
                 }
                 if (draftRows.isNotEmpty()) {
-                    val draftsOpen = query.isNotBlank() || "Drafts" in defaultExpanded
                     item(key = "shelf:Drafts", contentType = "shelf") {
                         ShelfLabel("Drafts", draftRows.size, draftsOpen, dot = null) { /* drafts keep their own single fold */ }
                     }
@@ -335,10 +390,7 @@ internal fun ThreadList(
                 groups.forEach { group ->
                     val visible = group.visibleThreads(filter)
                     if (visible.isEmpty()) return@forEach
-                    // Searching or filtering overrides the saved fold: the matching rows must be on screen to be useful.
-                    // Until the user folds something, every project starts open.
-                    val open = query.isNotBlank() || filter != ThreadFilter.All ||
-                        (!expansionChosen && group.key !in expandedProjects) || group.key in expandedProjects
+                    val open = isOpen(group.key)
                     val toggle = {
                         val current = if (expansionChosen) expandedProjects.toSet() else groups.mapTo(mutableSetOf()) { it.key }
                         val next = if (group.key in current) current - group.key else current + group.key

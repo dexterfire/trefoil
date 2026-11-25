@@ -39,6 +39,18 @@ data class AppPreferences(
 )
 
 /**
+ * The list preferences narrowed to the projects the environment still reports, so a deleted project leaves no pin,
+ * icon, colour or fold behind. [NoProjectKey] is not a project and is kept: the orphan bucket holds threads that lost
+ * their project, and dropping its fold would re-close the group on the next snapshot.
+ */
+internal fun ListPreferences.prunedTo(liveProjectIds: Set<String>): ListPreferences = copy(
+    pinnedProjects = pinnedProjects intersect liveProjectIds,
+    expandedProjects = expandedProjects.filterTo(mutableSetOf()) { it in liveProjectIds || it == NoProjectKey },
+    projectIcons = projectIcons.filterKeys { it in liveProjectIds },
+    projectColors = projectColors.filterKeys { it in liveProjectIds },
+)
+
+/**
  * Persists [AppPreferences] in one `SharedPreferences` file. Reads are synchronous and cheap; writes go through
  * [apply] and are visible to the flows immediately, so the UI never waits on disk.
  *
@@ -111,14 +123,10 @@ class PreferenceStore(private val prefs: SharedPreferences) {
      */
     fun pruneProjects(liveProjectIds: Set<String>): Boolean {
         val list = _state.value.list
-        val pinned = list.pinnedProjects intersect liveProjectIds
-        val expanded = list.expandedProjects intersect liveProjectIds
-        val icons = list.projectIcons.filterKeys { it in liveProjectIds }
-        val colors = list.projectColors.filterKeys { it in liveProjectIds }
-        val changed = pinned.size != list.pinnedProjects.size || expanded.size != list.expandedProjects.size ||
-            icons.size != list.projectIcons.size || colors.size != list.projectColors.size
-        if (changed) updateList { it.copy(pinnedProjects = pinned, expandedProjects = expanded, projectIcons = icons, projectColors = colors) }
-        return changed
+        val pruned = list.prunedTo(liveProjectIds)
+        if (pruned == list) return false
+        updateList { pruned }
+        return true
     }
 
     private fun updateList(transform: (ListPreferences) -> ListPreferences) =
