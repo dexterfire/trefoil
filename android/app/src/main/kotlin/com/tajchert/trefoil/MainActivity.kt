@@ -213,7 +213,10 @@ class MainActivity : ComponentActivity() {
             }
             val dismissedSuggestions by model.dismissedPromptSuggestions.collectAsStateWithLifecycle()
             val promptSuggestionUi = remember(dismissedSuggestions) { PromptSuggestionUi(dismissedSuggestions, model::dismissPromptSuggestion) }
+            val preferences by model.preferences.state.collectAsStateWithLifecycle()
             ProvideWindowFold { TrefoilApp(
+                preferences = preferences,
+                onPreferencesChange = model.preferences::update,
                 onThreadShown = model::setThreadShown,
                 usageOpenRequest = usageRequest,
                 pairLinkRequest = pairLinkRequest,

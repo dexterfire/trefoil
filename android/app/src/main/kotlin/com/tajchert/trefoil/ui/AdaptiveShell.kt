@@ -40,6 +40,8 @@ internal data class ShellActions(
     /** Local notifications about agent activity while in the background; null hides the entry. */
     val agentNotifications: Boolean = false,
     val onAgentNotificationsChange: ((Boolean) -> Unit)? = null,
+    /** Opens the app settings screen; null hides the entry. */
+    val onSettings: (() -> Unit)? = null,
     /**
      * "Dock beside thread": moves the open in-app browser from the Servers destination into the side panel's Preview tab in one state
      * change (destination Threads and tab Preview together), keeping the page. Null without dev servers. Windows too narrow to dock show
@@ -128,6 +130,11 @@ internal fun ColumnScope.ShellMenuItems(state: ClientState, actions: ShellAction
         onClick = { close(); actions.onAgentNotificationsChange.invoke(!actions.agentNotifications) })
     if (actions.onDisconnect != null) DropdownMenuItem(text = { Text("Disconnect machine") },
         leadingIcon = { Icon(TfIcons.Disconnect, null, Modifier.size(20.dp)) }, onClick = { close(); actions.onDisconnect.invoke() })
+    if (actions.onSettings != null) {
+        HorizontalDivider(Modifier.padding(vertical = 4.dp))
+        DropdownMenuItem(text = { Text("Настройки") }, leadingIcon = { Icon(TfIcons.Settings, null, Modifier.size(20.dp)) },
+            onClick = { close(); actions.onSettings.invoke() })
+    }
 }
 
 /** Slim connection notice under the list header: amber while connecting/offline, red on errors. */

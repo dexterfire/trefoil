@@ -168,6 +168,8 @@ fun TrefoilApp(
     promptSuggestions: PromptSuggestionUi = PromptSuggestionUi(),
     portBrowser: PortBrowserState? = null,
     onOpenPortInApp: (Int) -> Unit = {},
+    preferences: AppPreferences = AppPreferences(),
+    onPreferencesChange: ((AppPreferences) -> AppPreferences) -> Unit = {},
     onOpenPortExternal: (Int) -> Unit = {},
     onStopPortForward: (Int) -> Unit = {},
     onForwardPort: (Int) -> Unit = {},
@@ -176,11 +178,35 @@ fun TrefoilApp(
     onDismissStoppedForwards: (environmentId: String) -> Unit = {},
     start: ShellStart = ShellStart(),
 ) {
-    TrefoilTheme {
+    val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
+    // Brightness is an explicit setting: "System" is the only mode that follows the device.
+    val dark = when (preferences.brightness) {
+        BrightnessMode.System -> systemDark
+        BrightnessMode.Dark -> true
+        BrightnessMode.Light -> false
+    }
+    TrefoilTheme(darkTheme = dark, family = preferences.themeFamily) {
+        // A project removed from the environment must not leave a stale pin, icon, colour or fold behind.
+        LaunchedEffect(state.projects) {
+            if (state.projects.isNotEmpty()) {
+                onPreferencesChange { current ->
+                    val live = state.projects.mapTo(HashSet()) { it.id }
+                    val list = current.list
+                    current.copy(list = list.copy(
+                        pinnedProjects = list.pinnedProjects intersect live,
+                        expandedProjects = list.expandedProjects intersect live,
+                        projectIcons = list.projectIcons.filterKeys { it in live },
+                        projectColors = list.projectColors.filterKeys { it in live },
+                    ))
+                }
+            }
+        }
         val conversationState = rememberSaveableStateHolder()
         val shellContentState = rememberSaveableStateHolder()
         var adding by rememberSaveable { mutableStateOf(false) }
         var shortcutsOpen by rememberSaveable { mutableStateOf(false) }
+        var settingsOpen by rememberSaveable { mutableStateOf(false) }
+        var editingProject by rememberSaveable { mutableStateOf<String?>(null) }
         // The root key handler reads this at key time; the bindings are rebuilt after each composition (below) from the same actions the buttons call.
         val shortcutHost = remember { ShortcutHost() }
         // Key events only reach a window whose Compose tree holds focus, so the root takes focus once when nothing else has (a tap, Tab or a field keeps its own).
@@ -320,6 +346,7 @@ fun TrefoilApp(
             agentNotifications = agentNotifications,
             onAgentNotificationsChange = onAgentNotificationsChange,
             onDockBrowserBesideThread = if (portsAvailable) dockBrowserBesideThread else null,
+            onSettings = { settingsOpen = true },
         )
         val needsYouThreads = remember(state.threads) { needsYouThreads(state.threads) }
         val needsYou = needsYouThreads.size
@@ -426,7 +453,11 @@ fun TrefoilApp(
                 // Without a machine there is no rail, so a split window's start region begins at the window edge (the hinge itself does not move).
                 // The target is attached once this subcomposition lays out; a field, Tab or a tap that took focus first keeps it.
                 LaunchedEffect(Unit) { withFrameNanos { }; if (!rootHasFocus) rootFocus.requestFocus() }
-                val policy = shellPolicy(WindowSpec(maxWidth.value, maxHeight.value, LocalFold.current)).let { if (!connected && it.splitFold != null) it.copy(rail = false) else it }
+                // A forced width substitutes the window width the policy sees, so the tablet layout can be tried on a phone.
+                val effectiveWidth = preferences.forcedWidthDp ?: maxWidth.value
+                val policy = shellPolicy(WindowSpec(effectiveWidth, maxHeight.value, LocalFold.current))
+                    .let { if (!connected && it.splitFold != null) it.copy(rail = false) else it }
+                    .let { if (preferences.forceRail && !it.rail) it.copy(rail = true) else it }
                 val twoPane = policy.twoPane
                 SideEffect { wideLayout = twoPane }
                 val listState = rememberShellListState(policy, environmentId, start.listCollapsed)
@@ -559,7 +590,10 @@ fun TrefoilApp(
                                 isRefreshing = isRefreshing, onRefresh = onRefresh,
                                 composerDrafts = composerDrafts, onOpenDraft = { creatingProject = it; creating = true }, onDiscardDraft = discardDraft,
                                 // Two panes show one banner above both panes (ShellPanes); the phone keeps it in the list.
-                                banner = { if (!twoPane) ConnectionBanner(state, onReconnect) }, chrome = listChrome)
+                                banner = { if (!twoPane) ConnectionBanner(state, onReconnect) }, chrome = listChrome,
+                                preferences = preferences.list,
+                                onPreferencesChange = { transform -> onPreferencesChange { it.copy(list = transform(it.list)) } },
+                                onEditProject = { id -> editingProject = id })
                         }
                     }
                 }
@@ -716,6 +750,55 @@ fun TrefoilApp(
             seedPrompt = prompt.trim().takeIf { it.isNotEmpty() }
             onStartDraft(newDraft); creating = false; showThread = true
         }, composerDrafts, creatingProject, onSetModelFavorite)
+        if (settingsOpen) {
+            val density = LocalDensity.current
+            val width = with(density) { androidx.compose.ui.platform.LocalWindowInfo.current.containerSize.width.toDp().value }
+            ShellDestinationSettings(preferences, width, onPreferencesChange) { settingsOpen = false }
+        }
+        editingProject?.let { id ->
+            val project = state.projects.firstOrNull { it.id == id }
+            val icon = ProjectIcon.byId(preferences.list.projectIcons[id])
+            val color = ProjectColor.byId(preferences.list.projectColors[id]?.let { index -> ProjectColor.entries.getOrNull(index)?.id })
+            ProjectAppearanceDialog(
+                title = project?.title ?: NoProjectTitle, icon = icon, color = color,
+                onPickIcon = { picked -> onPreferencesChange { it.copy(list = it.list.copy(projectIcons = it.list.projectIcons + (id to (picked?.id ?: "")))) } },
+                onPickColor = { picked ->
+                    onPreferencesChange {
+                        val colors = if (picked == null) it.list.projectColors - id else it.list.projectColors + (id to picked.ordinal)
+                        it.copy(list = it.list.copy(projectColors = colors))
+                    }
+                },
+            ) { editingProject = null }
+        }
+    }
+}
+
+/** Full-screen settings destination: the screen itself plus Back, which is the only way out on a phone. */
+@Composable
+private fun ShellDestinationSettings(
+    preferences: AppPreferences,
+    currentWidthDp: Float,
+    onChange: ((AppPreferences) -> AppPreferences) -> Unit,
+    onBack: () -> Unit,
+) {
+    androidx.activity.compose.BackHandler(onBack = onBack)
+    SettingsScreen(preferences, currentWidthDp, onChange, onBack)
+}
+
+/** Hosts [ProjectAppearanceSheet] in a dialog: the picker needs the whole width for a 32-icon grid. */
+@Composable
+private fun ProjectAppearanceDialog(
+    title: String,
+    icon: ProjectIcon?,
+    color: ProjectColor?,
+    onPickIcon: (ProjectIcon?) -> Unit,
+    onPickColor: (ProjectColor?) -> Unit,
+    onClose: () -> Unit,
+) {
+    androidx.compose.ui.window.Dialog(onDismissRequest = onClose, properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+        Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp).wrapContentHeight(), contentAlignment = Alignment.Center) {
+            ProjectAppearanceSheet(title, icon, color, onPickIcon, onPickColor, onClose)
+        }
     }
 }
 

@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.ui.ComposerSubmission
+import com.tajchert.trefoil.ui.PreferenceStore
 import com.tajchert.trefoil.ui.SendOutcome
 import com.tajchert.trefoil.ui.QueueOperationGuard
 import com.tajchert.trefoil.ui.StopGuard
@@ -208,6 +209,8 @@ class TrefoilViewModel internal constructor(
     private var connectionEpoch = 0L
     var sshFilePickerActive = false
     private val prefs = application.getSharedPreferences("trefoil.ui", android.content.Context.MODE_PRIVATE)
+    /** Everything the settings screen owns: list order, pinning, expansion, project icons and colours, theme. */
+    val preferences = PreferenceStore(prefs)
     private val _keepConnected = MutableStateFlow(prefs.getBoolean(KEEP_CONNECTED, false))
     /** Opt-in: a foreground service keeps a live connection open (and auto-reconnect working) while in the background. */
     val keepConnected: StateFlow<Boolean> = _keepConnected.asStateFlow()
