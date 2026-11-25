@@ -1,5 +1,8 @@
 name: Android
-on: [workflow_dispatch]
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -16,7 +19,24 @@ jobs:
       - run: sdkmanager 'platforms;android-37.0' 'build-tools;36.1.0'
       - working-directory: android
         run: ./gradlew :core:model:test :core:ssh:test :core:protocol:test :core:session:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+      - name: Build release APK (signed when keystore secrets are set)
+        working-directory: android
+        run: |
+          if [ -n "$TREFOIL_KEYSTORE_B64" ]; then
+            echo "$TREFOIL_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/trefoil-release.jks"
+            export TREFOIL_KEYSTORE_FILE="$RUNNER_TEMP/trefoil-release.jks"
+          fi
+          ./gradlew :app:assembleRelease
+        env:
+          TREFOIL_KEYSTORE_B64: ${{ secrets.TREFOIL_KEYSTORE_B64 }}
+          TREFOIL_KEYSTORE_PASSWORD: ${{ secrets.TREFOIL_KEYSTORE_PASSWORD }}
+          TREFOIL_KEY_ALIAS: ${{ secrets.TREFOIL_KEY_ALIAS }}
+          TREFOIL_KEY_PASSWORD: ${{ secrets.TREFOIL_KEY_PASSWORD }}
       - uses: actions/upload-artifact@v4
         with:
           name: trefoil-debug
           path: android/app/build/outputs/apk/debug/*.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trefoil-release
+          path: android/app/build/outputs/apk/release/*.apk

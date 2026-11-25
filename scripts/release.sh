@@ -42,7 +42,8 @@ ANDROID_HOME="${ANDROID_HOME:-/opt/homebrew/share/android-commandlinetools}"
 [ -d "$ANDROID_HOME" ] || die "Android SDK not found at $ANDROID_HOME (set ANDROID_HOME or android/local.properties sdk.dir)"
 export ANDROID_HOME
 APKSIGNER="$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n 1 || true)"
-[ -x "$APKSIGNER" ] || die "apksigner not found under $ANDROID_HOME/build-tools"
+APKSIGNER_JAR="$(ls "$ANDROID_HOME"/build-tools/*/lib/apksigner.jar 2>/dev/null | sort -V | tail -n 1 || true)"
+[ -n "$APKSIGNER" ] || [ -n "$APKSIGNER_JAR" ] || die "apksigner not found under $ANDROID_HOME/build-tools"
 if [ "$CHECK" = 0 ]; then
   command -v gh >/dev/null || die "gh CLI is required"
   [ -n "$NOTES" ] && [ -f "$NOTES" ] || die "--notes FILE is required for a real release"
@@ -108,7 +109,11 @@ cd "$ANDROID"
 # Signature check
 APK="app/build/outputs/apk/release/app-release.apk"
 [ -f "$APK" ] || die "release APK missing: android/$APK (is keystore.properties valid?)"
-CERTS="$("$APKSIGNER" verify --verbose --print-certs "$APK")"
+if [ -n "$APKSIGNER" ]; then
+  CERTS="$("$APKSIGNER" verify --verbose --print-certs "$APK")"
+else
+  CERTS="$(java -jar "$APKSIGNER_JAR" verify --verbose --print-certs "$APK")"
+fi
 if grep -qi 'Android Debug' <<<"$CERTS"; then die "APK is signed with the debug certificate"; fi
 grep -q 'Verified using v[0-9]* scheme.*: true' <<<"$CERTS" || die "apksigner did not verify the APK"
 SIGNER="$(grep -m1 'certificate SHA-256 digest' <<<"$CERTS" || true)"
@@ -123,7 +128,7 @@ fi
 cd "$ROOT"
 OUT="$ANDROID/app/build/outputs/apk/release"
 cp "$OUT/app-release.apk" "$OUT/trefoil-$VERSION.apk"
-(cd "$OUT" && shasum -a 256 "trefoil-$VERSION.apk" > "trefoil-$VERSION.apk.sha256")
+(cd "$OUT" && { command -v shasum >/dev/null && shasum -a 256 "trefoil-$VERSION.apk" || sha256sum "trefoil-$VERSION.apk"; } > "trefoil-$VERSION.apk.sha256")
 git add android/app/build.gradle.kts
 git commit -m "chore(release): $VERSION" -m "${RELEASE_TRAILER:-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>}"
 COMMITTED=1
