@@ -17,6 +17,8 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
 import com.tajchert.trefoil.core.model.*
+import com.tajchert.trefoil.core.session.ComposerDraft
+import com.tajchert.trefoil.core.session.ComposerDraftKey
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -53,9 +55,9 @@ class ThreadListUiTest {
 
     @Test fun searchFindsProjectAndCollapseHidesEvenTheSelectedThread() {
         compose.setContent { TrefoilTheme { ThreadList(fixture.copy(selectedThreadId = "work"), {}, {}) } }
-        compose.onNodeWithContentDescription("T3 Code project").assertExists().performClick()
+        compose.onNodeWithContentDescription("Проект T3 Code").assertExists().performClick()
         compose.onNodeWithText("Keep activity in the right order").assertDoesNotExist()
-        compose.onNodeWithContentDescription("T3 Code project").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Свёрнуто")).performClick()
+        compose.onNodeWithContentDescription("Проект T3 Code").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Свёрнуто")).performClick()
         compose.onNodeWithText("Keep activity in the right order").assertExists()
         compose.onNodeWithContentDescription("Поиск").performClick()
         compose.onNodeWithText("Поиск тредов").performTextInput("T3 Code")
@@ -93,7 +95,7 @@ class ThreadListUiTest {
     @Test fun needsYouIsPulledToTopAndSettledFoldsIntoAnExpandableRow() {
         compose.setContent { TrefoilTheme { ThreadList(fixture, {}, {}) } }
         // Projects are the top level now: the amber underline on a project heading is what marks needs-you.
-        compose.onNodeWithContentDescription("Trefoil project").assertExists()
+        compose.onNodeWithContentDescription("Проект Trefoil").assertExists()
         compose.onNodeWithText("Review the connection flow").assertExists()
         // Settled threads live under their project, not in a separate fold.
         compose.onNodeWithText("Secure environment storage").assertExists()
@@ -106,36 +108,36 @@ class ThreadListUiTest {
     }
     @Test fun jumpToProjectScrollsItsHeadingIntoView() {
         compose.setContent { TrefoilTheme { ThreadList(manyProjects, {}, {}) } }
-        compose.onNodeWithContentDescription("Project 12 project").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Проект Project 12").assertDoesNotExist()
         compose.onNodeWithText("К проекту").performClick()
         compose.onNodeWithText("Project 12").performClick()
-        compose.onNodeWithContentDescription("Project 12 project").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Проект Project 12").assertIsDisplayed()
     }
     @Test fun jumpToAllProjectsOpensEveryGroupAndReturnsToTheTop() {
         compose.setContent { TrefoilTheme { ThreadList(manyProjects, {}, {}) } }
-        compose.onNodeWithContentDescription("Project 01 project").performClick()
+        compose.onNodeWithContentDescription("Проект Project 01").performClick()
         compose.onNodeWithText("Thread 01").assertDoesNotExist()
         compose.onNodeWithText("К проекту").performClick()
         compose.onNodeWithText("Project 12").performClick()
-        compose.onNodeWithContentDescription("Project 12 project").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Проект Project 12").assertIsDisplayed()
         compose.onNodeWithText("К проекту").performClick()
         compose.onNodeWithText("Все проекты").performClick()
-        compose.onNodeWithContentDescription("Project 01 project").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Проект Project 01").assertIsDisplayed()
         compose.onNodeWithText("Thread 01").assertIsDisplayed()
     }
     @Test fun filterChipsOpenAFoldedProjectAndHideTheProjectsWithoutMatches() {
         compose.setContent { TrefoilTheme { ThreadList(fixture, {}, {}) } }
         // Both projects folded first: only a force-open can bring a matching row back.
-        compose.onNodeWithContentDescription("Trefoil project").performClick()
-        compose.onNodeWithContentDescription("T3 Code project").performClick()
+        compose.onNodeWithContentDescription("Проект Trefoil").performClick()
+        compose.onNodeWithContentDescription("Проект T3 Code").performClick()
         compose.onNodeWithText("Review the connection flow").assertDoesNotExist()
         compose.onNodeWithText("Keep activity in the right order").assertDoesNotExist()
         compose.onNode(hasText("Нужен ответ") and hasText("1")).performClick()
         compose.onNodeWithText("Review the connection flow").assertIsDisplayed()
-        compose.onNodeWithContentDescription("T3 Code project").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Проект T3 Code").assertDoesNotExist()
         compose.onNode(hasText("Работает") and hasText("1")).performClick()
         compose.onNodeWithText("Keep activity in the right order").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Trefoil project").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Проект Trefoil").assertDoesNotExist()
     }
     @Test fun projectHeaderHidesZeroCountsAndShowsTheOnesItHas() {
         val state = ClientState(connection = ConnectionStatus.Connected, canWrite = true,
@@ -147,7 +149,7 @@ class ThreadListUiTest {
                 ThreadSummary("b1", "b", "Quiet three", "completed"), ThreadSummary("b2", "b", "Quiet four", "completed")))
         compose.setContent { TrefoilTheme { ThreadList(state, {}, {}) } }
         fun counts(project: String, count: Int) =
-            compose.onAllNodes(hasText(count.toString()) and hasAnyAncestor(hasContentDescription("$project project")), useUnmergedTree = true).fetchSemanticsNodes().size
+            compose.onAllNodes(hasText(count.toString()) and hasAnyAncestor(hasContentDescription("Проект $project")), useUnmergedTree = true).fetchSemanticsNodes().size
         // Alpha has one thread needing an answer and nothing working; Beta the other way round. The zero is not drawn,
         // so the heading of a long-named project still fits a 360dp phone.
         assertEquals(1, counts("Alpha", 1))
@@ -163,7 +165,7 @@ class ThreadListUiTest {
             }
         }
         // Two projects are on screen, so the menu is reached through the heading it belongs to.
-        fun menu() = compose.onNode(hasContentDescription("Меню проекта") and hasAnyAncestor(hasContentDescription("Trefoil project")))
+        fun menu() = compose.onNode(hasContentDescription("Меню проекта") and hasAnyAncestor(hasContentDescription("Проект Trefoil")))
         menu().performClick()
         compose.onNodeWithText("Закрепить проект").performClick()
         assertEquals(setOf("trefoil"), preferences.pinnedProjects)
@@ -182,16 +184,48 @@ class ThreadListUiTest {
         // The chip strip scrolls sideways, so it never takes width from the rows.
         assertEquals(360f, compose.onNode(hasScrollToIndexAction()).getBoundsInRoot().right.value, 1f)
     }
+    @Test @Config(sdk = [35], qualifiers = "w360dp-h800dp") fun longRussianProjectNameKeepsThe360dpLayoutInsideTheWindow() {
+        val project = "Проект с очень длинным названием"
+        val state = ClientState(connection = ConnectionStatus.Connected, canWrite = true,
+            projects = listOf(Project("long", project)),
+            threads = listOf(ThreadSummary("needs", "long", "Review the connection flow", "running", pendingRequestKind = "approval"),
+                ThreadSummary("works", "long", "Keep activity in the right order", "running", latestRunId = "run")))
+        compose.setContent { TrefoilTheme { ThreadList(state, {}, {}) } }
+        // Three chips stay on the 360dp phone; the fourth is a sideways scroll away, not cut off.
+        listOf("Все", "К проекту", "Нужен ответ").forEach { compose.onNodeWithText(it).assertIsDisplayed() }
+        compose.onNodeWithText("Работает").performScrollTo().assertIsDisplayed()
+        // The heading is reachable for the screen reader and stays inside the window although its name is long.
+        val header = compose.onNodeWithContentDescription("Проект $project").assertIsDisplayed().getBoundsInRoot()
+        assertTrue("heading left edge ${header.left}", header.left >= 0.dp)
+        assertTrue("heading right edge ${header.right}", header.right <= 360.dp)
+        // The list keeps the phone's width: a long heading truncates instead of pushing the rows out.
+        assertEquals(360f, compose.onNode(hasScrollToIndexAction()).getBoundsInRoot().right.value, 1f)
+        val title = compose.onNode(hasText(project), useUnmergedTree = true).getBoundsInRoot()
+        assertTrue("title right edge ${title.right}", title.right <= 360.dp)
+    }
+    @Test fun draftsShelfIsRussianAndOpenByDefault() {
+        val env = SavedEnvironment("fixture", "Fixture", "https://fixture.invalid", "fixture-token")
+        val draft = ComposerDraft(ComposerDraftKey.NewThread("fixture", "trefoil"), "Draft about the list", updatedAtMillis = 1L)
+        compose.setContent { TrefoilTheme { ThreadList(fixture.copy(environment = env), {}, {}, composerDrafts = ComposerDraftUi(mapOf(draft.key to draft))) } }
+        // Section labels are drawn uppercase, so the shelf reads "ЧЕРНОВИКИ".
+        compose.onNodeWithText("Черновики", ignoreCase = true).assertExists()
+        compose.onNodeWithContentDescription("Раздел Черновики").assertExists()
+        // Open by default: the draft row is on screen without unfolding the shelf.
+        compose.onNodeWithContentDescription("Черновик в Trefoil: Draft about the list").assertExists()
+    }
     @Test fun waitingThreadShowsItsKindBeforeThePreviewAndOtherRowsStayUnchanged() {
         val threads = listOf(
             ThreadSummary("ask", "trefoil", "Needs a yes", "running", pendingRequestKind = "approval", latestMessage = "\nRun ./gradlew test?"),
             ThreadSummary("bare", "trefoil", "Needs input bare", "running", pendingRequestKind = "user_input"),
+            ThreadSummary("work", "trefoil", "Still working", "running", latestRunId = "run"),
             ThreadSummary("done", "trefoil", "Plain thread", "completed", latestMessage = "All green."),
             ThreadSummary("bad", "trefoil", "Broken thread", "failed"))
         compose.setContent { TrefoilTheme { ThreadList(fixture.copy(threads = threads), {}, {}) } }
+        // Thread status labels stay English: snackbars, the agents sheet and thread details render them too.
         compose.onNodeWithText("Needs approval").assertExists()
         compose.onNodeWithText(" · Run ./gradlew test?").assertExists()
         compose.onNodeWithText("Нужен ответ").assertExists()
+        compose.onNode(hasContentDescription("Working", substring = true)).assertExists()
         compose.onNodeWithText("All green.").assertExists()
         compose.onNodeWithText("Failed").assertExists()
     }
@@ -231,12 +265,12 @@ class ThreadListUiTest {
         compose.setContent { TrefoilApp(state.value, emptyList(), { _, _, _ -> }, {},
             { id -> state.value = state.value.copy(selectedThreadId = id) }, {}, {}, { _, _, _ -> }, null, {}, {}, {}, {}, {}, {}, {}) }
         // Collapse Trefoil, open a thread from the still-expanded T3 Code group, then come back.
-        compose.onNodeWithContentDescription("Trefoil project").performClick()
+        compose.onNodeWithContentDescription("Проект Trefoil").performClick()
         compose.onNodeWithText("Polish the Android thread list").assertDoesNotExist()
         compose.onNodeWithText("Secure environment storage").assertDoesNotExist()
         systemBack()
         compose.onAllNodes(selectedRow).assertCountEquals(0)
-        compose.onNodeWithContentDescription("Trefoil project").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Свёрнуто"))
+        compose.onNodeWithContentDescription("Проект Trefoil").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Свёрнуто"))
         compose.onNodeWithContentDescription("Поиск").performClick()
         compose.onNodeWithText("Поиск тредов").performTextInput("Polish")
         compose.onNodeWithText("Polish the Android thread list").performClick()
@@ -247,7 +281,7 @@ class ThreadListUiTest {
     @Test fun headerOpensMachinesAndAppMenu() {
         val env = SavedEnvironment("fixture", "Mac mini", "https://fixture.invalid", "fixture-token")
         compose.setContent { TrefoilApp(fixture.copy(environment = env), listOf(env), { _, _, _ -> }, {}, {}, {}, {}, { _, _, _ -> }, null, {}, {}, {}, {}, {}, {}, {}) }
-        compose.onNodeWithContentDescription("More").performClick()
+        compose.onNodeWithContentDescription("Меню").performClick()
         listOf("Screen sessions", "Limits & usage", "Machines", "Connect machine", "Disconnect machine").forEach { compose.onNodeWithText(it).assertExists() }
         compose.onNodeWithText("Screen sessions").performClick()
         compose.onNodeWithContentDescription("Back to conversations").performClick()
@@ -261,8 +295,8 @@ class ThreadListUiTest {
     }
     @Test fun providerMarksAndWorkingDurationUseServerMetadata() {
         compose.setContent { TrefoilTheme { ThreadList(fixture, {}, {}) } }
-        compose.onNodeWithContentDescription("Agent: Work Codex").assertExists()
-        compose.onNodeWithContentDescription("Agent: Claude").assertExists()
+        compose.onNodeWithContentDescription("Агент: Work Codex").assertExists()
+        compose.onNodeWithContentDescription("Агент: Claude").assertExists()
         compose.onNodeWithContentDescription("Working 2m").assertExists()
     }
     @Test fun retainedClientSelectionDoesNotHighlightAThreadWhenListIsShownAgain() {

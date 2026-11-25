@@ -30,7 +30,7 @@ class ConnectionNavigationTest {
     @Test fun limitsAndUsageOpensFromOverflowMenu() {
         var opened = 0
         setApp(limited) { opened++ }
-        compose.onNodeWithContentDescription("More").performClick()
+        compose.onNodeWithContentDescription("Меню").performClick()
         compose.onNodeWithText("Limits & usage").performClick()
         compose.onNodeWithText("Offline · showing last known data").assertDoesNotExist()
         compose.runOnIdle { assertEquals(1, opened) }
@@ -75,7 +75,7 @@ class ConnectionNavigationTest {
     @Test fun disconnectedOverflowEntryOpensCachedLimitsWithoutFetching() {
         var opened = 0
         setApp(limited.copy(connection = ConnectionStatus.Disconnected, canReadUsage = false)) { opened++ }
-        compose.onNodeWithContentDescription("More").performClick()
+        compose.onNodeWithContentDescription("Меню").performClick()
         compose.onNodeWithText("Limits & usage").performClick()
         compose.onNodeWithText("Offline · showing last known data").assertExists()
         compose.runOnIdle { assertEquals(0, opened) }

@@ -316,6 +316,7 @@ internal fun ShellDrawerSheet(model: ShellNavModel, drawerState: DrawerState, cl
                 onClick = { close(); actions.onAgentNotificationsChange.invoke(!actions.agentNotifications) })
             if (actions.onDisconnect != null) DropdownMenuItem(text = { Text("Disconnect machine") },
                 leadingIcon = { Icon(TfIcons.Disconnect, null, Modifier.size(20.dp)) }, onClick = { close(); actions.onDisconnect.invoke() })
+            if (actions.onSettings != null) DrawerItem("Настройки", TfIcons.Settings, false, true, colors, { close(); actions.onSettings?.invoke() })
         }
     }
 }

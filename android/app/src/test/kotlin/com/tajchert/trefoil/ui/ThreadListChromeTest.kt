@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
@@ -36,7 +37,8 @@ class ThreadListChromeTest {
         ))
     private val shell = ShellActions(onMachines = {}, onConnectMachine = {}, onScreens = {}, onUsage = {}, onDisconnect = {})
 
-    private fun show(width: Int, chrome: ThreadListChrome, selectedId: String? = null, compact: Boolean = false, shellActions: ShellActions? = shell) {
+    private fun show(width: Int, chrome: ThreadListChrome, selectedId: String? = null, compact: Boolean = false, shellActions: ShellActions? = shell,
+                     state: ClientState = this.state) {
         compose.setContent {
             TrefoilTheme {
                 CompositionLocalProvider(LocalCompactHeight provides compact) {
@@ -51,10 +53,16 @@ class ThreadListChromeTest {
     @Test fun defaultChromeIsThePhoneHeader() {
         show(380, ThreadListChrome())
         compose.onNodeWithContentDescription("Сменить машину").assertExists()
-        compose.onNodeWithContentDescription("More").assertExists()
+        compose.onNodeWithContentDescription("Меню").assertExists()
         compose.onNodeWithContentDescription("Новый тред").assertExists()
         compose.onNodeWithContentDescription("Скрыть список тредов").assertDoesNotExist()
         compose.onNodeWithContentDescription("Открыть навигацию").assertDoesNotExist()
+    }
+
+    @Test fun machinePillDescribesItsRouteInRussian() {
+        show(380, ThreadListChrome(), state = state.copy(activeRoute = EnvironmentRoute(RouteKind.Ssh, "https://example.test/", RouteSource.Learned)))
+        val description = compose.onNodeWithContentDescription("Сменить машину").fetchSemanticsNode().config[SemanticsProperties.StateDescription]
+        assertTrue(description, description.endsWith("через SSH"))
     }
 
     @Test fun railChromeShowsTitleSearchAndCollapseOnly() {
@@ -63,7 +71,7 @@ class ThreadListChromeTest {
         compose.onNodeWithText("Workstation").assertExists()
         compose.onNodeWithContentDescription("Поиск").assertExists()
         compose.onNodeWithContentDescription("Сменить машину").assertDoesNotExist()
-        compose.onNodeWithContentDescription("More").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Меню").assertDoesNotExist()
         compose.onNodeWithContentDescription("Новый тред").assertDoesNotExist()
         compose.onNodeWithContentDescription("Открыть навигацию").assertDoesNotExist()
         compose.onNode(hasContentDescription("Limits and usage", substring = true)).assertDoesNotExist()
@@ -86,7 +94,7 @@ class ThreadListChromeTest {
         compose.onNode(hasContentDescription("Limits and usage", substring = true)).assertExists()
         compose.onNodeWithContentDescription("Поиск").assertExists()
         // The menu replaces the overflow button, and the list is too narrow for a collapse button.
-        compose.onNodeWithContentDescription("More").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Меню").assertDoesNotExist()
         compose.onNodeWithContentDescription("Скрыть список тредов").assertDoesNotExist()
         compose.onNodeWithContentDescription("Новый тред").assertExists()
     }
@@ -116,7 +124,7 @@ class ThreadListChromeTest {
     @Test fun navigationChromeWithoutMenuKeepsTheOverflowButton() {
         show(336, ThreadListChrome(onCollapse = {}))
         compose.onNodeWithContentDescription("Открыть навигацию").assertDoesNotExist()
-        compose.onNodeWithContentDescription("More").assertExists()
+        compose.onNodeWithContentDescription("Меню").assertExists()
     }
 
     @Test fun selectedRowKeepsItsSelectedSemantics() {

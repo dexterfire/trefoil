@@ -100,10 +100,10 @@ internal fun MachineStatusIndicator(status: MachineStatus, modifier: Modifier = 
 
 /** Overflow (⋮) button with the app menu (screen sessions, limits & usage, machines, connect, disconnect). */
 @Composable
-internal fun ShellMenuButton(state: ClientState, actions: ShellActions, tint: Color) {
+internal fun ShellMenuButton(state: ClientState, actions: ShellActions, tint: Color, description: String = "More", tooltip: String = "App menu") {
     var open by remember { mutableStateOf(false) }
     Box {
-        TfIconButton(TfIcons.More, "More", { open = true }, iconSize = 22.dp, tint = tint, tooltip = "App menu")
+        TfIconButton(TfIcons.More, description, { open = true }, iconSize = 22.dp, tint = tint, tooltip = tooltip)
         DropdownMenu(open, { open = false }) { ShellMenuItems(state, actions) { open = false } }
     }
 }

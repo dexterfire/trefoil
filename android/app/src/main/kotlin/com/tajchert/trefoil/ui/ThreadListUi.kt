@@ -184,7 +184,8 @@ internal fun threadFilterCounts(shelves: List<ThreadShelf>): Map<ThreadFilter, I
     ThreadFilter.Working to threadSections(shelves, ThreadFilter.Working).sumOf { it.threads.size },
 )
 
-private val defaultExpanded = listOf("Drafts", "Needs you", "Pinned", "Working", "Recent")
+/** Shelves the list starts open. The grouped list folds only its drafts shelf: a draft is work already begun. */
+private val defaultExpanded = listOf("Черновики")
 
 /**
  * Unsent new-thread prompts to list for [environmentId], newest first: only drafts with text whose project is in [projects]
@@ -357,7 +358,7 @@ internal fun ThreadList(
         val loading = threadListLoading(state)
         // The heading's row index, computed from the same rows the LazyColumn below builds: jumping must land on the
         // project's heading, so the scroll runs after the opening of the target has been composed.
-        val draftsOpen = query.isNotBlank() || "Drafts" in defaultExpanded
+        val draftsOpen = query.isNotBlank() || "Черновики" in defaultExpanded
         val emptyRow = if (groups.isEmpty() && draftRows.isEmpty() && (loading || threadListShowsEmpty(state))) 1 else 0
         val draftRowsCount = if (draftRows.isEmpty()) 0 else 1 + if (draftsOpen) draftRows.size else 0
         val headerIndexes = remember(groups, filter, emptyRow, draftRowsCount, query, expandedProjects, expansionChosen) {
@@ -381,7 +382,7 @@ internal fun ThreadList(
                 }
                 if (draftRows.isNotEmpty()) {
                     item(key = "shelf:Drafts", contentType = "shelf") {
-                        ShelfLabel("Drafts", draftRows.size, draftsOpen, dot = null) { /* drafts keep their own single fold */ }
+                        ShelfLabel("Черновики", draftRows.size, draftsOpen, dot = null) { /* drafts keep their own single fold */ }
                     }
                     if (draftsOpen) items(draftRows, key = { (draft, _) -> "draft:${(draft.key as ComposerDraftKey.NewThread).projectId}" }, contentType = { "draft" }) { (draft, project) ->
                         DraftRow(draft, project, now, { onOpenDraft(project.id) }, tabletChrome = chrome != ThreadListChrome()) { onDiscardDraft(draft) }
@@ -402,7 +403,7 @@ internal fun ThreadList(
                         ProjectHeader(
                             group = group, open = open,
                             icon = ProjectIcon.byId(preferences.projectIcons[group.key]),
-                            color = ProjectColor.byId(preferences.projectColors[group.key]?.let(::colorId)),
+                            color = ProjectColor.byId(preferences.projectColors[group.key]),
                             pinned = group.key in preferences.pinnedProjects,
                             onToggle = toggle,
                             onLongPress = { onEditProject(group.key) },
@@ -426,5 +427,3 @@ internal fun ThreadList(
     }
 }
 
-/** Stored colours are indices into [ProjectColor]; this maps one back for the tile. */
-private fun colorId(value: Int): String = ProjectColor.entries.getOrNull(value)?.id.orEmpty()

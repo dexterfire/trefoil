@@ -101,7 +101,7 @@ internal fun ThreadListHeader(
                     TfIconButton(TfIcons.Search, "Поиск", onSearch, iconSize = 22.dp, tint = c.text, tooltip = tooltipWithShortcut("Поиск тредов", ShortcutId.SearchThreads))
                     val collapse = chrome.onCollapse
                     if (collapse != null && listWidth >= CollapseMinWidth) TfIconButton(TfIcons.PanelLeft, "Скрыть список тредов", collapse, iconSize = 22.dp, tint = c.text, tooltip = tooltipWithShortcut("Скрыть список тредов", ShortcutId.ToggleThreadList))
-                    else if (navigation == null && shell != null) ShellMenuButton(state, shell, c.text)
+                    else if (navigation == null && shell != null) ShellMenuButton(state, shell, c.text, description = "Меню", tooltip = "Меню приложения")
                 }
             }
             else -> Row(Modifier.fillMaxWidth().height(minHeight).padding(start = 14.dp, end = 6.dp),
@@ -109,7 +109,7 @@ internal fun ThreadListHeader(
                 Box(Modifier.weight(1f)) { MachinePill(state, onClick = { shell?.onMachines?.invoke() }) }
                 shell?.onUsage?.let { openUsage -> LimitChip(remember(state.providers) { tightestLimitPercent(state.providers) }, limitNumber, openUsage) }
                 TfIconButton(TfIcons.Search, "Поиск", onSearch, iconSize = 22.dp, tint = c.text, tooltip = tooltipWithShortcut("Поиск тредов", ShortcutId.SearchThreads))
-                if (shell != null) ShellMenuButton(state, shell, c.text)
+                if (shell != null) ShellMenuButton(state, shell, c.text, description = "Меню", tooltip = "Меню приложения")
             }
         }
     }
@@ -131,7 +131,7 @@ internal fun MachinePill(state: ClientState, onClick: () -> Unit, showRoute: Boo
     Surface(onClick = onClick, shape = RoundedCornerShape(20.dp), color = c.s2, contentColor = c.text,
         modifier = Modifier.focusRing(RoundedCornerShape(20.dp)).handPointer().semantics {
             contentDescription = "Сменить машину"
-            stateDescription = listOfNotNull(state.environment?.name ?: "Нет машины", status.label, route?.let { "via ${routeKindLabel(it.kind)}" }).joinToString(", ")
+            stateDescription = listOfNotNull(state.environment?.name ?: "Нет машины", status.label, route?.let { "через ${routeKindLabel(it.kind)}" }).joinToString(", ")
         }) {
         Row(Modifier.height(40.dp).padding(start = 14.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             StatusDot(status.color(c))
@@ -229,7 +229,7 @@ internal fun ProjectHeader(
     Box(
         Modifier.fillMaxWidth()
             .semantics {
-                contentDescription = "${group.title} project"
+                contentDescription = "Проект ${group.title}"
                 stateDescription = if (open) "Развёрнуто" else "Свёрнуто"
                 heading()
             }
@@ -313,7 +313,7 @@ internal fun ProjectMenu(
 @Composable
 internal fun ShelfLabel(title: String, count: Int, open: Boolean, dot: Color?, toggle: () -> Unit) {
     val c = Tf.colors
-    Row(Modifier.fillMaxWidth().focusRing().handPointer().clickable(onClick = toggle).semantics { contentDescription = "$title shelf"; stateDescription = if (open) "Развёрнуто" else "Свёрнуто"; heading() }
+    Row(Modifier.fillMaxWidth().focusRing().handPointer().clickable(onClick = toggle).semantics { contentDescription = "Раздел $title"; stateDescription = if (open) "Развёрнуто" else "Свёрнуто"; heading() }
         .padding(start = 20.dp, end = 16.dp, top = 18.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         SectionLabel(title, Modifier.weight(1f), dot = dot)
         if (!open) {
@@ -328,7 +328,7 @@ internal fun ShelfLabel(title: String, count: Int, open: Boolean, dot: Color?, t
 internal fun FoldedShelfRow(title: String, count: Int, open: Boolean, toggle: () -> Unit) {
     val c = Tf.colors
     val angle by animateFloatAsState(if (open) 90f else 0f, label = "fold")
-    Row(Modifier.fillMaxWidth().focusRing().handPointer().clickable(onClick = toggle).semantics { contentDescription = "$title shelf"; stateDescription = if (open) "Развёрнуто" else "Свёрнуто" }
+    Row(Modifier.fillMaxWidth().focusRing().handPointer().clickable(onClick = toggle).semantics { contentDescription = "Раздел $title"; stateDescription = if (open) "Развёрнуто" else "Свёрнуто" }
         .padding(horizontal = 20.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Icon(TfIcons.Settled, null, Modifier.size(18.dp), tint = c.muted)
         Text(title, fontFamily = InterFamily, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = c.muted)
