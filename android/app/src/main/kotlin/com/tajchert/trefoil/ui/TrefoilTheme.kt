@@ -40,27 +40,12 @@ data class TrefoilColors(
     val sheet: Color, val rail: Color, val scrim: Color,
 )
 
-val TrefoilDark = TrefoilColors(
-    isDark = true,
-    bg = Color(0xFF0F1111), s1 = Color(0xFF161919), s2 = Color(0xFF1F2323), s3 = Color(0xFF2A2F2F), line = Color(0xFF272C2C),
-    text = Color(0xFFECEFEE), muted = Color(0xFF9CA4A2),
-    accent = Color(0xFF8EDB9B), accentSoft = Color(0xFF1B3222), onAccent = Color(0xFF08200F),
-    amber = Color(0xFFF4B55B), amberSoft = Color(0xFF35280F),
-    blue = Color(0xFF82BCFF), blueSoft = Color(0xFF15243A),
-    green = Color(0xFF74D08F), red = Color(0xFFF28B82),
-    sheet = Color(0xFF181B1B), rail = Color(0xFF0B0D0D), scrim = Color(0x9E000000),
-)
-
-val TrefoilLight = TrefoilColors(
-    isDark = false,
-    bg = Color(0xFFF6F7F6), s1 = Color(0xFFFFFFFF), s2 = Color(0xFFECEFED), s3 = Color(0xFFE1E6E3), line = Color(0xFFDDE2DF),
-    text = Color(0xFF111514), muted = Color(0xFF56605D),
-    accent = Color(0xFF1E7A3A), accentSoft = Color(0xFFDCF0E0), onAccent = Color(0xFFFFFFFF),
-    amber = Color(0xFF955700), amberSoft = Color(0xFFFBEACB),
-    blue = Color(0xFF1C5DB5), blueSoft = Color(0xFFDCE8FA),
-    green = Color(0xFF1E7A3A), red = Color(0xFFB3261E),
-    sheet = Color(0xFFFFFFFF), rail = Color(0xFFEDF0EE), scrim = Color(0x61111514),
-)
+/**
+ * Trefoil design tokens. Every family is defined in [com.tajchert.trefoil.ui.theme.ThemeFamilies]; these two are its
+ * default halves, kept as the values previews and screenshots render when no family is chosen.
+ */
+val TrefoilDark = com.tajchert.trefoil.ui.theme.ThemeFamily.Trefoil.dark
+val TrefoilLight = com.tajchert.trefoil.ui.theme.ThemeFamily.Trefoil.light
 
 val LocalTrefoilColors = staticCompositionLocalOf { TrefoilDark }
 
@@ -136,9 +121,17 @@ private fun TrefoilColors.toMaterial(): ColorScheme {
     )
 }
 
+/**
+ * Renders [content] with the chosen theme. [family] picks the accent identity, [darkTheme] its half; [rememberSaveable]d
+ * callers pass the values the settings screen wrote, while previews and tests keep the original defaults.
+ */
 @Composable
-fun TrefoilTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
-    val tokens = if (darkTheme) TrefoilDark else TrefoilLight
+internal fun TrefoilTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    family: com.tajchert.trefoil.ui.theme.ThemeFamily = com.tajchert.trefoil.ui.theme.ThemeFamily.Trefoil,
+    content: @Composable () -> Unit,
+) {
+    val tokens = family.palette(darkTheme)
     CompositionLocalProvider(LocalTrefoilColors provides tokens) {
         MaterialTheme(
             colorScheme = tokens.toMaterial(),
