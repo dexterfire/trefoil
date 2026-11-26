@@ -25,6 +25,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
@@ -39,6 +40,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
+import com.tajchert.trefoil.R
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.ui.adaptive.AdaptiveSpec
 import com.tajchert.trefoil.ui.adaptive.TfIconButton
@@ -146,10 +148,10 @@ internal fun MachinesScreen(
     }
     forgetting?.let { environment ->
         AlertDialog(onDismissRequest = { forgettingId = null }, containerColor = c.sheet, shape = RoundedCornerShape(28.dp),
-            title = { Text("Forget ${environment.name}?") },
-            text = { Text("Saved credentials for this machine are removed from this device. You can pair it again later.", color = c.muted) },
-            confirmButton = { TextButton(onClick = { forgettingId = null; onForget(environment) }) { Text("Forget", color = c.red) } },
-            dismissButton = { TextButton(onClick = { forgettingId = null }) { Text("Cancel") } })
+            title = { Text(stringResource(R.string.forget_machine_title, environment.name)) },
+            text = { Text(stringResource(R.string.forget_machine_body), color = c.muted) },
+            confirmButton = { TextButton(onClick = { forgettingId = null; onForget(environment) }) { Text(stringResource(R.string.forget), color = c.red) } },
+            dismissButton = { TextButton(onClick = { forgettingId = null }) { Text(stringResource(R.string.cancel)) } })
     }
 }
 
@@ -163,20 +165,20 @@ private fun MachinesColumn(
     val c = Tf.colors
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (onBack != null) TfIconButton(TfIcons.Back, "Back", onBack, Modifier.size(48.dp), tint = c.text)
+            if (onBack != null) TfIconButton(TfIcons.Back, stringResource(R.string.back), onBack, Modifier.size(48.dp), tint = c.text)
         }
         LazyColumn(Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 24.dp)) {
             item {
                 TrefoilMark(Modifier.size(44.dp).offset(x = (-6).dp), color = Tf.colors.accent)
                 Spacer(Modifier.height(12.dp))
-                Text("Machines", style = TrefoilType.display, color = c.text)
+                Text(stringResource(R.string.machines_title), style = TrefoilType.display, color = c.text)
                 if (state.environment == null) {
                     Spacer(Modifier.height(8.dp))
-                    Text("Follow your T3 Code conversations and keep remote work moving from anywhere.", style = TrefoilType.preview, color = c.muted)
+                    Text(stringResource(R.string.machines_tagline), style = TrefoilType.preview, color = c.muted)
                 }
             }
             if (saved.isNotEmpty()) {
-                item { Text("SAVED", style = TrefoilType.section, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = 20.dp, bottom = 10.dp)) }
+                item { Text(stringResource(R.string.machines_saved), style = TrefoilType.section, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = 20.dp, bottom = 10.dp)) }
                 items(saved, key = { it.id }) { environment ->
                     MachineCard(environment, state.environment?.id == environment.id, state, machineStatus(environment, state, probes), onConnect = { onConnect(environment) },
                         onForget = { onForget(environment) }, onDisconnect = onDisconnect, modifier = Modifier.padding(bottom = 10.dp),
@@ -184,7 +186,7 @@ private fun MachinesColumn(
                 }
             }
             item {
-                Text("ADD", style = TrefoilType.section, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = if (saved.isEmpty()) 28.dp else 18.dp, bottom = 10.dp))
+                Text(stringResource(R.string.machines_add), style = TrefoilType.section, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = if (saved.isEmpty()) 28.dp else 18.dp, bottom = 10.dp))
                 AddTiles(state, onPair, onSsh)
             }
         }
@@ -213,10 +215,10 @@ private fun MachinesWideColumn(
         if (state.environment != null) item { MachinesPaneHeader(onBack) }
         else {
             if (onBack != null) item { MachinesBackRow(onBack) }
-            item { MachinesBrandHeader("Follow your T3 Code conversations and keep remote work moving from anywhere.") }
+            item { MachinesBrandHeader(stringResource(R.string.machines_tagline)) }
         }
         if (saved.isNotEmpty()) {
-            item { Text("SAVED", style = TrefoilType.section, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = 8.dp)) }
+            item { Text(stringResource(R.string.machines_saved), style = TrefoilType.section, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = 8.dp)) }
             @Composable fun Card(environment: SavedEnvironment, modifier: Modifier, fillHeight: Boolean) = MachineCard(
                 environment, state.environment?.id == environment.id, state, machineStatus(environment, state, probes), onConnect = { onConnect(environment) },
                 onForget = { onForget(environment) }, onDisconnect = onDisconnect, modifier = modifier.testTag("machine-card-${environment.id}"),
@@ -233,7 +235,7 @@ private fun MachinesWideColumn(
                 }
             }
         }
-        item { Text("ADD", style = TrefoilType.section, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = 6.dp)) }
+        item { Text(stringResource(R.string.machines_add), style = TrefoilType.section, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = 6.dp)) }
         item { AddTiles(state, onPair, onSsh, roomy = true) }
     }
 }
@@ -243,8 +245,8 @@ private fun MachinesWideColumn(
 private fun MachinesPaneHeader(onBack: (() -> Unit)?, modifier: Modifier = Modifier) {
     val c = Tf.colors
     Row(modifier.fillMaxWidth().height(64.dp).testTag("machines-pane-header"), verticalAlignment = Alignment.CenterVertically) {
-        if (onBack != null) Box(Modifier.offset(x = (-12).dp)) { TfIconButton(TfIcons.Back, "Back", onBack, Modifier.size(48.dp), tint = c.text) }
-        Text("Machines", Modifier.then(if (onBack != null) Modifier.offset(x = (-12).dp) else Modifier).semantics { heading() },
+        if (onBack != null) Box(Modifier.offset(x = (-12).dp)) { TfIconButton(TfIcons.Back, stringResource(R.string.back), onBack, Modifier.size(48.dp), tint = c.text) }
+        Text(stringResource(R.string.machines_title), Modifier.then(if (onBack != null) Modifier.offset(x = (-12).dp) else Modifier).semantics { heading() },
             style = MaterialTheme.typography.headlineSmall, color = c.text, maxLines = 1)
     }
 }
@@ -253,7 +255,7 @@ private fun MachinesPaneHeader(onBack: (() -> Unit)?, modifier: Modifier = Modif
 @Composable
 private fun MachinesBackRow(onBack: () -> Unit) {
     Row(Modifier.fillMaxWidth().height(64.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.offset(x = (-12).dp)) { TfIconButton(TfIcons.Back, "Back", onBack, Modifier.size(48.dp), tint = Tf.colors.text) }
+        Box(Modifier.offset(x = (-12).dp)) { TfIconButton(TfIcons.Back, stringResource(R.string.back), onBack, Modifier.size(48.dp), tint = Tf.colors.text) }
     }
 }
 
@@ -264,7 +266,7 @@ private fun MachinesBrandHeader(subtitle: String) {
     Column(Modifier.fillMaxWidth().testTag("machines-brand-header")) {
         TrefoilMark(Modifier.size(44.dp).offset(x = (-6).dp), color = c.accent)
         Spacer(Modifier.height(12.dp))
-        Text("Machines", Modifier.semantics { heading() }, style = TrefoilType.display, color = c.text)
+        Text(stringResource(R.string.machines_title), Modifier.semantics { heading() }, style = TrefoilType.display, color = c.text)
         Spacer(Modifier.height(8.dp))
         Text(subtitle, style = TrefoilType.preview, color = c.muted)
     }
@@ -275,8 +277,8 @@ private fun MachinesBrandHeader(subtitle: String) {
 private fun AddTiles(state: ClientState, onPair: () -> Unit, onSsh: () -> Unit, modifier: Modifier = Modifier, roomy: Boolean = false, minHeight: Dp = 88.dp) {
     val c = Tf.colors
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(if (roomy) 12.dp else 10.dp)) {
-        AddTile("Link", "Pair with link", TfIcons.Link, primary = true, enabled = !state.busy, onClick = onPair, modifier = Modifier.weight(1f), minHeight = minHeight)
-        AddTile("SSH", "Connect over SSH", TfIcons.Terminal, primary = false, enabled = !state.busy, onClick = onSsh, modifier = Modifier.weight(1f),
+        AddTile(stringResource(R.string.add_tile_link), stringResource(R.string.add_pair_title), TfIcons.Link, primary = true, enabled = !state.busy, onClick = onPair, modifier = Modifier.weight(1f), minHeight = minHeight)
+        AddTile(stringResource(R.string.add_tile_ssh), stringResource(R.string.add_ssh_title), TfIcons.Terminal, primary = false, enabled = !state.busy, onClick = onSsh, modifier = Modifier.weight(1f),
             minHeight = minHeight, fill = if (roomy) c.s1 else Color.Transparent)
     }
 }
@@ -287,24 +289,24 @@ private fun MachinesFirstRun(containerWidth: Float, state: ClientState, onBack: 
     val c = Tf.colors
     val cardShape = RoundedCornerShape(28.dp)
     Box(Modifier.fillMaxSize()) {
-        if (onBack != null) Box(Modifier.align(Alignment.TopStart).padding(4.dp)) { TfIconButton(TfIcons.Back, "Back", onBack, Modifier.size(48.dp), tint = c.text) }
+        if (onBack != null) Box(Modifier.align(Alignment.TopStart).padding(4.dp)) { TfIconButton(TfIcons.Back, stringResource(R.string.back), onBack, Modifier.size(48.dp), tint = c.text) }
         Column(
             Modifier.align(Alignment.Center).padding(24.dp).widthIn(max = firstRunCardMaxWidth(containerWidth).dp).fillMaxWidth()
                 .clip(cardShape).background(c.s1).border(1.dp, c.line, cardShape).verticalScroll(rememberScrollState()).padding(32.dp),
         ) {
             TrefoilMark(Modifier.size(48.dp).offset(x = (-6).dp), color = c.accent)
             Spacer(Modifier.height(14.dp))
-            Text("Machines", style = TrefoilType.display, color = c.text)
+            Text(stringResource(R.string.machines_title), style = TrefoilType.display, color = c.text)
             Spacer(Modifier.height(8.dp))
-            Text("Follow your T3 Code conversations and keep remote work moving from anywhere.", style = TrefoilType.preview, color = c.muted)
-            Text("ADD", style = TrefoilType.section, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = 28.dp, bottom = 10.dp))
+            Text(stringResource(R.string.machines_tagline), style = TrefoilType.preview, color = c.muted)
+            Text(stringResource(R.string.machines_add), style = TrefoilType.section, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = 28.dp, bottom = 10.dp))
             Row(Modifier.fillMaxWidth().height(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                AddTile("Pair with link", "Pair with link", TfIcons.Link, primary = true, enabled = !state.busy, onClick = onPair,
-                    modifier = Modifier.weight(1f).fillMaxHeight(), helper = "Paste a pairing link", minHeight = 112.dp)
-                AddTile("Connect over SSH", "Connect over SSH", TfIcons.Terminal, primary = false, enabled = !state.busy, onClick = onSsh,
-                    modifier = Modifier.weight(1f).fillMaxHeight(), helper = "Use an SSH login", minHeight = 112.dp, fill = c.bg)
+                AddTile(stringResource(R.string.add_pair_title), stringResource(R.string.add_pair_title), TfIcons.Link, primary = true, enabled = !state.busy, onClick = onPair,
+                    modifier = Modifier.weight(1f).fillMaxHeight(), helper = stringResource(R.string.add_pair_helper), minHeight = 112.dp)
+                AddTile(stringResource(R.string.add_ssh_title), stringResource(R.string.add_ssh_title), TfIcons.Terminal, primary = false, enabled = !state.busy, onClick = onSsh,
+                    modifier = Modifier.weight(1f).fillMaxHeight(), helper = stringResource(R.string.add_ssh_helper), minHeight = 112.dp, fill = c.bg)
             }
-            Text("Trefoil verifies a machine before it connects and never installs anything on it.", style = TrefoilType.meta, color = c.muted, modifier = Modifier.padding(top = 20.dp))
+            Text(stringResource(R.string.machines_verify_note), style = TrefoilType.meta, color = c.muted, modifier = Modifier.padding(top = 20.dp))
         }
     }
 }
@@ -320,7 +322,7 @@ private fun MachinesListDetail(
     val selected = selectedMachine(saved, chosenId, state.environment?.id)
     val pane = rememberTwoPaneState(MachinesLayoutSpec.ListWidth.dp)
     TfTwoPane(
-        pane, MachinesLayoutSpec.ListWidth.dp, modifier = Modifier.fillMaxSize(), collapseBelow = null, dividerLabel = "Resize machine list",
+        pane, MachinesLayoutSpec.ListWidth.dp, modifier = Modifier.fillMaxSize(), collapseBelow = null, dividerLabel = stringResource(R.string.resize_machine_list),
         start = {
             val brandTop = if (state.environment == null && onBack == null) 24.dp else 0.dp
             LazyColumn(Modifier.fillMaxSize().testTag("machines-list"), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = brandTop, bottom = 24.dp)) {
@@ -328,15 +330,15 @@ private fun MachinesListDetail(
                 if (state.environment != null) item { MachinesPaneHeader(onBack) }
                 else {
                     if (onBack != null) item { MachinesBackRow(onBack) }
-                    item { MachinesBrandHeader("Not connected") }
+                    item { MachinesBrandHeader(stringResource(R.string.machines_not_connected)) }
                 }
-                item { Text("SAVED", style = TrefoilType.section, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = 20.dp, bottom = 10.dp)) }
+                item { Text(stringResource(R.string.machines_saved), style = TrefoilType.section, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = 20.dp, bottom = 10.dp)) }
                 items(saved, key = { it.id }) { environment ->
                     MachineListCard(environment, selected?.id == environment.id, state, machineStatus(environment, state, probes),
                         onSelect = { onChoose(environment.id) }, modifier = Modifier.padding(bottom = 10.dp))
                 }
                 item {
-                    Text("ADD", style = TrefoilType.section, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = 18.dp, bottom = 10.dp))
+                    Text(stringResource(R.string.machines_add), style = TrefoilType.section, color = c.muted, modifier = Modifier.padding(start = 4.dp, top = 18.dp, bottom = 10.dp))
                     AddTiles(state, onPair, onSsh, roomy = true, minHeight = MachinesLayoutSpec.ListAddTileMinHeight.dp)
                 }
             }
@@ -363,11 +365,13 @@ private fun MachineListCard(environment: SavedEnvironment, selected: Boolean, st
     val activeRoute = if (live) state.activeRoute else null
     val working = if (live) machineWorkingCount(state.threads) else 0
     val needsYou = if (live) state.threads.count { !it.archived && threadIndicator(it).kind in setOf("attention", "input") } else 0
+    val statusLabel = status.resolvedLabel()
+    val viaRoute = activeRoute?.let { stringResource(R.string.route_via, routeKindLabel(it.kind)) }
     Row(
         modifier.fillMaxWidth().clip(shape).background(c.s1).border(if (selected) 2.dp else 1.dp, if (selected) c.accent else c.line, shape)
             .testTag("machine-list-card-${environment.id}")
             .focusRing().handPointer().clickable(role = Role.Button, onClick = onSelect)
-            .semantics { this.selected = selected; stateDescription = listOfNotNull(status.label, activeRoute?.let { "via ${routeKindLabel(it.kind)}" }).joinToString(", ") }
+            .semantics { this.selected = selected; stateDescription = listOfNotNull(statusLabel, viaRoute).joinToString(", ") }
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
@@ -376,7 +380,7 @@ private fun MachineListCard(environment: SavedEnvironment, selected: Boolean, st
             Text(environment.name, style = TrefoilType.rowTitle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(machineSubtitle(environment), style = TrefoilType.mono, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
             if (!live && status != MachineStatus.Unknown && status != MachineStatus.Offline) {
-                Text(if (status.inProgress) "${status.label}…" else status.label, style = TrefoilType.meta,
+                Text(if (status.inProgress) "${status.resolvedLabel()}…" else status.resolvedLabel(), style = TrefoilType.meta,
                     color = if (status.inProgress) c.muted else status.color(c), maxLines = 1, modifier = Modifier.padding(top = 6.dp))
             }
             // Route and counts share one line, wrapping only when the card is too narrow for both.
@@ -388,7 +392,7 @@ private fun MachineListCard(environment: SavedEnvironment, selected: Boolean, st
                 if (working > 0 || needsYou > 0) MachineCounts(working, needsYou)
             }
         }
-        if (current) Icon(TfIcons.Check, "Current machine", tint = c.accent)
+        if (current) Icon(TfIcons.Check, stringResource(R.string.current_machine), tint = c.accent)
     }
 }
 
@@ -446,7 +450,7 @@ private fun MachineInspector(
                     Text(environment.name, Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineSmall, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text(machineSubtitle(environment), style = TrefoilType.mono, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
                     if (status != MachineStatus.Unknown || activeRoute != null) Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        if (status != MachineStatus.Unknown) Text(if (status.inProgress) "${status.label}…" else status.label, style = TrefoilType.meta,
+                        if (status != MachineStatus.Unknown) Text(if (status.inProgress) "${status.resolvedLabel()}…" else status.resolvedLabel(), style = TrefoilType.meta,
                             color = if (status.inProgress) c.muted else status.color(c), maxLines = 1)
                         if (activeRoute != null) RouteBadge(activeRoute.kind)
                     }
@@ -455,16 +459,16 @@ private fun MachineInspector(
             FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (current) {
                     Button(onClick = onConnect, enabled = !state.busy, colors = ButtonDefaults.buttonColors(containerColor = c.accent, contentColor = c.onAccent)) {
-                        Icon(TfIcons.Threads, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Open threads")
+                        Icon(TfIcons.Threads, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(stringResource(R.string.open_threads))
                     }
                     OutlinedButton(onClick = onDisconnect, border = BorderStroke(1.dp, c.line), colors = ButtonDefaults.outlinedButtonColors(contentColor = c.text)) {
-                        Icon(TfIcons.Disconnect, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Disconnect")
+                        Icon(TfIcons.Disconnect, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(stringResource(R.string.disconnect))
                     }
                 } else {
-                    Button(onClick = onConnect, enabled = !state.busy, colors = ButtonDefaults.buttonColors(containerColor = c.accent, contentColor = c.onAccent)) { Text("Connect") }
+                    Button(onClick = onConnect, enabled = !state.busy, colors = ButtonDefaults.buttonColors(containerColor = c.accent, contentColor = c.onAccent)) { Text(stringResource(R.string.connect)) }
                 }
                 OutlinedButton(onClick = onForget, enabled = !state.busy, border = BorderStroke(1.dp, c.line), colors = ButtonDefaults.outlinedButtonColors(contentColor = c.red)) {
-                    Icon(TfIcons.Trash, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Forget")
+                    Icon(TfIcons.Trash, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(stringResource(R.string.forget))
                 }
             }
             if (live) {
@@ -472,10 +476,10 @@ private fun MachineInspector(
                 val needsYou = state.threads.count { !it.archived && threadIndicator(it).kind in setOf("attention", "input") }
                 val tightest = tightestLimitPercent(state.providers)
                 Row(Modifier.fillMaxWidth().height(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SummaryTile("Needs you", "$needsYou", if (needsYou > 0) c.amber else c.text, Modifier.weight(1f).fillMaxHeight())
-                    SummaryTile("Working", "$working", if (working > 0) c.blue else c.text, Modifier.weight(1f).fillMaxHeight())
+                    SummaryTile(stringResource(R.string.needs_you), "$needsYou", if (needsYou > 0) c.amber else c.text, Modifier.weight(1f).fillMaxHeight())
+                    SummaryTile(stringResource(R.string.working), "$working", if (working > 0) c.blue else c.text, Modifier.weight(1f).fillMaxHeight())
                     // The tightest limit reads in its severity colour and is the widest tile: its chevron must not squeeze "NN% left".
-                    if (tightest != null) SummaryTile("Tightest limit", "$tightest% left", limitSeverity(tightest).color(c), Modifier.weight(1.3f).fillMaxHeight(), onClick = onOpenUsage)
+                    if (tightest != null) SummaryTile(stringResource(R.string.tightest_limit), stringResource(R.string.percent_left, tightest), limitSeverity(tightest).color(c), Modifier.weight(1.3f).fillMaxHeight(), onClick = onOpenUsage)
                 }
             }
             val card = RoundedCornerShape(16.dp)
@@ -537,6 +541,10 @@ private fun MachineCard(
     val needsYou = if (live) state.threads.count { !it.archived && threadIndicator(it).kind in setOf("attention", "input") } else 0
     val activeRoute = if (live) state.activeRoute else null
     val routeCount = routeRows(environment, activeRoute).size
+    val statusLabel = status.resolvedLabel()
+    val viaRoute = activeRoute?.let { stringResource(R.string.route_via, routeKindLabel(it.kind)) }
+    val stateExpanded = stringResource(R.string.state_expanded)
+    val stateCollapsed = stringResource(R.string.state_collapsed)
     val hover = remember { MutableInteractionSource() }
     val hovered by hover.collectIsHoveredAsState()
     Column(modifier.fillMaxWidth().clip(shape).background(c.s1).hoverable(hover).background(if (hovered) c.s2.copy(alpha = .55f) else Color.Transparent)
@@ -544,7 +552,7 @@ private fun MachineCard(
     Row(
         Modifier.fillMaxWidth()
             .focusRing().handPointer(!state.busy).combinedClickable(enabled = !state.busy, role = Role.Button, onClick = onConnect, onLongClick = { menu = true })
-            .semantics { stateDescription = listOfNotNull(status.label, activeRoute?.let { "via ${routeKindLabel(it.kind)}" }).joinToString(", ") }
+            .semantics { stateDescription = listOfNotNull(statusLabel, viaRoute).joinToString(", ") }
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
@@ -560,7 +568,7 @@ private fun MachineCard(
             Text(machineSubtitle(environment), style = TrefoilType.mono, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
             if (activeRoute != null) RouteBadge(activeRoute.kind, Modifier.padding(top = 6.dp))
             if (!live && status != MachineStatus.Unknown && status != MachineStatus.Offline) {
-                Text(if (status.inProgress) "${status.label}…" else status.label, style = TrefoilType.meta,
+                Text(if (status.inProgress) "${status.resolvedLabel()}…" else status.resolvedLabel(), style = TrefoilType.meta,
                     color = if (status.inProgress) c.muted else status.color(c), maxLines = 1, modifier = Modifier.padding(top = 6.dp))
             }
             if (working > 0 || needsYou > 0) {
@@ -574,9 +582,9 @@ private fun MachineCard(
                 }
             }
         }
-        if (current) Icon(TfIcons.Check, "Current machine", tint = c.accent)
+        if (current) Icon(TfIcons.Check, stringResource(R.string.current_machine), tint = c.accent)
         Box {
-            TfIconButton(TfIcons.More, "Options for ${environment.name}", { menu = true }, Modifier.size(if (roomy) 48.dp else 40.dp), iconSize = 20.dp, tint = c.muted)
+            TfIconButton(TfIcons.More, stringResource(R.string.machine_options, environment.name), { menu = true }, Modifier.size(if (roomy) 48.dp else 40.dp), iconSize = 20.dp, tint = c.muted)
             DropdownMenu(menu, { menu = false }, containerColor = c.sheet, shape = RoundedCornerShape(16.dp)) {
                 MachineMenuItems(current, state, onDisconnect, onForget) { menu = false }
             }
@@ -584,10 +592,10 @@ private fun MachineCard(
     }
     if (fillHeight) Spacer(Modifier.weight(1f))
     if (roomy) HorizontalDivider(color = c.line)
-    Row(Modifier.fillMaxWidth().then(if (roomy) Modifier.heightIn(min = 48.dp) else Modifier).focusRing().handPointer().clickable(role = Role.Button) { showRoutes = !showRoutes }.semantics { stateDescription = if (showRoutes) "Expanded" else "Collapsed" }
+    Row(Modifier.fillMaxWidth().then(if (roomy) Modifier.heightIn(min = 48.dp) else Modifier).focusRing().handPointer().clickable(role = Role.Button) { showRoutes = !showRoutes }.semantics { stateDescription = if (showRoutes) stateExpanded else stateCollapsed }
         .padding(start = 16.dp, end = 12.dp, top = if (roomy) 0.dp else 2.dp, bottom = if (roomy) 0.dp else 10.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(if (routeCount == 1) "1 route" else "$routeCount routes", style = TrefoilType.meta, color = c.muted, modifier = Modifier.weight(1f))
-        Icon(if (showRoutes) TfIcons.ChevronDown else TfIcons.ChevronRight, if (showRoutes) "Hide routes" else "Show routes", Modifier.size(18.dp), tint = c.muted)
+        Text(if (routeCount == 1) stringResource(R.string.routes_count_one) else stringResource(R.string.routes_count_many, routeCount), style = TrefoilType.meta, color = c.muted, modifier = Modifier.weight(1f))
+        Icon(if (showRoutes) TfIcons.ChevronDown else TfIcons.ChevronRight, if (showRoutes) stringResource(R.string.hide_routes) else stringResource(R.string.show_routes), Modifier.size(18.dp), tint = c.muted)
     }
     if (showRoutes) RoutesSection(environment, activeRoute, onAllowLocalHttp, Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp), enabled = !state.busy)
     }
@@ -601,10 +609,10 @@ internal fun ColumnScope.MachineMenuItems(
 ) {
     val c = Tf.colors
     if (current) DropdownMenuItem(
-        text = { Text("Disconnect") }, leadingIcon = { Icon(TfIcons.Disconnect, null, Modifier.size(20.dp)) },
+        text = { Text(stringResource(R.string.disconnect)) }, leadingIcon = { Icon(TfIcons.Disconnect, null, Modifier.size(20.dp)) },
         onClick = { close(); onDisconnect() })
     DropdownMenuItem(
-        text = { Text("Forget", color = c.red) }, enabled = !state.busy, leadingIcon = { Icon(TfIcons.Trash, null, Modifier.size(20.dp), tint = c.red) },
+        text = { Text(stringResource(R.string.forget), color = c.red) }, enabled = !state.busy, leadingIcon = { Icon(TfIcons.Trash, null, Modifier.size(20.dp), tint = c.red) },
         onClick = { close(); onForget() })
 }
 
@@ -636,6 +644,9 @@ private fun AddTile(
 internal fun PairDialog(busy: Boolean, dismiss: () -> Unit, attempt: ConnectionAttempt = ConnectionAttempt(), initialLink: String = "", pair: (String, String, Boolean) -> Unit) {
     val c = Tf.colors
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val enterDisplayName = stringResource(R.string.enter_display_name)
+    val enterValidLink = stringResource(R.string.enter_valid_link)
+    val chooseHttp = stringResource(R.string.choose_http)
     var url by remember { mutableStateOf(initialLink) }
     var name by rememberSaveable { mutableStateOf("") }
     // The pairing link is a credential: plain remember, never saved state (so a rotation clears it; the display name survives).
@@ -654,41 +665,41 @@ internal fun PairDialog(busy: Boolean, dismiss: () -> Unit, attempt: ConnectionA
     AlertDialog(onDismissRequest = dismiss, containerColor = c.sheet, shape = RoundedCornerShape(28.dp),
         modifier = if (wide) Modifier.width(AdaptiveSpec.DialogPairWidth.dp) else Modifier,
         properties = if (wide) DialogProperties(usePlatformDefaultWidth = false) else DialogProperties(),
-        icon = { Icon(TfIcons.Link, null, tint = c.accent) }, title = { Text("Pair an environment") }, text = {
+        icon = { Icon(TfIcons.Link, null, tint = c.accent) }, title = { Text(stringResource(R.string.pair_dialog_title)) }, text = {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.verticalScroll(rememberScrollState())) {
-            Text("Paste a pairing link from your T3 server. A link from any address works, including a T3 Connect tunnel address (https://…t3coderelay.com/pair#token=…). Trefoil verifies the environment before connecting.", color = c.muted)
-            OutlinedTextField(name, { name = it; error = null }, enabled = !busy, label = { Text("Display name") }, singleLine = true, shape = TfFieldShape, colors = tfFieldColors(), modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(url, { url = it; error = null }, enabled = !busy, label = { Text("Pairing link") }, visualTransformation = PasswordVisualTransformation(),
+            Text(stringResource(R.string.pair_dialog_body), color = c.muted)
+            OutlinedTextField(name, { name = it; error = null }, enabled = !busy, label = { Text(stringResource(R.string.display_name)) }, singleLine = true, shape = TfFieldShape, colors = tfFieldColors(), modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(url, { url = it; error = null }, enabled = !busy, label = { Text(stringResource(R.string.pairing_link)) }, visualTransformation = PasswordVisualTransformation(),
                 textStyle = TrefoilType.mono.copy(fontSize = 14.sp, color = c.text), shape = TfFieldShape, colors = tfFieldColors(), modifier = Modifier.fillMaxWidth(),
                 // One masked line in the wide field: a wrapped mask would orphan a few dots on a second line.
                 singleLine = wide, maxLines = if (wide) 1 else 3,
                 trailingIcon = if (wide) ({ PasteLinkButton(busy, Modifier.padding(end = 4.dp), paste = pasteLink) }) else null)
             if (!wide) PasteLinkButton(busy, Modifier.align(Alignment.End), paste = pasteLink)
-            Text("Pairing links contain credentials. Keep them private.", style = MaterialTheme.typography.bodySmall, color = c.muted)
+            Text(stringResource(R.string.pairing_link_warning), style = MaterialTheme.typography.bodySmall, color = c.muted)
             if (privateHttp && wide) Column(Modifier.fillMaxWidth().background(c.s2, RoundedCornerShape(14.dp)).padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(insecure, { insecure = it; error = null }, enabled = !busy); Text("Allow unencrypted HTTP on this private network", Modifier.weight(1f)) }
-                Text("HTTP exposes pairing credentials and conversations to others on the network. Use only a network you trust.", style = MaterialTheme.typography.bodySmall, color = c.amber,
+                Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(insecure, { insecure = it; error = null }, enabled = !busy); Text(stringResource(R.string.allow_http), Modifier.weight(1f)) }
+                Text(stringResource(R.string.http_warning), style = MaterialTheme.typography.bodySmall, color = c.amber,
                     // Flush with the checkbox label: 48dp checkbox slot.
                     modifier = Modifier.padding(start = 48.dp, end = 8.dp, bottom = 6.dp))
             } else if (privateHttp) {
-                Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(insecure, { insecure = it; error = null }, enabled = !busy); Text("Allow unencrypted HTTP on this private network", Modifier.weight(1f)) }
-                Text("HTTP exposes pairing credentials and conversations to others on the network. Use only a network you trust.", style = MaterialTheme.typography.bodySmall, color = c.amber)
+                Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(insecure, { insecure = it; error = null }, enabled = !busy); Text(stringResource(R.string.allow_http), Modifier.weight(1f)) }
+                Text(stringResource(R.string.http_warning), style = MaterialTheme.typography.bodySmall, color = c.amber)
             }
-            if (busy) Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(20.dp), color = c.accent, strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text(attempt.message.ifBlank { "Testing connection…" }) }
+            if (busy) Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(20.dp), color = c.accent, strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text(attempt.message.ifBlank { stringResource(R.string.testing_connection) }) }
             shownError?.let { Text(it, color = c.red, modifier = Modifier.bringIntoViewRequester(reveal)) }
         }
     }, confirmButton = { Button(onClick = {
-        error = when { name.isBlank() -> "Enter a display name."; target == null -> "Enter a valid pairing link."; privateHttp && !insecure -> "Choose whether to allow HTTP on this private network."; else -> null }
+        error = when { name.isBlank() -> enterDisplayName; target == null -> enterValidLink; privateHttp && !insecure -> chooseHttp; else -> null }
         if (error == null) pair(url.trim(), name.trim(), privateHttp && insecure)
     }, enabled = !busy) {
         if (busy) { CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = c.onAccent); Spacer(Modifier.width(8.dp)) }
-        Text(if (busy) "Testing connection…" else "Pair")
+        Text(if (busy) stringResource(R.string.testing_connection) else stringResource(R.string.pair_action))
     } },
-        dismissButton = { TextButton(onClick = dismiss) { Text("Cancel", color = c.muted) } })
+        dismissButton = { TextButton(onClick = dismiss) { Text(stringResource(R.string.cancel), color = c.muted) } })
 }
 
 /** "Paste link": the caller's [paste] reads the clipboard, and only runs on this tap. */
 @Composable
 private fun PasteLinkButton(busy: Boolean, modifier: Modifier = Modifier, paste: () -> Unit) {
-    TextButton(onClick = paste, enabled = !busy, modifier = modifier) { Text("Paste link") }
+    TextButton(onClick = paste, enabled = !busy, modifier = modifier) { Text(stringResource(R.string.paste_link)) }
 }

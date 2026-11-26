@@ -28,6 +28,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -37,6 +38,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import com.tajchert.trefoil.R
 import com.tajchert.trefoil.core.model.ModelOption
 import com.tajchert.trefoil.core.model.ProviderInstance
 import com.tajchert.trefoil.ui.SubagentRoster
@@ -53,7 +55,14 @@ import com.tajchert.trefoil.ui.adaptive.handPointer
 import com.tajchert.trefoil.ui.adaptive.focusRing
 
 /** Tabs of the side panel beside the conversation, in header order. Saved by name only. */
-internal enum class SidePanelTab(val label: String) { Preview("Preview"), Screens("Screens"), Agents("Agents") }
+internal enum class SidePanelTab { Preview, Screens, Agents }
+
+@Composable
+internal fun SidePanelTab.displayLabel(): String = stringResource(when (this) {
+    SidePanelTab.Preview -> R.string.side_panel_preview
+    SidePanelTab.Screens -> R.string.dest_screens
+    SidePanelTab.Agents -> R.string.sc_agents
+})
 
 /** Which tabs exist: Preview with dev servers for this machine, Screens with the rail's Screens entry, Agents with a roster. */
 internal fun sidePanelTabs(preview: Boolean, screens: Boolean, agents: Boolean): List<SidePanelTab> = buildList {
@@ -113,7 +122,8 @@ internal fun SidePanel(
     tabsFocus: FocusRequester, modifier: Modifier = Modifier, action: PanelAction? = null, content: @Composable (SidePanelTab) -> Unit,
 ) {
     val c = Tf.colors
-    Column(modifier.fillMaxSize().background(c.bg).paneGroup("${selected.label} side panel", PaneOrder.SidePanel)) {
+    val closeSidePanel = stringResource(R.string.close_side_panel)
+    Column(modifier.fillMaxSize().background(c.bg).paneGroup("${selected.displayLabel()} ${stringResource(R.string.side_panel)}", PaneOrder.SidePanel)) {
         Row(Modifier.fillMaxWidth().height(64.dp).background(c.s1).padding(start = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.weight(1f).focusRequester(tabsFocus).selectableGroup(), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 tabs.forEach { tab -> SidePanelTabPill(tab, tab == selected, tab !in disabled) { onSelect(tab) } }
@@ -122,7 +132,7 @@ internal fun SidePanel(
                 TfIconButton(action.icon, action.description, action.onClick, Modifier.size(48.dp), enabled = action.enabled, iconSize = 22.dp, tint = if (action.enabled) c.text else c.muted)
                 Spacer(Modifier.width(4.dp))
             }
-            TfIconButton(TfIcons.Close, "Close side panel", onClose, Modifier.size(48.dp), iconSize = 22.dp)
+            TfIconButton(TfIcons.Close, closeSidePanel, onClose, Modifier.size(48.dp), iconSize = 22.dp)
         }
         HorizontalDivider(color = c.line)
         Box(Modifier.weight(1f).fillMaxWidth()) { content(selected) }
@@ -134,7 +144,7 @@ private fun SidePanelTabPill(tab: SidePanelTab, selected: Boolean, enabled: Bool
     val c = Tf.colors
     Box(Modifier.heightIn(min = 48.dp).focusRing().handPointer(enabled).selectable(selected, enabled = enabled, role = Role.Tab, onClick = onClick), contentAlignment = Alignment.Center) {
         Box(Modifier.clip(RoundedCornerShape(16.dp)).background(if (selected) c.s3 else c.s1).padding(horizontal = 12.dp, vertical = 6.dp)) {
-            Text(tab.label, style = TrefoilType.meta.copy(color = when { !enabled -> c.muted.copy(alpha = .5f); selected -> c.text; else -> c.muted }), maxLines = 1)
+            Text(tab.displayLabel(), style = TrefoilType.meta.copy(color = when { !enabled -> c.muted.copy(alpha = .5f); selected -> c.text; else -> c.muted }), maxLines = 1)
         }
     }
 }
@@ -151,8 +161,10 @@ internal fun SidePanelToggle(open: Boolean, onClick: () -> Unit, focus: FocusReq
         val side = 36.dp.toPx()
         drawRoundRect(tile, Offset((size.width - side) / 2f, (size.height - side) / 2f), Size(side, side), CornerRadius(10.dp.toPx()))
     } else Modifier
-    TfIconButton(TfIcons.PanelRight, if (open) "Close side panel" else "Open side panel", onClick, Modifier.size(48.dp).focusRequester(focus).then(active),
-        tint = if (open) c.accent else Color.Unspecified, iconSize = 22.dp, tooltip = tooltipWithShortcut(if (open) "Close side panel" else "Open side panel", ShortcutId.ToggleSidePanel))
+    val closeSidePanel = stringResource(R.string.close_side_panel)
+    val openSidePanel = stringResource(R.string.open_side_panel)
+    TfIconButton(TfIcons.PanelRight, if (open) closeSidePanel else openSidePanel, onClick, Modifier.size(48.dp).focusRequester(focus).then(active),
+        tint = if (open) c.accent else Color.Unspecified, iconSize = 22.dp, tooltip = tooltipWithShortcut(if (open) closeSidePanel else openSidePanel, ShortcutId.ToggleSidePanel))
 }
 
 /**

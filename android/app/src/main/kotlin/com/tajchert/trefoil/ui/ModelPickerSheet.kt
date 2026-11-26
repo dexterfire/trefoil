@@ -35,10 +35,12 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshots.SnapshotStateMap
+import com.tajchert.trefoil.R
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
@@ -109,16 +111,22 @@ internal fun fastModeOn(model: ModelOption?, explicit: ModelOptionValues): Boole
     return model.resolvedOptionValue(d, explicit) == true
 }
 
-/** Composer pill text: `<model>` plus ` · Fast` when Fast mode is on; effort has its own icon pill. */
-internal fun modelPillLabel(model: ModelOption?, explicit: ModelOptionValues, loading: Boolean = false, empty: String = "Model"): String {
-    if (model == null) return if (loading) "Loading models…" else empty
-    val parts = listOfNotNull(model.label, if (fastModeOn(model, explicit)) "Fast" else null)
+/** Composer pill text: `<model>` plus ` · Быстрый` when Fast mode is on; effort has its own icon pill.
+ *  All user-facing words come from string resources — pass them from the composable caller. */
+internal fun modelPillLabel(model: ModelOption?, explicit: ModelOptionValues, loading: Boolean, empty: String, fastLabel: String, loadingLabel: String): String {
+    if (model == null) return if (loading) loadingLabel else empty
+    val parts = listOfNotNull(model.label, if (fastModeOn(model, explicit)) fastLabel else null)
     return parts.joinToString(" · ")
 }
 
-/** Accessibility text for the model pill: `Model: loading` while the catalog is on its way, `not set` without a model. */
-internal fun modelPillDescription(model: ModelOption?, explicit: ModelOptionValues, loading: Boolean): String =
-    "Model: " + if (model != null) modelPillLabel(model, explicit) else if (loading) "loading" else "not set"
+/** Accessibility text for the model pill: `Модель: загрузка` while the catalog is on its way, `не задана` without a model.
+ *  [label] is the already-resolved pill text; the rest comes from string resources. */
+internal fun modelPillDescription(label: String?, loading: Boolean, modelPrefix: String, loadingState: String, notSetState: String): String =
+    "$modelPrefix " + when {
+        label != null -> label
+        loading -> loadingState
+        else -> notSetState
+    }
 
 /** Whether picking [model] leaves the sheet open for effort/Fast choices; [showFast] false means Fast mode has no control. */
 internal fun hasModelOptions(model: ModelOption?, showFast: Boolean = true): Boolean =
@@ -252,7 +260,7 @@ private fun PhonePickerBody(ui: PickerUi, closeSheet: () -> Unit, loading: Boole
             }
             Column(Modifier.fillMaxWidth()) {
                 if (ui.models.isEmpty()) {
-                    EmptyState(TfIcons.Sparkle, "No models available", "Reconnect to refresh configuration.", Modifier.padding(bottom = 24.dp))
+                    EmptyState(TfIcons.Sparkle, stringResource(R.string.picker_no_models_title), stringResource(R.string.picker_no_models_body), Modifier.padding(bottom = 24.dp))
                     Spacer(Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
                     return@Column
                 }
@@ -275,8 +283,8 @@ private fun PhonePickerBody(ui: PickerUi, closeSheet: () -> Unit, loading: Boole
 internal fun PickerTitleRow(closeSheet: () -> Unit) {
     val c = Tf.colors
     Row(Modifier.padding(start = 20.dp, end = 8.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text("Model", Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall, color = c.text)
-        TfIconButton(TfIcons.Close, "Close", closeSheet, Modifier.size(48.dp), tint = c.text)
+        Text(stringResource(R.string.picker_title), Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall, color = c.text)
+        TfIconButton(TfIcons.Close, stringResource(R.string.close), closeSheet, Modifier.size(48.dp), tint = c.text)
     }
 }
 
@@ -285,13 +293,14 @@ internal fun PickerTitleRow(closeSheet: () -> Unit) {
 internal fun PickerSearchField(ui: PickerUi) {
     if (!(ui.models.size >= 5 || ui.query.isNotEmpty())) return
     val c = Tf.colors
+    val searchDescription = stringResource(R.string.picker_search_description)
     val focus = LocalFocusManager.current
     OutlinedTextField(
-        ui.query, ui.setQuery, singleLine = true, placeholder = { Text("Search models…") }, shape = TfFieldShape, colors = tfFieldColors(),
+        ui.query, ui.setQuery, singleLine = true, placeholder = { Text(stringResource(R.string.picker_search_placeholder)) }, shape = TfFieldShape, colors = tfFieldColors(),
         leadingIcon = { Icon(TfIcons.Search, null, Modifier.size(18.dp), tint = c.muted) },
-        trailingIcon = { if (ui.query.isNotEmpty()) TfIconButton(TfIcons.Close, "Clear search", { ui.setQuery("") }, iconSize = 18.dp, tint = c.muted) },
+        trailingIcon = { if (ui.query.isNotEmpty()) TfIconButton(TfIcons.Close, stringResource(R.string.clear_search), { ui.setQuery("") }, iconSize = 18.dp, tint = c.muted) },
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { focus.clearFocus() }),
-        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp).semantics { contentDescription = "Search models" },
+        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp).semantics { contentDescription = searchDescription },
     )
 }
 
@@ -302,7 +311,7 @@ internal fun SingleProviderBanner(section: ProviderSection, threadSelection: Boo
     Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         ProviderMark(section.driver, null, Modifier.size(16.dp))
         Text(section.title, style = TrefoilType.meta.copy(fontWeight = FontWeight.SemiBold), color = c.text)
-        if (threadSelection) Text("· Locked to this thread", style = TrefoilType.meta, color = c.muted)
+        if (threadSelection) Text(stringResource(R.string.picker_locked_thread), style = TrefoilType.meta, color = c.muted)
     }
     HorizontalDivider(color = c.line)
 }
@@ -320,36 +329,36 @@ internal fun PickerLazyList(ui: PickerUi) {
             ui.searching -> {
                 if (ui.results.isEmpty()) item {
                     Column(Modifier.fillMaxWidth().padding(vertical = 32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("No models match \"${ui.query.trim()}\"", style = MaterialTheme.typography.bodyLarge, color = Tf.colors.muted, textAlign = TextAlign.Center)
-                        TextButton(onClick = { ui.setQuery("") }) { Text("Clear search", color = Tf.colors.accent) }
+                        Text(stringResource(R.string.picker_no_match, ui.query.trim()), style = MaterialTheme.typography.bodyLarge, color = Tf.colors.muted, textAlign = TextAlign.Center)
+                        TextButton(onClick = { ui.setQuery("") }) { Text(stringResource(R.string.clear_search), color = Tf.colors.accent) }
                     }
                 }
                 itemsIndexed(ui.results, key = { _, m -> "s:${m.instanceId}:${m.model}" }) { _, option ->
                     val driver = providerDriver(option.instanceId, ui.providers)
                     ModelRow(option.label, instanceHeader(option.instanceId, ui.providers).takeIf { ui.multiProvider }, driver, option.badge, option.sameModelAs(highlighted), enabled,
-                        "Model ${option.label}", null, ui.favouriteRow(option), onClick = { pick(option) })
+                        stringResource(R.string.picker_model_row, option.label), null, ui.favouriteRow(option), onClick = { pick(option) })
                 }
             }
             !ui.multiProvider -> {
                 val section = ui.singleSection
                 if (ui.catalog.favorites.isNotEmpty()) {
-                    stickyHeader(key = "h:favourites") { PickerHeader("Favourites", top = 8.dp) }
+                    stickyHeader(key = "h:favourites") { PickerHeader(stringResource(R.string.picker_favourites), top = 8.dp) }
                     itemsIndexed(ui.catalog.favorites, key = { _, m -> "f:${m.instanceId}:${m.model}" }) { _, option ->
-                        ModelRow(option.label, null, null, option.badge, option.sameModelAs(highlighted), enabled, "Model ${option.label}", null, ui.favouriteRow(option), onClick = { pick(option) })
+                        ModelRow(option.label, null, null, option.badge, option.sameModelAs(highlighted), enabled, stringResource(R.string.picker_model_row, option.label), null, ui.favouriteRow(option), onClick = { pick(option) })
                     }
-                    stickyHeader(key = "h:all") { PickerHeader("All models", top = 12.dp) }
+                    stickyHeader(key = "h:all") { PickerHeader(stringResource(R.string.picker_all_models), top = 12.dp) }
                 }
                 if (section != null) familyItems(section, highlighted, enabled, ui.expandedFamilies, pick, ui::favouriteRow)
             }
             ui.activeTab == FAVOURITES_TAB -> {
                 if (ui.catalog.favorites.isEmpty()) item {
-                    EmptyState(TfIcons.Star, "No favourites yet",
-                        if (ui.canStar) "Star models in any provider tab to pin them here and sync with desktop." else "Connect with settings write access to edit favourites.",
+                    EmptyState(TfIcons.Star, stringResource(R.string.picker_no_favourites_title),
+                        if (ui.canStar) stringResource(R.string.picker_no_favourites_hint_star) else stringResource(R.string.picker_no_favourites_hint_write),
                         Modifier.padding(bottom = 16.dp))
                 }
                 itemsIndexed(ui.catalog.favorites, key = { _, m -> "f:${m.instanceId}:${m.model}" }) { _, option ->
                     ModelRow(option.label, instanceHeader(option.instanceId, ui.providers), providerDriver(option.instanceId, ui.providers), option.badge, option.sameModelAs(highlighted),
-                        enabled, "Model ${option.label}", null, ui.favouriteRow(option), onClick = { pick(option) })
+                        enabled, stringResource(R.string.picker_model_row, option.label), null, ui.favouriteRow(option), onClick = { pick(option) })
                 }
             }
             else -> ui.catalog.sections.firstOrNull { it.instanceId == ui.activeTab }?.let { familyItems(it, highlighted, enabled, ui.expandedFamilies, pick, ui::favouriteRow) }
@@ -389,9 +398,11 @@ private fun ModelPickerSkeleton() {
     val c = Tf.colors
     val alpha = rememberSkeletonAlpha()
     val barShape = RoundedCornerShape(12.dp)
-    Column(Modifier.fillMaxWidth().testTag("model-picker-loading").semantics(mergeDescendants = true) { contentDescription = "Loading models" }) {
+    val loadingDescription = stringResource(R.string.picker_loading_description)
+    val searchPlaceholder = stringResource(R.string.picker_search_placeholder)
+    Column(Modifier.fillMaxWidth().testTag("model-picker-loading").semantics(mergeDescendants = true) { contentDescription = loadingDescription }) {
         OutlinedTextField(
-            "", {}, enabled = false, singleLine = true, placeholder = { Text("Search models…") }, shape = TfFieldShape, colors = tfFieldColors(),
+            "", {}, enabled = false, singleLine = true, placeholder = { Text(searchPlaceholder) }, shape = TfFieldShape, colors = tfFieldColors(),
             leadingIcon = { Icon(TfIcons.Search, null, Modifier.size(18.dp), tint = c.muted.copy(alpha = .5f)) },
             modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
         )
@@ -418,7 +429,7 @@ private fun LazyListScope.familyItems(
 ) {
     val firstLegacy = section.families.indexOfFirst { f -> f.versions.all { it.isLegacy } }.takeIf { it > 0 }
     section.families.forEachIndexed { index, family ->
-        if (index == firstLegacy) stickyHeader(key = "older:${section.instanceId}") { PickerHeader("Older", top = 12.dp) }
+        if (index == firstLegacy) stickyHeader(key = "older:${section.instanceId}") { PickerHeader(stringResource(R.string.picker_older), top = 12.dp) }
         item(key = "fam:${section.instanceId}:${family.key}") {
             val multi = family.versions.size > 1
             val selectedMember = family.versions.firstOrNull { it.sameModelAs(highlighted) }
@@ -426,9 +437,9 @@ private fun LazyListScope.familyItems(
             val stateKey = "${section.instanceId}:${family.key}"
             val expanded = expandedFamilies[stateKey] ?: (selectedMember != null && selectedMember != family.latest)
             val title = if (multi) family.name else family.latest.label
-            val pill = if (multi) VersionPillSpec(versionLabel(shown) ?: shown.label, expanded, "${family.name} versions, ${versionLabel(shown) ?: shown.label}") { expandedFamilies[stateKey] = !expanded } else null
+            val pill = if (multi) VersionPillSpec(versionLabel(shown) ?: shown.label, expanded, stringResource(R.string.picker_family_versions, family.name, versionLabel(shown) ?: shown.label)) { expandedFamilies[stateKey] = !expanded } else null
             Column {
-                ModelRow(title, null, null, shown.badge, selectedMember != null, enabled, "Model ${if (multi) family.name else family.latest.label}", pill, star(shown, shown.label), onClick = { pick(shown) })
+                ModelRow(title, null, null, shown.badge, selectedMember != null, enabled, stringResource(R.string.picker_model_row, if (multi) family.name else family.latest.label), pill, star(shown, shown.label), onClick = { pick(shown) })
                 AnimatedVisibility(multi && expanded, enter = expandVertically(tween(180)) + fadeIn(tween(140)), exit = shrinkVertically(tween(180)) + fadeOut(tween(100))) {
                     FlowRow(Modifier.padding(start = 24.dp, end = 16.dp, top = 2.dp, bottom = 2.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         family.versions.forEachIndexed { vi, v -> VersionChip(family, v, vi == 0 && selectedMember != null && selectedMember != family.latest, v.sameModelAs(selectedMember), enabled, star(v, v.label).starred) { pick(v) } }
@@ -443,7 +454,8 @@ private fun LazyListScope.familyItems(
 private fun VersionChip(family: ModelFamily, version: ModelOption, offerLatest: Boolean, selected: Boolean, enabled: Boolean, favourite: Boolean, onClick: () -> Unit) {
     val c = Tf.colors
     val versionText = versionLabel(version) ?: version.label
-    val text = versionText + (if (offerLatest) " · Latest" else "") + (if (version.isLegacy) " · Legacy" else "")
+    val text = versionText + (if (offerLatest) stringResource(R.string.version_latest) else "") + (if (version.isLegacy) stringResource(R.string.version_legacy) else "")
+    val versionDescription = stringResource(R.string.picker_family_version, family.name, versionText)
     FilterChip(
         selected, onClick,
         label = {
@@ -453,7 +465,7 @@ private fun VersionChip(family: ModelFamily, version: ModelOption, offerLatest: 
             }
         },
         enabled = enabled,
-        modifier = Modifier.semantics { role = Role.RadioButton; contentDescription = "${family.name} version $versionText" },
+        modifier = Modifier.semantics { role = Role.RadioButton; contentDescription = versionDescription },
         leadingIcon = if (selected) ({ Icon(TfIcons.Check, null, Modifier.size(14.dp)) }) else null,
         trailingIcon = if (favourite) ({ Icon(TfIcons.StarFilled, null, Modifier.size(12.dp), tint = if (enabled) c.amber else c.amber.copy(alpha = .4f)) }) else null,
         colors = FilterChipDefaults.filterChipColors(
@@ -485,6 +497,7 @@ private fun NewBadge(badge: String, selected: Boolean, enabled: Boolean, modifie
 @Composable
 private fun ProviderTabs(catalog: ModelCatalog, active: String, onTab: (String) -> Unit) {
     val c = Tf.colors
+    val favouritesDescription = if (catalog.favorites.isEmpty()) stringResource(R.string.picker_favourites) else stringResource(R.string.picker_favourites_count, catalog.favorites.size)
     val keys = listOf(FAVOURITES_TAB) + catalog.sections.map { it.instanceId }
     PrimaryScrollableTabRow(
         selectedTabIndex = keys.indexOf(active).coerceAtLeast(0), edgePadding = 16.dp, containerColor = c.sheet, contentColor = c.text, minTabWidth = 48.dp,
@@ -497,7 +510,7 @@ private fun ProviderTabs(catalog: ModelCatalog, active: String, onTab: (String) 
     ) {
         Tab(
             active == FAVOURITES_TAB, { onTab(FAVOURITES_TAB) }, Modifier.heightIn(min = 48.dp).semantics {
-                contentDescription = if (catalog.favorites.isEmpty()) "Favourites" else "Favourites, ${catalog.favorites.size} models"
+                contentDescription = favouritesDescription
             },
         ) {
             Row(Modifier.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -559,9 +572,11 @@ private fun ModelRow(
 @Composable
 private fun VersionPill(pill: VersionPillSpec, selected: Boolean, enabled: Boolean) {
     val c = Tf.colors
+    val stateExpanded = stringResource(R.string.state_expanded)
+    val stateCollapsed = stringResource(R.string.state_collapsed)
     val rotation by animateFloatAsState(if (pill.expanded) 180f else 0f, tween(180), label = "versionChevron")
     Box(
-        Modifier.minimumInteractiveComponentSize().focusRing().handPointer().clickable(role = Role.Button, onClick = pill.toggle).semantics { contentDescription = pill.description; stateDescription = if (pill.expanded) "Expanded" else "Collapsed" },
+        Modifier.minimumInteractiveComponentSize().focusRing().handPointer().clickable(role = Role.Button, onClick = pill.toggle).semantics { contentDescription = pill.description; stateDescription = if (pill.expanded) stateExpanded else stateCollapsed },
         contentAlignment = Alignment.Center,
     ) {
         val pillShape = RoundedCornerShape(8.dp)
@@ -579,7 +594,8 @@ private fun VersionPill(pill: VersionPillSpec, selected: Boolean, enabled: Boole
 @Composable
 private fun StarButton(star: StarSpec) {
     val c = Tf.colors
-    val description = if (star.starred) "Remove ${star.label} from favourites" else "Favourite ${star.label}"
+    val description = if (star.starred) stringResource(R.string.favourite_remove, star.label) else stringResource(R.string.favourite_add, star.label)
+    val unavailable = stringResource(R.string.favourite_unavailable, description)
     // The pop plays on a user tap only: it starts at rest (1f), so first composition and list recycling never animate.
     val scale = remember { Animatable(1f) }
     val scope = rememberCoroutineScope()
@@ -592,7 +608,7 @@ private fun StarButton(star: StarSpec) {
             if (!animationsOff) scope.launch { scale.snapTo(.6f); scale.animateTo(1f, spring(dampingRatio = 0.55f, stiffness = 600f)) }
             star.toggle()
         },
-        Modifier.size(48.dp).focusRing().handPointer(star.enabled).semantics { contentDescription = if (star.enabled) description else "$description, unavailable" }, enabled = star.enabled,
+        Modifier.size(48.dp).focusRing().handPointer(star.enabled).semantics { contentDescription = if (star.enabled) description else unavailable }, enabled = star.enabled,
     ) {
         Icon(
             if (star.starred) TfIcons.StarFilled else TfIcons.Star, null, Modifier.size(18.dp).graphicsLayer { scaleX = scale.value; scaleY = scale.value }.alpha(if (star.enabled) 1f else .3f),
@@ -626,14 +642,15 @@ private fun ControlsDock(
         HorizontalDivider(color = c.line)
         val on = fastModeOn(model, values)
         val both = fast != null && reasoning != null
+        val fastModeLabel = fast?.label?.ifBlank { null } ?: stringResource(R.string.fast_mode)
         // The Fast chip's 48 dp target already pads the header, so trim the row padding to match the no-Fast gap.
         Row(Modifier.padding(start = 16.dp, end = 12.dp, top = if (both) 2.dp else 10.dp, bottom = if (both) 0.dp else 6.dp), verticalAlignment = Alignment.CenterVertically) {
             ProviderMark(driver, null, Modifier.size(14.dp))
             Text(model.shortName ?: model.label, Modifier.padding(start = 6.dp).weight(1f), style = TrefoilType.meta.copy(fontWeight = FontWeight.SemiBold), color = if (optionsEnabled) c.text else c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (!applied) WorkingSpinner(Modifier.padding(horizontal = 8.dp), size = 12.dp)
             if (fast != null && reasoning != null) FilterChip(
-                on, { onSetModelOption(fast.id, !on) }, label = { Text("Fast", style = MaterialTheme.typography.labelMedium.copy(fontSize = 13.sp)) }, enabled = optionsEnabled,
-                modifier = Modifier.semantics { role = Role.Switch; contentDescription = fast.label.ifBlank { "Fast mode" } },
+                on, { onSetModelOption(fast.id, !on) }, label = { Text(stringResource(R.string.fast_chip), style = MaterialTheme.typography.labelMedium.copy(fontSize = 13.sp)) }, enabled = optionsEnabled,
+                modifier = Modifier.semantics { role = Role.Switch; contentDescription = fastModeLabel },
                 leadingIcon = { Icon(TfIcons.Bolt, null, Modifier.size(15.dp)) },
                 colors = FilterChipDefaults.filterChipColors(
                     containerColor = Color.Transparent, labelColor = c.muted, iconColor = c.muted, selectedContainerColor = c.accentSoft, selectedLabelColor = c.accent, selectedLeadingIconColor = c.accent,
@@ -690,11 +707,11 @@ private fun ControlsDock(
             }
         } else if (fast != null) {
             Row(
-                Modifier.fillMaxWidth().heightIn(min = 52.dp).focusRing().handPointer().selectable(on, optionsEnabled, Role.Switch) { onSetModelOption(fast.id, !on) }.padding(horizontal = 16.dp).semantics { contentDescription = fast.label.ifBlank { "Fast mode" } },
+                Modifier.fillMaxWidth().heightIn(min = 52.dp).focusRing().handPointer().selectable(on, optionsEnabled, Role.Switch) { onSetModelOption(fast.id, !on) }.padding(horizontal = 16.dp).semantics { contentDescription = fastModeLabel },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f).padding(vertical = 8.dp)) {
-                    Text(fast.label.ifBlank { "Fast mode" }, style = MaterialTheme.typography.bodyLarge, color = if (optionsEnabled) c.text else c.muted)
+                    Text(fastModeLabel, style = MaterialTheme.typography.bodyLarge, color = if (optionsEnabled) c.text else c.muted)
                     fast.description?.let { Text(it, style = TrefoilType.preview, color = c.muted) }
                 }
                 Switch(on, null, enabled = optionsEnabled)

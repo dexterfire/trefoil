@@ -9,6 +9,7 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
+import com.tajchert.trefoil.testString
 import com.tajchert.trefoil.R
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.ui.ShellStart
@@ -72,7 +73,7 @@ class ShellReviewFixesTest {
 
     @Test fun usageSitsInTheEndRegionBesideTheThreadList() {
         setApp(start = ShellStart(showUsage = true), fold = bookFold)
-        assertSides(compose.onNodeWithText("Fixture thread"), compose.onNodeWithText("Лимиты и использование"))
+        assertSides(compose.onNodeWithText("Fixture thread"), compose.onNodeWithText(testString(R.string.menu_limits_usage)))
         assertNothingUnderTheHinge(bookFold, 673f)
     }
 
@@ -107,7 +108,7 @@ class ShellReviewFixesTest {
         setApp(start = ShellStart(showUsage = true), fold = fold)
         compose.onNodeWithContentDescription("Trefoil, show threads").assertExists()
         compose.onNodeWithContentDescription("Back").assertDoesNotExist()
-        assertSides(compose.onNodeWithText("Fixture thread"), compose.onNodeWithText("Лимиты и использование"), fold)
+        assertSides(compose.onNodeWithText("Fixture thread"), compose.onNodeWithText(testString(R.string.menu_limits_usage)), fold)
         assertNothingUnderTheHinge(fold, 841f)
     }
 
@@ -115,14 +116,14 @@ class ShellReviewFixesTest {
         setApp(start = ShellStart(showUsage = true), fold = bookFold)
         compose.onNodeWithContentDescription("Back").assertExists()
         systemBack()
-        compose.onNodeWithText("Лимиты и использование").assertDoesNotExist()
+        compose.onNodeWithText(testString(R.string.menu_limits_usage)).assertDoesNotExist()
         compose.onNodeWithText("Pick a thread").assertExists()
     }
 
     @Test fun pickingAThreadInTheStartRegionGoesToThreadsWithThatThread() {
         setApp(start = ShellStart(showUsage = true), fold = bookFold)
         compose.onNodeWithText("Fixture thread").performClick()
-        compose.onNodeWithText("Лимиты и использование").assertDoesNotExist()
+        compose.onNodeWithText(testString(R.string.menu_limits_usage)).assertDoesNotExist()
         assertEquals(listOf("t"), selectedThreads)
     }
 
@@ -136,7 +137,7 @@ class ShellReviewFixesTest {
     @Test @Config(sdk = [35], qualifiers = "w1280dp-h800dp") fun aFlatWindowStillGivesTheDestinationTheWholeWidthBesideTheRail() {
         setApp(start = ShellStart(showUsage = true))
         compose.onNodeWithText("Fixture thread").assertDoesNotExist()
-        val usage = compose.onNodeWithText("Лимиты и использование").getUnclippedBoundsInRoot()
+        val usage = compose.onNodeWithText(testString(R.string.menu_limits_usage)).getUnclippedBoundsInRoot()
         assertTrue("usage starts at ${usage.left}", usage.left < 200.dp)
     }
 

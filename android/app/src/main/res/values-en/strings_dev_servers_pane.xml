@@ -1,0 +1,4 @@
+<resources>
+    <!-- Английская локаль; русский текст по умолчанию — в values/strings_dev_servers_pane.xml. -->
+    <string name="ports_detail_empty">Open a dev server to see it here</string>
+</resources>

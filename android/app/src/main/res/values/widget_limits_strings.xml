@@ -1,7 +1,8 @@
 <resources>
-    <!-- Owned by the limits widgets stream. -->
-    <string name="widget_limit_bars_label">Usage limits</string>
-    <string name="widget_limit_bars_description">Remaining provider limits per window, with time until reset</string>
-    <string name="widget_limit_rings_label">Limit gauges</string>
-    <string name="widget_limit_rings_description">Circular gauges of how much of each provider limit is left</string>
+    <!-- Содержимое виджетов лимитов. Владелец — поток limits-виджетов.
+         Русский по умолчанию; английский — в values-en/widget_limits_strings.xml. -->
+    <string name="widget_limit_bars_label">Лимиты использования</string>
+    <string name="widget_limit_bars_description">Оставшиеся лимиты провайдеров по окнам и время до сброса</string>
+    <string name="widget_limit_rings_label">Индикаторы лимитов</string>
+    <string name="widget_limit_rings_description">Круговые шкалы остатка лимитов каждого провайдера</string>
 </resources>

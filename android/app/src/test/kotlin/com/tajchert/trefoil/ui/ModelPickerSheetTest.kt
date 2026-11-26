@@ -44,21 +44,24 @@ class ModelPickerSheetTest {
     private val claude = ModelOption("claude", "opus", "Opus", descriptors = listOf(effort, fast))
     private val plain = ModelOption("codex", "gpt-5", "GPT-5")
 
-    @Test fun pillLabelOmitsEffort() = assertEquals("Opus", modelPillLabel(claude, emptyMap()))
-    @Test fun pillLabelShowsFast() = assertEquals("Opus · Fast", modelPillLabel(claude, mapOf("effort" to "low", "fastMode" to true)))
-    @Test fun pillLabelWithoutOptions() = assertEquals("GPT-5", modelPillLabel(plain, mapOf("effort" to "low")))
-    @Test fun pillLabelWithoutModel() = assertEquals("Model", modelPillLabel(null, emptyMap()))
+    /** Explicit strings keep these logic tests locale-independent. */
+    private fun pillLabels(empty: String = "No models") = arrayOf(empty, "Fast", "Loading models…")
+
+    @Test fun pillLabelOmitsEffort() = assertEquals("Opus", modelPillLabel(claude, emptyMap(), loading = false, empty = "No models", fastLabel = "Fast", loadingLabel = "Loading models…"))
+    @Test fun pillLabelShowsFast() = assertEquals("Opus · Fast", modelPillLabel(claude, mapOf("effort" to "low", "fastMode" to true), loading = false, empty = "No models", fastLabel = "Fast", loadingLabel = "Loading models…"))
+    @Test fun pillLabelWithoutOptions() = assertEquals("GPT-5", modelPillLabel(plain, mapOf("effort" to "low"), loading = false, empty = "No models", fastLabel = "Fast", loadingLabel = "Loading models…"))
+    @Test fun pillLabelWithoutModel() = assertEquals("Model", modelPillLabel(null, emptyMap(), loading = false, empty = "Model", fastLabel = "Fast", loadingLabel = "Loading models…"))
     @Test fun pillReadsLoadingWhileCatalogIsOnItsWay() {
-        assertEquals("Loading models…", modelPillLabel(null, emptyMap(), loading = true, empty = "No models"))
-        assertEquals("Model: loading", modelPillDescription(null, emptyMap(), loading = true))
+        assertEquals("Loading models…", modelPillLabel(null, emptyMap(), loading = true, empty = "No models", fastLabel = "Fast", loadingLabel = "Loading models…"))
+        assertEquals("Model: loading", modelPillDescription(null, loading = true, modelPrefix = "Model:", loadingState = "loading", notSetState = "not set"))
     }
     @Test fun pillReadsNoModelsOnlyWhenNotLoading() {
-        assertEquals("No models", modelPillLabel(null, emptyMap(), loading = false, empty = "No models"))
-        assertEquals("Model: not set", modelPillDescription(null, emptyMap(), loading = false))
+        assertEquals("No models", modelPillLabel(null, emptyMap(), loading = false, empty = "No models", fastLabel = "Fast", loadingLabel = "Loading models…"))
+        assertEquals("Model: not set", modelPillDescription(null, loading = false, modelPrefix = "Model:", loadingState = "loading", notSetState = "not set"))
     }
     @Test fun pillShowsModelEvenWhileLoadingFlagIsSet() {
-        assertEquals("Opus", modelPillLabel(claude, emptyMap(), loading = true))
-        assertEquals("Model: Opus", modelPillDescription(claude, emptyMap(), loading = true))
+        assertEquals("Opus", modelPillLabel(claude, emptyMap(), loading = true, empty = "No models", fastLabel = "Fast", loadingLabel = "Loading models…"))
+        assertEquals("Model: Opus", modelPillDescription("Opus", loading = true, modelPrefix = "Model:", loadingState = "loading", notSetState = "not set"))
     }
     @Test fun unknownValueFallsBackToId() = assertEquals("max", reasoningChoice(claude, mapOf("effort" to "max"))?.label)
     @Test fun noReasoningChoiceWithoutDescriptor() = assertNull(reasoningChoice(plain, emptyMap()))

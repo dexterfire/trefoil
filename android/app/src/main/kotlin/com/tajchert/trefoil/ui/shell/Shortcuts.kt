@@ -1,5 +1,6 @@
 package com.tajchert.trefoil.ui.shell
 
+import android.content.Context
 import android.content.res.Configuration
 import android.view.KeyboardShortcutGroup
 import android.view.KeyboardShortcutInfo
@@ -46,6 +47,7 @@ import androidx.compose.ui.input.key.nativeKeyCode
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -57,6 +59,7 @@ import com.tajchert.trefoil.ui.Tf
 import com.tajchert.trefoil.ui.TfIcons
 import com.tajchert.trefoil.ui.ThreadFilter
 import com.tajchert.trefoil.ui.TrefoilType
+import com.tajchert.trefoil.R
 import com.tajchert.trefoil.ui.adaptive.TfAdaptiveSheet
 import com.tajchert.trefoil.ui.adaptive.TfIconButton
 import com.tajchert.trefoil.ui.threadSections
@@ -103,13 +106,13 @@ internal data class Chord(
 
 private val FunctionKeys = setOf(Key.F1, Key.F2, Key.F3, Key.F4, Key.F5, Key.F6, Key.F7, Key.F8, Key.F9, Key.F10, Key.F11, Key.F12)
 
-internal data class ShortcutEntry(val id: ShortcutId, val label: String, val group: String, val chords: List<Chord>, val scope: ShortcutScope = ShortcutScope.Global)
+internal data class ShortcutEntry(val id: ShortcutId, @androidx.annotation.StringRes val labelRes: Int, @androidx.annotation.StringRes val groupRes: Int, val chords: List<Chord>, val scope: ShortcutScope = ShortcutScope.Global)
 
-internal const val GroupGeneral = "General"
-internal const val GroupThreads = "Threads"
-internal const val GroupNavigation = "Navigation"
-internal const val GroupPanels = "Panels"
-internal const val GroupMessage = "Message box"
+internal val GroupGeneral = R.string.shortcut_group_general
+internal val GroupThreads = R.string.shortcut_group_threads
+internal val GroupNavigation = R.string.shortcut_group_navigation
+internal val GroupPanels = R.string.shortcut_group_panels
+internal val GroupMessage = R.string.shortcut_group_message
 
 /** Group order of the cheat sheet and of the system Helper. */
 internal val ShortcutGroups = listOf(GroupGeneral, GroupThreads, GroupNavigation, GroupPanels, GroupMessage)
@@ -122,32 +125,32 @@ private fun ctrl(key: Key, name: String, shift: Boolean = false) = Chord(key, na
  * Alt+letter chords are avoided on purpose: AltGr layouts type letters with them.
  */
 internal val ShortcutTable: List<ShortcutEntry> = listOf(
-    ShortcutEntry(ShortcutId.ShowShortcuts, "Keyboard shortcuts", GroupGeneral, listOf(ctrl(Key.Slash, "/"), Chord(Key.F1, "F1"))),
-    ShortcutEntry(ShortcutId.Dismiss, "Close or go back", GroupGeneral, listOf(Chord(Key.Escape, "Esc"))),
-    ShortcutEntry(ShortcutId.Refresh, "Refresh", GroupGeneral, listOf(ctrl(Key.R, "R"), Chord(Key.F5, "F5"))),
+    ShortcutEntry(ShortcutId.ShowShortcuts, R.string.sc_keyboard_shortcuts, GroupGeneral, listOf(ctrl(Key.Slash, "/"), Chord(Key.F1, "F1"))),
+    ShortcutEntry(ShortcutId.Dismiss, R.string.sc_close_or_back, GroupGeneral, listOf(Chord(Key.Escape, "Esc"))),
+    ShortcutEntry(ShortcutId.Refresh, R.string.sc_refresh, GroupGeneral, listOf(ctrl(Key.R, "R"), Chord(Key.F5, "F5"))),
 
-    ShortcutEntry(ShortcutId.NewThread, "New thread", GroupThreads, listOf(ctrl(Key.N, "N"))),
-    ShortcutEntry(ShortcutId.SearchThreads, "Search threads", GroupThreads, listOf(ctrl(Key.K, "K"), ctrl(Key.F, "F"))),
-    ShortcutEntry(ShortcutId.NextThread, "Next thread",GroupThreads, listOf(Chord(Key.DirectionDown, "Down", alt = true), ctrl(Key.RightBracket, "]"))),
-    ShortcutEntry(ShortcutId.PreviousThread, "Previous thread", GroupThreads, listOf(Chord(Key.DirectionUp, "Up", alt = true), ctrl(Key.LeftBracket, "["))),
-    ShortcutEntry(ShortcutId.NextNeedsYou, "Next thread that needs you", GroupThreads, listOf(ctrl(Key.U, "U", shift = true))),
+    ShortcutEntry(ShortcutId.NewThread, R.string.sc_new_thread, GroupThreads, listOf(ctrl(Key.N, "N"))),
+    ShortcutEntry(ShortcutId.SearchThreads, R.string.sc_search_threads, GroupThreads, listOf(ctrl(Key.K, "K"), ctrl(Key.F, "F"))),
+    ShortcutEntry(ShortcutId.NextThread, R.string.sc_next_thread, GroupThreads, listOf(Chord(Key.DirectionDown, "Down", alt = true), ctrl(Key.RightBracket, "]"))),
+    ShortcutEntry(ShortcutId.PreviousThread, R.string.sc_prev_thread, GroupThreads, listOf(Chord(Key.DirectionUp, "Up", alt = true), ctrl(Key.LeftBracket, "["))),
+    ShortcutEntry(ShortcutId.NextNeedsYou, R.string.sc_next_needs_you, GroupThreads, listOf(ctrl(Key.U, "U", shift = true))),
 
-    ShortcutEntry(ShortcutId.GoThreads, "Threads", GroupNavigation, listOf(ctrl(Key.One, "1"))),
-    ShortcutEntry(ShortcutId.GoScreens, "Screens", GroupNavigation, listOf(ctrl(Key.Two, "2"))),
-    ShortcutEntry(ShortcutId.GoServers, "Dev servers", GroupNavigation, listOf(ctrl(Key.Three, "3"))),
-    ShortcutEntry(ShortcutId.GoUsage, "Лимиты и использование", GroupNavigation, listOf(ctrl(Key.Four, "4"))),
+    ShortcutEntry(ShortcutId.GoThreads, R.string.dest_threads, GroupNavigation, listOf(ctrl(Key.One, "1"))),
+    ShortcutEntry(ShortcutId.GoScreens, R.string.dest_screens, GroupNavigation, listOf(ctrl(Key.Two, "2"))),
+    ShortcutEntry(ShortcutId.GoServers, R.string.dest_servers, GroupNavigation, listOf(ctrl(Key.Three, "3"))),
+    ShortcutEntry(ShortcutId.GoUsage, R.string.menu_limits_usage, GroupNavigation, listOf(ctrl(Key.Four, "4"))),
 
-    ShortcutEntry(ShortcutId.MachineSwitcher, "Switch machine", GroupNavigation, listOf(ctrl(Key.M, "M", shift = true))),
+    ShortcutEntry(ShortcutId.MachineSwitcher, R.string.switch_machine, GroupNavigation, listOf(ctrl(Key.M, "M", shift = true))),
 
-    ShortcutEntry(ShortcutId.ToggleThreadList,"Show or hide the thread list", GroupPanels, listOf(ctrl(Key.Backslash, "\\"))),
-    ShortcutEntry(ShortcutId.ToggleSidePanel, "Show or hide the side panel", GroupPanels, listOf(ctrl(Key.Period, "."))),
-    ShortcutEntry(ShortcutId.OpenAgents, "Agents", GroupPanels, listOf(ctrl(Key.A, "A", shift = true))),
+    ShortcutEntry(ShortcutId.ToggleThreadList, R.string.sc_toggle_thread_list, GroupPanels, listOf(ctrl(Key.Backslash, "\\"))),
+    ShortcutEntry(ShortcutId.ToggleSidePanel, R.string.sc_toggle_side_panel, GroupPanels, listOf(ctrl(Key.Period, "."))),
+    ShortcutEntry(ShortcutId.OpenAgents, R.string.sc_agents, GroupPanels, listOf(ctrl(Key.A, "A", shift = true))),
 
-    ShortcutEntry(ShortcutId.ModelPicker, "Choose the model", GroupMessage, listOf(ctrl(Key.L, "L", shift = true))),
-    ShortcutEntry(ShortcutId.ComposerSend, "Send (or steer, or queue)", GroupMessage, listOf(Chord(Key.Enter, "Enter"), ctrl(Key.Enter, "Enter")), ShortcutScope.Composer),
-    ShortcutEntry(ShortcutId.ComposerNewline, "New line", GroupMessage, listOf(Chord(Key.Enter, "Enter", shift = true), Chord(Key.Enter, "Enter", alt = true)), ShortcutScope.Composer),
-    ShortcutEntry(ShortcutId.ComposerSendOther, "Send the other way (steer or queue)", GroupMessage, listOf(ctrl(Key.Enter, "Enter", shift = true)), ShortcutScope.Composer),
-    ShortcutEntry(ShortcutId.StartThread, "Start the thread (New thread)", GroupMessage, listOf(ctrl(Key.Enter, "Enter")), ShortcutScope.NewThread),
+    ShortcutEntry(ShortcutId.ModelPicker, R.string.sc_choose_model, GroupMessage, listOf(ctrl(Key.L, "L", shift = true))),
+    ShortcutEntry(ShortcutId.ComposerSend, R.string.sc_send, GroupMessage, listOf(Chord(Key.Enter, "Enter"), ctrl(Key.Enter, "Enter")), ShortcutScope.Composer),
+    ShortcutEntry(ShortcutId.ComposerNewline, R.string.sc_new_line, GroupMessage, listOf(Chord(Key.Enter, "Enter", shift = true), Chord(Key.Enter, "Enter", alt = true)), ShortcutScope.Composer),
+    ShortcutEntry(ShortcutId.ComposerSendOther, R.string.sc_send_other, GroupMessage, listOf(ctrl(Key.Enter, "Enter", shift = true)), ShortcutScope.Composer),
+    ShortcutEntry(ShortcutId.StartThread, R.string.sc_start_thread, GroupMessage, listOf(ctrl(Key.Enter, "Enter")), ShortcutScope.NewThread),
 )
 
 private val ById = ShortcutTable.associateBy { it.id }
@@ -239,9 +242,10 @@ internal class ShortcutHost {
 }
 
 /** Entries of the table as the system Keyboard Shortcut Helper shows them: one group per [ShortcutGroups] entry, one info per chord. */
-internal fun keyboardShortcutGroups(): List<KeyboardShortcutGroup> = ShortcutGroups.mapNotNull { group ->
-    val infos = ShortcutTable.filter { it.group == group }.flatMap { entry -> entry.chords.map { KeyboardShortcutInfo(entry.label, it.key.nativeKeyCode, it.modifiers) } }
-    infos.takeIf { it.isNotEmpty() }?.let { KeyboardShortcutGroup(group, it) }
+internal fun keyboardShortcutGroups(context: Context): List<KeyboardShortcutGroup> = ShortcutGroups.mapNotNull { groupRes ->
+    val groupName = context.getString(groupRes)
+    val infos = ShortcutTable.filter { it.groupRes == groupRes }.flatMap { entry -> entry.chords.map { KeyboardShortcutInfo(context.getString(entry.labelRes), it.key.nativeKeyCode, it.modifiers) } }
+    infos.takeIf { it.isNotEmpty() }?.let { KeyboardShortcutGroup(groupName, it) }
 }
 
 // ---- Thread order helpers (the keys step through the same order the list shows with the All filter and no search) ----
@@ -323,13 +327,15 @@ internal fun KeyboardShortcutsContent(onClose: () -> Unit, modifier: Modifier = 
 }
 
 @Composable
-private fun ColumnScope.ShortcutGroupBlock(group: String) {
+private fun ColumnScope.ShortcutGroupBlock(groupRes: Int) {
     val c = Tf.colors
-    Text(group.uppercase(), Modifier.padding(top = 16.dp, bottom = 4.dp).semantics { heading() }, style = TrefoilType.section, color = c.muted)
-    ShortcutTable.filter { it.group == group }.forEach { entry ->
-        Row(Modifier.fillMaxWidth().heightIn(min = 36.dp).padding(vertical = 4.dp).semantics(mergeDescendants = true) { contentDescription = "${entry.label}: ${entry.chords.joinToString(" or ") { it.label.replace("+", " plus ") }}" },
+    val groupLabel = stringResource(groupRes)
+    Text(groupLabel.uppercase(), Modifier.padding(top = 16.dp, bottom = 4.dp).semantics { heading() }, style = TrefoilType.section, color = c.muted)
+    ShortcutTable.filter { it.groupRes == groupRes }.forEach { entry ->
+        val entryLabel = stringResource(entry.labelRes)
+        Row(Modifier.fillMaxWidth().heightIn(min = 36.dp).padding(vertical = 4.dp).semantics(mergeDescendants = true) { contentDescription = "$entryLabel: ${entry.chords.joinToString(" or ") { it.label.replace("+", " plus ") }}" },
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(entry.label, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, color = c.text)
+            Text(entryLabel, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, color = c.text)
             Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 entry.chords.forEach { chord ->
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) { chord.parts.forEach { KeyCap(it) } }

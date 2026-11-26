@@ -18,6 +18,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.boundsInWindow
@@ -39,6 +40,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import com.tajchert.trefoil.R
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.ui.SectionLabel
 import com.tajchert.trefoil.ui.Tf
@@ -145,9 +147,9 @@ fun ScreenSessionsScreen(
             else -> SinglePaneLayout(state, viewerState.error, viewer, stage, readable, compactHeight, onRefresh, onOpen, onClose, onLeave, panel)
         }
     }
-    if (textEntry) AlertDialog(onDismissRequest = { textEntry = false; keyboardText = "" }, title = { Text("Type on remote screen") }, text = {
+    if (textEntry) AlertDialog(onDismissRequest = { textEntry = false; keyboardText = "" }, title = { Text(stringResource(R.string.screen_type_title)) }, text = {
         OutlinedTextField(keyboardText, { keyboardText = it }, label = { Text("Text") }, modifier = Modifier.fillMaxWidth(), maxLines = 5)
-    }, confirmButton = { TextButton(onClick = { sendTyped() }, enabled = canInput && keyboardText.isNotEmpty()) { Text("Send text") } }, dismissButton = { TextButton(onClick = { textEntry = false; keyboardText = "" }) { Text("Cancel") } })
+    }, confirmButton = { TextButton(onClick = { sendTyped() }, enabled = canInput && keyboardText.isNotEmpty()) { Text(stringResource(R.string.send_text)) } }, dismissButton = { TextButton(onClick = { textEntry = false; keyboardText = "" }) { Text(stringResource(R.string.cancel)) } })
 }
 
 /** Everything the viewer chrome and the stage read, so the stage can live in a [movableContentOf] and still see fresh values. */
@@ -175,7 +177,7 @@ private class ViewerContext(
     val onTypedText: (String) -> Unit,
     val sendTyped: () -> Unit,
 ) {
-    val statusText: String get() = viewerStatusText(connected, canInput, status)
+    val statusText: String @Composable get() = viewerStatusText(connected, canInput, status)
     val canReconnect: Boolean get() = transportConnected && !loading
 }
 
@@ -184,7 +186,14 @@ private val ScreenTarget.key: String get() = when (this) {
     is ScreenTarget.Browser -> "browser:$threadId:$tabId"
     is ScreenTarget.Device -> "device:$threadId:$hostId:$deviceId"
 }
-private val ScreenTarget.title: String get() = when (this) { is ScreenTarget.Browser -> title.ifBlank { "Browser" }; is ScreenTarget.Device -> name.ifBlank { "Device" } }
+private val ScreenTarget.title: String get() = when (this) { is ScreenTarget.Browser -> title; is ScreenTarget.Device -> name }
+/** Title with a localized fallback when the session itself has none. */
+@Composable
+internal fun screenTargetTitle(target: ScreenTarget?): String = target?.title?.takeIf { it.isNotBlank() } ?: stringResource(when (target) {
+    is ScreenTarget.Browser -> R.string.sessions_browser
+    is ScreenTarget.Device -> R.string.sessions_device
+    else -> R.string.dest_screens
+})
 private val ScreenTarget.subtitle: String get() = when (this) { is ScreenTarget.Browser -> url; is ScreenTarget.Device -> "${platform.uppercase(Locale.ROOT)} · $hostId" }
 
 /** The stream, with its error and connecting overlays. Fills its parent; the same node moves between layouts. */
@@ -197,18 +206,18 @@ private fun ViewerStage(v: ViewerContext) {
             if (v.viewerContent != null) v.viewerContent.invoke(v.controller, v.onStatus)
             else StreamWebView(target, v.access, v.environment, v.connected, v.controller, v.onStatus, Modifier.fillMaxSize())
         }
-        val error = v.error ?: if (!v.connected) "Reconnect to resume this screen." else when (v.status.phase) {
-            StreamPhase.Error, StreamPhase.Unauthorized, StreamPhase.Gone, StreamPhase.Stopped -> v.status.detail ?: "Screen stream stopped. Reconnect to try again."
+        val error = v.error ?: if (!v.connected) stringResource(R.string.screen_reconnect_hint) else when (v.status.phase) {
+            StreamPhase.Error, StreamPhase.Unauthorized, StreamPhase.Gone, StreamPhase.Stopped -> v.status.detail ?: stringResource(R.string.screen_stopped)
             else -> null
         }
         if (error != null) Column(Modifier.align(Alignment.Center).padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(Icons.Default.VideocamOff, null, tint = Color.White)
             Text(error, Modifier.padding(vertical = 12.dp), color = Color.White, style = MaterialTheme.typography.bodyMedium)
-            Button(onClick = v.reconnect, enabled = v.canReconnect) { Text("Reconnect stream") }
+            Button(onClick = v.reconnect, enabled = v.canReconnect) { Text(stringResource(R.string.reconnect_stream)) }
         } else if (v.loading || v.access == null || v.status.phase == StreamPhase.Connecting) {
             Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                 CircularProgressIndicator(Modifier.size(28.dp))
-                Text("Connecting screen…", Modifier.padding(top = 12.dp), color = Color.White)
+                Text(stringResource(R.string.screen_connecting), Modifier.padding(top = 12.dp), color = Color.White)
             }
         }
     }
@@ -219,10 +228,10 @@ private fun ViewerStage(v: ViewerContext) {
 private fun BoxScope.FullscreenOverlay(v: ViewerContext) {
     val target = v.target ?: return
     Box(Modifier.align(Alignment.TopEnd).padding(12.dp)) {
-        TfTooltip("Exit full screen") { FilledTonalIconButton(onClick = { v.onFullscreen(false) }) { Icon(Icons.Default.FullscreenExit, "Exit full screen") } }
+        TfTooltip(stringResource(R.string.exit_full_screen)) { FilledTonalIconButton(onClick = { v.onFullscreen(false) }) { Icon(Icons.Default.FullscreenExit, stringResource(R.string.exit_full_screen)) } }
     }
     Box(Modifier.align(Alignment.TopStart).padding(12.dp)) {
-        val toggleLabel = if (v.showControls) "Hide screen controls" else "Show screen controls"
+        val toggleLabel = if (v.showControls) stringResource(R.string.hide_screen_controls) else stringResource(R.string.show_screen_controls)
         TfTooltip(toggleLabel) { FilledTonalIconButton(onClick = v.toggleControls) { Icon(if (v.showControls) Icons.Default.VisibilityOff else Icons.Default.Tune, toggleLabel) } }
     }
     if (v.showControls) Surface(Modifier.align(Alignment.BottomCenter).padding(12.dp), shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = .94f)) {
@@ -243,17 +252,17 @@ private fun SinglePaneLayout(
     // In the docked side panel the tab bar names the catalog and carries Refresh (same label and enabled rule); the catalog has no header
     // row. An open stream keeps its own header, 48dp, directly under the tab bar, starting with the arrow back to the catalog.
     val catalogInPanel = panel != null && target == null
-    PanelActionEffect(panel, catalogInPanel, TfIcons.Refresh, "Refresh screen sessions", connectedForCatalog(state) && !state.screens.loading, onRefresh)
+    PanelActionEffect(panel, catalogInPanel, TfIcons.Refresh, stringResource(R.string.refresh_sessions), connectedForCatalog(state) && !state.screens.loading, onRefresh)
     Column(Modifier.fillMaxSize()) {
         if (!v.fullscreen && !catalogInPanel) SessionsHeader(
-            title = target?.title ?: "Screen sessions", subtitle = if (compact) v.statusText else target?.subtitle ?: "Browser tabs and attached devices",
-            back = if (target != null) BackAction("Back to screen sessions", onClose) else onLeave?.let { BackAction("Back to conversations", it) },
+            title = screenTargetTitle(target), subtitle = if (compact) v.statusText else target?.subtitle ?: stringResource(R.string.screen_sessions_subtitle),
+            back = if (target != null) BackAction(stringResource(R.string.back_to_sessions), onClose) else onLeave?.let { BackAction(stringResource(R.string.ports_back), it) },
             modifier = if (target == null && readable) Modifier.maxContentWidth(CatalogReadableWidth) else Modifier.fillMaxWidth(),
             minHeight = if (compactHeight || panel != null) ViewerBarCompactHeight else 64.dp,
         ) {
-            if (compact && v.access != null) TfIconButton(Icons.Default.Refresh, "Reconnect stream", v.reconnect, enabled = v.canReconnect, tint = c.text)
-            if (target != null) TfIconButton(Icons.Default.Fullscreen, "Enter full screen", { v.onFullscreen(true) }, enabled = v.access != null, tint = c.text)
-            else TfIconButton(TfIcons.Refresh, "Refresh screen sessions", onRefresh, enabled = connectedForCatalog(state) && !state.screens.loading, iconSize = 22.dp)
+            if (compact && v.access != null) TfIconButton(Icons.Default.Refresh, stringResource(R.string.reconnect_stream), v.reconnect, enabled = v.canReconnect, tint = c.text)
+            if (target != null) TfIconButton(Icons.Default.Fullscreen, stringResource(R.string.enter_full_screen), { v.onFullscreen(true) }, enabled = v.access != null, tint = c.text)
+            else TfIconButton(TfIcons.Refresh, stringResource(R.string.refresh_sessions), onRefresh, enabled = connectedForCatalog(state) && !state.screens.loading, iconSize = 22.dp)
         }
         if (!v.fullscreen && !catalogInPanel) HorizontalDivider(color = c.line)
         Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -270,7 +279,7 @@ private fun SinglePaneLayout(
                     if (!compact) Row(Modifier.padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.size(6.dp).background(if (v.status.phase == StreamPhase.Streaming) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, CircleShape))
                         Text(v.statusText, Modifier.padding(start = 8.dp).weight(1f), style = MaterialTheme.typography.labelSmall)
-                        if (v.access != null) TfIconButton(Icons.Default.Refresh, "Reconnect stream", v.reconnect, enabled = v.canReconnect)
+                        if (v.access != null) TfIconButton(Icons.Default.Refresh, stringResource(R.string.reconnect_stream), v.reconnect, enabled = v.canReconnect)
                     }
                     ScreenControls(target, v.ready, v.canInput, v.status, v.controller, v.openText)
                 }
@@ -293,8 +302,8 @@ private fun ListDetailLayout(
         paneState, CatalogPaneWidth,
         start = {
             Column(Modifier.fillMaxSize().background(c.bg)) {
-                SessionsHeader("Screen sessions", "Browser tabs and attached devices", onLeave?.let { BackAction("Back to conversations", it) }, Modifier.fillMaxWidth(), if (compactHeight) ViewerBarCompactHeight else 64.dp) {
-                    TfIconButton(TfIcons.Refresh, "Refresh screen sessions", onRefresh, enabled = connectedForCatalog(state) && !state.screens.loading, iconSize = 22.dp)
+                SessionsHeader(stringResource(R.string.dest_screens), stringResource(R.string.screen_sessions_subtitle), onLeave?.let { BackAction(stringResource(R.string.ports_back), it) }, Modifier.fillMaxWidth(), if (compactHeight) ViewerBarCompactHeight else 64.dp) {
+                    TfIconButton(TfIcons.Refresh, stringResource(R.string.refresh_sessions), onRefresh, enabled = connectedForCatalog(state) && !state.screens.loading, iconSize = 22.dp)
                 }
                 HorizontalDivider(color = c.line)
                 ScreenCatalogList(state.screens, error, state.selectedThreadId != null, onChoose, Modifier.weight(1f).fillMaxWidth(), selectedKey = target?.key)
@@ -337,10 +346,10 @@ private fun TabletopLayout(state: ClientState, v: ViewerContext, stage: @Composa
             }
             // TooltipBox swallows BoxScope parent data, so the alignment goes on a plain Box around it.
             Box(Modifier.align(Alignment.TopEnd).padding(8.dp)) {
-                if (v.fullscreen) TfTooltip("Exit full screen") {
-                    FilledTonalIconButton(onClick = { v.onFullscreen(false) }) { Icon(Icons.Default.FullscreenExit, "Exit full screen") }
-                } else TfTooltip("Enter full screen") {
-                    FilledTonalIconButton(onClick = { v.onFullscreen(true) }, enabled = v.access != null) { Icon(Icons.Default.Fullscreen, "Enter full screen") }
+                if (v.fullscreen) TfTooltip(stringResource(R.string.exit_full_screen)) {
+                    FilledTonalIconButton(onClick = { v.onFullscreen(false) }) { Icon(Icons.Default.FullscreenExit, stringResource(R.string.exit_full_screen)) }
+                } else TfTooltip(stringResource(R.string.enter_full_screen)) {
+                    FilledTonalIconButton(onClick = { v.onFullscreen(true) }, enabled = v.access != null) { Icon(Icons.Default.Fullscreen, stringResource(R.string.enter_full_screen)) }
                 }
             }
         }
@@ -350,10 +359,10 @@ private fun TabletopLayout(state: ClientState, v: ViewerContext, stage: @Composa
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Box(Modifier.size(8.dp).background(if (v.status.phase == StreamPhase.Streaming) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, CircleShape))
                 Column(Modifier.weight(1f)) {
-                    Text(target.title, style = TrefoilType.rowTitle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(screenTargetTitle(target), style = TrefoilType.rowTitle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text("${v.statusText} · ${target.subtitle}", style = TrefoilType.meta, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                if (v.access != null) TfIconButton(Icons.Default.Refresh, "Reconnect stream", v.reconnect, enabled = v.canReconnect, tint = c.text)
+                if (v.access != null) TfIconButton(Icons.Default.Refresh, stringResource(R.string.reconnect_stream), v.reconnect, enabled = v.canReconnect, tint = c.text)
             }
             val specs = screenControlSpecs(target, v.ready, v.canInput, v.status)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -361,8 +370,8 @@ private fun TabletopLayout(state: ClientState, v: ViewerContext, stage: @Composa
             }
             specs.firstOrNull { it.control.isType }?.let { typing ->
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedTextField(v.typedText, v.onTypedText, Modifier.weight(1f), enabled = typing.enabled, label = { Text("Text") }, placeholder = { Text(typing.control.description) }, maxLines = 2)
-                    Button(onClick = v.sendTyped, Modifier.height(56.dp), enabled = v.canInput && v.typedText.isNotEmpty()) { Text("Send") }
+                    OutlinedTextField(v.typedText, v.onTypedText, Modifier.weight(1f), enabled = typing.enabled, label = { Text(stringResource(R.string.screen_text_field)) }, placeholder = { Text(stringResource(typing.control.descriptionRes)) }, maxLines = 2)
+                    Button(onClick = v.sendTyped, Modifier.height(56.dp), enabled = v.canInput && v.typedText.isNotEmpty()) { Text(stringResource(R.string.send)) }
                 }
             }
             SessionChips(state, v, onChoose, vertical = false)
@@ -376,13 +385,15 @@ private fun TabletopControl(spec: ScreenControlSpec, v: ViewerContext, modifier:
     val c = Tf.colors
     val control = spec.control
     val press = { control.command?.let { v.controller.send(it) }; Unit }
+    val controlDescription = stringResource(control.descriptionRes)
+    val controlLabel = stringResource(control.labelRes)
     Surface(
-        onClick = press, modifier = modifier.focusRing(RoundedCornerShape(16.dp)).handPointer(spec.enabled).semantics { contentDescription = control.description }, enabled = spec.enabled,
+        onClick = press, modifier = modifier.focusRing(RoundedCornerShape(16.dp)).handPointer(spec.enabled).semantics { contentDescription = controlDescription }, enabled = spec.enabled,
         shape = RoundedCornerShape(16.dp), color = c.s1, border = BorderStroke(1.dp, c.line),
     ) {
         Column(Modifier.heightIn(min = 56.dp).padding(horizontal = 6.dp, vertical = 6.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
             control.icon?.let { Icon(it, null, Modifier.size(22.dp), tint = if (spec.enabled) c.text else c.muted) }
-            Text(control.label, style = MaterialTheme.typography.labelMedium, color = if (spec.enabled) c.text else c.muted, maxLines = 2, textAlign = TextAlign.Center)
+            Text(controlLabel, style = MaterialTheme.typography.labelMedium, color = if (spec.enabled) c.text else c.muted, maxLines = 2, textAlign = TextAlign.Center)
         }
     }
 }
@@ -400,7 +411,7 @@ private fun SessionChips(state: ClientState, v: ViewerContext, onChoose: (Screen
         )
     }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SectionLabel("Screen sessions")
+        SectionLabel(stringResource(R.string.dest_screens))
         if (vertical) Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { targets.forEach { chips(it, Modifier.fillMaxWidth()) } }
         else Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) { targets.forEach { chips(it, Modifier) } }
     }
@@ -422,10 +433,10 @@ private fun FoldedFullscreenLayout(state: ClientState, v: ViewerContext, stage: 
                     Row(Modifier.padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Box(Modifier.size(8.dp).background(if (v.status.phase == StreamPhase.Streaming) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, CircleShape))
                         Column(Modifier.weight(1f)) {
-                            Text(target.title, style = TrefoilType.rowTitle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(screenTargetTitle(target), style = TrefoilType.rowTitle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(v.statusText, style = TrefoilType.meta, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
-                        if (v.access != null) TfIconButton(Icons.Default.Refresh, "Reconnect stream", v.reconnect, enabled = v.canReconnect, tint = c.text)
+                        if (v.access != null) TfIconButton(Icons.Default.Refresh, stringResource(R.string.reconnect_stream), v.reconnect, enabled = v.canReconnect, tint = c.text)
                     }
                     ScreenControls(target, v.ready, v.canInput, v.status, v.controller, v.openText)
                     Box(Modifier.padding(horizontal = 16.dp)) { SessionChips(state, v, onChoose, vertical = true) }
@@ -436,8 +447,8 @@ private fun FoldedFullscreenLayout(state: ClientState, v: ViewerContext, stage: 
                 stage(v)
                 CompositionLocalProvider(LocalLayoutDirection provides direction) {
                     Box(Modifier.align(Alignment.TopEnd).padding(8.dp)) {
-                        TfTooltip("Exit full screen") {
-                            FilledTonalIconButton(onClick = { v.onFullscreen(false) }) { Icon(Icons.Default.FullscreenExit, "Exit full screen") }
+                        TfTooltip(stringResource(R.string.exit_full_screen)) {
+                            FilledTonalIconButton(onClick = { v.onFullscreen(false) }) { Icon(Icons.Default.FullscreenExit, stringResource(R.string.exit_full_screen)) }
                         }
                     }
                 }
@@ -469,11 +480,11 @@ private fun ViewerTopBar(v: ViewerContext, height: Dp) {
     Row(Modifier.fillMaxWidth().height(height).background(c.s1).padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Box(Modifier.size(8.dp).background(if (v.status.phase == StreamPhase.Streaming) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, CircleShape))
         Column(Modifier.weight(1f)) {
-            Text(target.title, style = TrefoilType.rowTitle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(screenTargetTitle(target), style = TrefoilType.rowTitle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(v.statusText, style = TrefoilType.meta, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        if (v.access != null) TfIconButton(Icons.Default.Refresh, "Reconnect stream", v.reconnect, enabled = v.canReconnect, tint = c.text)
-        TfIconButton(Icons.Default.Fullscreen, "Enter full screen", { v.onFullscreen(true) }, enabled = v.access != null, tint = c.text)
+        if (v.access != null) TfIconButton(Icons.Default.Refresh, stringResource(R.string.reconnect_stream), v.reconnect, enabled = v.canReconnect, tint = c.text)
+        TfIconButton(Icons.Default.Fullscreen, stringResource(R.string.enter_full_screen), { v.onFullscreen(true) }, enabled = v.access != null, tint = c.text)
     }
 }
 
@@ -485,10 +496,10 @@ private fun ViewerEmptyState(hasThread: Boolean, canRefresh: Boolean, onRefresh:
             Icon(Icons.Default.Devices, null, Modifier.size(40.dp), tint = MaterialTheme.colorScheme.primary)
             Text(
                 // Without a conversation the list beside this pane already says what to do; repeating its sentence here would show it twice.
-                if (hasThread) "Choose a browser tab or device to view its screen." else "No conversation selected",
+                if (hasThread) stringResource(R.string.viewer_empty_with_thread) else stringResource(R.string.viewer_empty_no_conversation),
                 Modifier.padding(top = 16.dp), style = MaterialTheme.typography.bodyMedium, color = c.muted, textAlign = TextAlign.Center,
             )
-            if (hasThread) OutlinedButton(onClick = onRefresh, Modifier.padding(top = 16.dp), enabled = canRefresh) { Text("Refresh sessions") }
+            if (hasThread) OutlinedButton(onClick = onRefresh, Modifier.padding(top = 16.dp), enabled = canRefresh) { Text(stringResource(R.string.refresh_sessions)) }
         }
     }
 }
@@ -526,21 +537,21 @@ private fun ScreenCatalogColumn(catalog: ScreenCatalog, error: String?, hasThrea
     ) {
         if (catalog.loading) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
         (catalog.error ?: error)?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) } }
-        if (!hasThread) item { Text("Choose a conversation first to see its browser tabs and attached devices.", Modifier.padding(vertical = 24.dp)) }
+        if (!hasThread) item { Text(stringResource(R.string.sessions_empty_no_conversation), Modifier.padding(vertical = 24.dp)) }
         if (catalog.loaded && !catalog.loading && catalog.targets.isEmpty() && hasThread) item {
             Column(Modifier.fillMaxWidth().padding(vertical = 40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(Icons.Default.Devices, null, Modifier.size(40.dp), tint = MaterialTheme.colorScheme.primary)
-                Text("No screen sessions yet", Modifier.padding(top = 16.dp), style = MaterialTheme.typography.titleMedium)
-                Text("Open a browser or attach a device in T3 Code, then refresh here.", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(stringResource(R.string.sessions_empty_title), Modifier.padding(top = 16.dp), style = MaterialTheme.typography.titleMedium)
+                Text(stringResource(R.string.sessions_empty_body), Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        if (catalog.browsers.isNotEmpty()) item { SectionLabel("Browsers", Modifier.padding(top = 12.dp, start = 4.dp)) }
+        if (catalog.browsers.isNotEmpty()) item { SectionLabel(stringResource(R.string.sessions_browsers), Modifier.padding(top = 12.dp, start = 4.dp)) }
         if (!grid) {
             items(catalog.browsers, key = { "browser:${it.threadId}:${it.tabId}" }) { ScreenSessionRow(it, open, selectedKey?.let { selected -> selected == it.key }) }
         } else {
             items(catalog.browsers.chunked(columns), key = { row -> "browser:${row.first().threadId}:${row.first().tabId}" }) { row -> ScreenSessionGridRow(row, columns, open, selectedKey) }
         }
-        if (catalog.devices.isNotEmpty()) item { SectionLabel("Devices", Modifier.padding(top = 18.dp, start = 4.dp)) }
+        if (catalog.devices.isNotEmpty()) item { SectionLabel(stringResource(R.string.sessions_devices), Modifier.padding(top = 18.dp, start = 4.dp)) }
         if (!grid) {
             items(catalog.devices, key = { "device:${it.hostId}:${it.deviceId}" }) { ScreenSessionRow(it, open, selectedKey?.let { selected -> selected == it.key }) }
         } else {
@@ -576,10 +587,10 @@ private fun ScreenSessionRow(target: ScreenTarget, open: (ScreenTarget) -> Unit,
                     Icon(if (target is ScreenTarget.Browser) Icons.Default.Language else Icons.Default.Smartphone, null, Modifier.size(20.dp), tint = c.text)
                 }
                 Column(Modifier.weight(1f)) {
-                    Text(target.title, style = TrefoilType.rowTitle, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(screenTargetTitle(target), style = TrefoilType.rowTitle, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text(target.subtitle, style = if (target is ScreenTarget.Browser) TrefoilType.mono else TrefoilType.meta, color = c.muted, maxLines = if (singleLineSubtitle) 1 else 2, overflow = TextOverflow.Ellipsis)
                 }
-                Icon(TfIcons.ChevronRight, "View screen", Modifier.size(20.dp), tint = c.muted)
+                Icon(TfIcons.ChevronRight, stringResource(R.string.view_screen), Modifier.size(20.dp), tint = c.muted)
             }
         }
     }
@@ -592,8 +603,10 @@ private fun ScreenControls(target: ScreenTarget, ready: Boolean, canInput: Boole
             val control = spec.control
             val icon = control.icon
             val press = { if (control.isType) text() else control.command?.let { controller.send(it) }; Unit }
-            if (icon != null) TfIconButton(icon, control.description, press, enabled = spec.enabled)
-            else TextButton(onClick = press, enabled = spec.enabled) { Text(control.label) }
+            val controlDescription = stringResource(control.descriptionRes)
+            val controlLabel = stringResource(control.labelRes)
+            if (icon != null) TfIconButton(icon, controlDescription, press, enabled = spec.enabled)
+            else TextButton(onClick = press, enabled = spec.enabled) { Text(controlLabel) }
         }
     }
 }

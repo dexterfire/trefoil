@@ -25,6 +25,8 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
@@ -50,6 +52,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.tajchert.trefoil.R
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.core.session.ComposerDraft
 import com.tajchert.trefoil.core.session.ComposerDraftKey
@@ -120,7 +123,9 @@ internal val LimitNumberMinWidth = 340.dp
 internal val RouteIconMinWidth = 340.dp
 internal val CollapseMinWidth = 360.dp
 
-private fun limitChipTooltip(percent: Int?) = limitChipDescription(percent)
+@Composable
+private fun limitChipTooltip(percent: Int?): String =
+    limitChipDescription(percent, stringResource(R.string.menu_limits_usage), percent?.let { stringResource(R.string.usage_limit_left, it) }.orEmpty())
 
 /** Current machine: status dot + environment name + chevron. Opens Machines. */
 @Composable
@@ -128,14 +133,19 @@ internal fun MachinePill(state: ClientState, onClick: () -> Unit, showRoute: Boo
     val c = Tf.colors
     val status = machineStatus(state)
     val route = state.activeRoute?.takeIf { state.connection == ConnectionStatus.Connected }
+    val machineTitle = state.environment?.name ?: stringResource(R.string.current_machine)
+    val machineName = state.environment?.name ?: stringResource(R.string.machine_none)
+    val machineSwitch = stringResource(R.string.machine_switch)
+    val statusLabel = status.resolvedLabel()
+    val viaRoute = route?.let { stringResource(R.string.route_via, routeKindLabel(it.kind)) }
     Surface(onClick = onClick, shape = RoundedCornerShape(20.dp), color = c.s2, contentColor = c.text,
         modifier = Modifier.focusRing(RoundedCornerShape(20.dp)).handPointer().semantics {
-            contentDescription = "Сменить машину"
-            stateDescription = listOfNotNull(state.environment?.name ?: "Нет машины", status.label, route?.let { "через ${routeKindLabel(it.kind)}" }).joinToString(", ")
+            contentDescription = machineSwitch
+            stateDescription = listOfNotNull(machineName, statusLabel, viaRoute).joinToString(", ")
         }) {
         Row(Modifier.height(40.dp).padding(start = 14.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             StatusDot(status.color(c))
-            Text(state.environment?.name ?: "Машины", Modifier.weight(1f, fill = false), fontFamily = InterFamily, fontWeight = FontWeight.SemiBold, fontSize = 15.sp,
+            Text(machineTitle, Modifier.weight(1f, fill = false), fontFamily = InterFamily, fontWeight = FontWeight.SemiBold, fontSize = 15.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (route != null && showRoute) Icon(routeKindIcon(route.kind), null, Modifier.size(14.dp), tint = c.muted)
             Icon(TfIcons.ChevronDown, null, Modifier.size(18.dp))

@@ -29,6 +29,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -46,6 +47,7 @@ import com.tajchert.trefoil.ui.adaptive.windowSizeDp
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.tajchert.trefoil.R
 import com.tajchert.trefoil.core.model.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -75,6 +77,8 @@ internal fun SshConnectionDialog(busy: Boolean, initial: SshConnectionInput?, di
     var advanced by rememberSaveable { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var importing by remember { mutableStateOf(false) }
+    val readKeyError = stringResource(R.string.ssh_read_key_error)
+    val noPickerError = stringResource(R.string.ssh_no_picker)
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -100,7 +104,7 @@ internal fun SshConnectionDialog(busy: Boolean, initial: SshConnectionInput?, di
                         } ?: kotlin.error("Cannot open file")
                     }
                 }
-                imported.onSuccess { privateKey = it; error = privateKeyValidationError(it) }.onFailure { error = "Could not read private key. Choose a readable file of at most 256 KiB, or paste it below." }
+                imported.onSuccess { privateKey = it; error = privateKeyValidationError(it) }.onFailure { error = readKeyError }
                 importing = false
             }
         }
@@ -113,15 +117,15 @@ internal fun SshConnectionDialog(busy: Boolean, initial: SshConnectionInput?, di
     // enough that two columns would clip labels. Below 600dp it is the AlertDialog it has always been, one field per row.
     val wide = usesDialog(windowSizeDp().width.value)
     val twoColumn = wide && LocalDensity.current.fontScale <= TWO_COLUMN_MAX_FONT_SCALE
-    val title = if (initial == null) "Connect over SSH" else "SSH login required"
-    val nameField: @Composable (Modifier) -> Unit = { OutlinedTextField(name, { name = it; error = null }, label = { Text("Display name") }, singleLine = true, enabled = enabled, shape = TfFieldShape, colors = tfFieldColors(), modifier = it) }
-    val hostField: @Composable (Modifier) -> Unit = { OutlinedTextField(host, { host = it; error = null }, label = { Text("IP address or hostname") }, textStyle = mono14(), singleLine = true, enabled = enabled, shape = TfFieldShape, colors = tfFieldColors(), modifier = it) }
-    val usernameField: @Composable (Modifier) -> Unit = { OutlinedTextField(username, { username = it; error = null }, label = { Text("SSH username") }, textStyle = mono14(), singleLine = true, enabled = enabled, shape = TfFieldShape, colors = tfFieldColors(), modifier = it) }
-    val portField: @Composable (Modifier) -> Unit = { OutlinedTextField(port, { port = it; error = null }, label = { Text("SSH port") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, enabled = enabled, shape = TfFieldShape, colors = tfFieldColors(), modifier = it) }
+    val title = if (initial == null) stringResource(R.string.ssh_title_connect) else stringResource(R.string.ssh_title_login)
+    val nameField: @Composable (Modifier) -> Unit = { OutlinedTextField(name, { name = it; error = null }, label = { Text(stringResource(R.string.ssh_display_name)) }, singleLine = true, enabled = enabled, shape = TfFieldShape, colors = tfFieldColors(), modifier = it) }
+    val hostField: @Composable (Modifier) -> Unit = { OutlinedTextField(host, { host = it; error = null }, label = { Text(stringResource(R.string.ssh_host)) }, textStyle = mono14(), singleLine = true, enabled = enabled, shape = TfFieldShape, colors = tfFieldColors(), modifier = it) }
+    val usernameField: @Composable (Modifier) -> Unit = { OutlinedTextField(username, { username = it; error = null }, label = { Text(stringResource(R.string.ssh_username)) }, textStyle = mono14(), singleLine = true, enabled = enabled, shape = TfFieldShape, colors = tfFieldColors(), modifier = it) }
+    val portField: @Composable (Modifier) -> Unit = { OutlinedTextField(port, { port = it; error = null }, label = { Text(stringResource(R.string.ssh_port)) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, enabled = enabled, shape = TfFieldShape, colors = tfFieldColors(), modifier = it) }
     val scroll = rememberScrollState()
     val body: @Composable () -> Unit = {
         Column(Modifier.verticalScroll(scroll), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(if (initial == null) "Connect to an installed, running T3 Code server through an encrypted SSH tunnel." else "Enter credentials to reconnect to ${initial.name}.", color = Tf.colors.muted)
+            Text(if (initial == null) stringResource(R.string.ssh_intro_new) else stringResource(R.string.ssh_intro_reconnect, initial.name), color = Tf.colors.muted)
             if (twoColumn) {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) { nameField(Modifier.weight(1f)); usernameField(Modifier.weight(1f)) }
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) { hostField(Modifier.weight(7f)); portField(Modifier.weight(3f)) }
@@ -130,29 +134,29 @@ internal fun SshConnectionDialog(busy: Boolean, initial: SshConnectionInput?, di
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 RadioButton(method == SshAuthMethod.Password, { method = SshAuthMethod.Password; error = null }, enabled = enabled)
-                Text("Password")
+                Text(stringResource(R.string.ssh_password_option))
                 RadioButton(method == SshAuthMethod.PrivateKey, { method = SshAuthMethod.PrivateKey; error = null }, enabled = enabled)
-                Text("Private key")
+                Text(stringResource(R.string.ssh_key_option))
             }
             if (method == SshAuthMethod.Password) {
-                OutlinedTextField(password, { password = it; error = null }, label = { Text("SSH password") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, enabled = enabled, shape = TfFieldShape, colors = tfFieldColors(), modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(password, { password = it; error = null }, label = { Text(stringResource(R.string.ssh_password_field)) }, visualTransformation = PasswordVisualTransformation(), singleLine = true, enabled = enabled, shape = TfFieldShape, colors = tfFieldColors(), modifier = Modifier.fillMaxWidth())
             } else {
-                OutlinedButton(onClick = { pickerActive(true); runCatching { importer.launch(arrayOf("*/*")) }.onFailure { pickerActive(false); error = "No file picker is available. Paste the private key instead." } }, enabled = enabled) { Text(if (importing) "Reading key…" else "Import private key file") }
-                OutlinedTextField(privateKey, { privateKey = it; error = privateKeyValidationError(it) }, label = { Text("Paste private key") }, textStyle = mono14(), visualTransformation = PasswordVisualTransformation(), minLines = 2, maxLines = 4, enabled = enabled, shape = TfFieldShape, colors = tfFieldColors(), modifier = Modifier.fillMaxWidth())
-                Text("OpenSSH or PEM private key, up to 256 KiB.", style = MaterialTheme.typography.bodySmall)
-                OutlinedTextField(passphrase, { passphrase = it; error = null }, label = { Text("Key passphrase (optional)") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, enabled = enabled, shape = TfFieldShape, colors = tfFieldColors(), modifier = Modifier.fillMaxWidth())
+                OutlinedButton(onClick = { pickerActive(true); runCatching { importer.launch(arrayOf("*/*")) }.onFailure { pickerActive(false); error = noPickerError } }, enabled = enabled) { Text(if (importing) stringResource(R.string.ssh_reading_key) else stringResource(R.string.ssh_import_key)) }
+                OutlinedTextField(privateKey, { privateKey = it; error = privateKeyValidationError(it) }, label = { Text(stringResource(R.string.ssh_paste_key)) }, textStyle = mono14(), visualTransformation = PasswordVisualTransformation(), minLines = 2, maxLines = 4, enabled = enabled, shape = TfFieldShape, colors = tfFieldColors(), modifier = Modifier.fillMaxWidth())
+                Text(stringResource(R.string.ssh_key_hint), style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(passphrase, { passphrase = it; error = null }, label = { Text(stringResource(R.string.ssh_key_passphrase)) }, visualTransformation = PasswordVisualTransformation(), singleLine = true, enabled = enabled, shape = TfFieldShape, colors = tfFieldColors(), modifier = Modifier.fillMaxWidth())
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(saveLogin, { saveLogin = it }, enabled = enabled)
-                Text("Save login credentials on this device", Modifier.weight(1f))
+                Text(stringResource(R.string.ssh_save_login), Modifier.weight(1f))
             }
-            Text("Saved login credentials are encrypted. Otherwise, you will be asked again when reconnecting.", style = MaterialTheme.typography.bodySmall)
-            TextButton(onClick = { advanced = !advanced }, enabled = enabled) { Text(if (advanced) "Hide advanced settings" else "Advanced settings") }
+            Text(stringResource(R.string.ssh_save_login_hint), style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = { advanced = !advanced }, enabled = enabled) { Text(if (advanced) stringResource(R.string.ssh_hide_advanced) else stringResource(R.string.ssh_advanced)) }
             if (advanced) {
-                OutlinedTextField(home, { home = it; error = null }, label = { Text("T3 data directory") }, textStyle = mono14(), singleLine = true, enabled = enabled, shape = TfFieldShape, colors = tfFieldColors(), modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(executable, { executable = it; error = null }, label = { Text("T3 executable (optional)") }, textStyle = mono14(), singleLine = true, enabled = enabled, shape = TfFieldShape, colors = tfFieldColors(), modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(home, { home = it; error = null }, label = { Text(stringResource(R.string.ssh_t3_home)) }, textStyle = mono14(), singleLine = true, enabled = enabled, shape = TfFieldShape, colors = tfFieldColors(), modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(executable, { executable = it; error = null }, label = { Text(stringResource(R.string.ssh_t3_executable)) }, textStyle = mono14(), singleLine = true, enabled = enabled, shape = TfFieldShape, colors = tfFieldColors(), modifier = Modifier.fillMaxWidth())
             }
-            if (busy) Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(20.dp), color = Tf.colors.accent, strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text(attempt.message.ifBlank { "Testing connection…" }) }
+            if (busy) Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(20.dp), color = Tf.colors.accent, strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text(attempt.message.ifBlank { stringResource(R.string.testing_connection) }) }
             shownError?.let { Text(it, color = Tf.colors.red, modifier = Modifier.bringIntoViewRequester(errorReveal)) }
         }
     }
@@ -169,10 +173,10 @@ internal fun SshConnectionDialog(busy: Boolean, initial: SshConnectionInput?, di
             ))
         }) {
             if (busy) { CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Tf.colors.onAccent); Spacer(Modifier.width(8.dp)) }
-            Text(if (busy) "Testing connection…" else "Connect")
+            Text(if (busy) stringResource(R.string.testing_connection) else stringResource(R.string.connect))
         }
     }
-    val cancel: @Composable () -> Unit = { TextButton(onClick = dismiss) { Text("Cancel", color = Tf.colors.muted) } }
+    val cancel: @Composable () -> Unit = { TextButton(onClick = dismiss) { Text(stringResource(R.string.cancel), color = Tf.colors.muted) } }
     if (wide) SshWideDialog(dismiss, AdaptiveSpec.DialogSshWidth.dp, TfIcons.Terminal, title, scroll, body, confirm, cancel)
     else AlertDialog(onDismissRequest = dismiss, containerColor = Tf.colors.sheet, shape = RoundedCornerShape(28.dp), icon = { Icon(TfIcons.Terminal, null, tint = Tf.colors.accent) }, title = { Text(title) }, text = body, confirmButton = confirm, dismissButton = cancel)
 }
@@ -236,16 +240,17 @@ internal fun SshHostKeyDialog(key: SshHostKey, trust: () -> Unit, cancel: () -> 
     val scroll = rememberScrollState()
     val body: @Composable () -> Unit = {
         Column(Modifier.verticalScroll(scroll), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Confirm this fingerprint with the server before sending your login credentials.", color = Tf.colors.muted)
+            Text(stringResource(R.string.host_key_confirm), color = Tf.colors.muted)
             SelectionContainer { Text("${key.host}:${key.port}\n${key.keyType}\n${key.fingerprint}", style = TrefoilType.code, modifier = Modifier.fillMaxWidth().background(Tf.colors.s1, RoundedCornerShape(14.dp)).border(1.dp, Tf.colors.line, RoundedCornerShape(14.dp)).padding(12.dp)) }
-            Text("On the server, compare with:")
+            Text(stringResource(R.string.host_key_compare))
             SelectionContainer { Text("for key in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf \"\$key\" -E sha256; done", style = TrefoilType.code, modifier = Modifier.fillMaxWidth().background(Tf.colors.s1, RoundedCornerShape(14.dp)).border(1.dp, Tf.colors.line, RoundedCornerShape(14.dp)).padding(12.dp)) }
-            Text("Trust only if the key type and SHA256 fingerprint match.")
+            Text(stringResource(R.string.host_key_trust_note))
         }
     }
-    val trustButton: @Composable () -> Unit = { Button(onClick = trust) { Text("Trust and connect") } }
-    val cancelButton: @Composable () -> Unit = { TextButton(onClick = cancel) { Text("Cancel", color = Tf.colors.muted) } }
+    val trustButton: @Composable () -> Unit = { Button(onClick = trust) { Text(stringResource(R.string.host_key_trust_connect)) } }
+    val cancelButton: @Composable () -> Unit = { TextButton(onClick = cancel) { Text(stringResource(R.string.cancel), color = Tf.colors.muted) } }
+    val hostKeyTitle = stringResource(R.string.host_key_title)
     // 520dp from 600dp so the fingerprint and the command do not wrap inside a token; the phone keeps the AlertDialog.
-    if (usesDialog(windowSizeDp().width.value)) SshWideDialog(cancel, AdaptiveSpec.DialogHostKeyWidth.dp, TfIcons.Shield, "Verify SSH host key", scroll, body, trustButton, cancelButton)
-    else AlertDialog(onDismissRequest = cancel, containerColor = Tf.colors.sheet, shape = RoundedCornerShape(28.dp), icon = { Icon(TfIcons.Shield, null, tint = Tf.colors.accent) }, title = { Text("Verify SSH host key") }, text = body, confirmButton = trustButton, dismissButton = cancelButton)
+    if (usesDialog(windowSizeDp().width.value)) SshWideDialog(cancel, AdaptiveSpec.DialogHostKeyWidth.dp, TfIcons.Shield, hostKeyTitle, scroll, body, trustButton, cancelButton)
+    else AlertDialog(onDismissRequest = cancel, containerColor = Tf.colors.sheet, shape = RoundedCornerShape(28.dp), icon = { Icon(TfIcons.Shield, null, tint = Tf.colors.accent) }, title = { Text(hostKeyTitle) }, text = body, confirmButton = trustButton, dismissButton = cancelButton)
 }

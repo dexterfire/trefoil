@@ -45,7 +45,9 @@ class LimitChipTest {
     }
 
     @Test fun descriptionNamesTheLowestLimitWhenKnown() {
-        assertEquals("Лимиты и использование · осталось 38%", limitChipDescription(38))
-        assertEquals("Лимиты и использование", limitChipDescription(null))
+        // Plain JVM test: the caller resolves the resources and passes them in.
+        val title = "Limits & usage"
+        assertEquals("$title · 38% left", limitChipDescription(38, title, "38% left"))
+        assertEquals(title, limitChipDescription(null, title, ""))
     }
 }

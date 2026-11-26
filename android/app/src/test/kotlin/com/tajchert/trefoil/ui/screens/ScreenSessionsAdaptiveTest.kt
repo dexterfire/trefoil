@@ -11,6 +11,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
+import com.tajchert.trefoil.R
+import com.tajchert.trefoil.testString
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.ui.TrefoilTheme
 import com.tajchert.trefoil.ui.adaptive.Fold
@@ -115,7 +117,7 @@ class ScreenSessionsAdaptiveTest {
         show(900, onRefresh = { refreshes++ })
         compose.runOnIdle { assertEquals(1, refreshes) }
         compose.onNodeWithText("Choose a browser tab or device to view its screen.").assertExists()
-        compose.onNodeWithText("Refresh sessions").assertIsEnabled().performClick()
+        compose.onNodeWithText(testString(R.string.refresh_sessions)).assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(2, refreshes) }
     }
 
@@ -195,26 +197,26 @@ class ScreenSessionsAdaptiveTest {
     @Test fun controlsPerTargetTypeAreUnchanged() {
         val streaming = StreamViewerStatus(StreamPhase.Streaming, inputConnected = true, canOperate = true)
         fun names(target: ScreenTarget, canInput: Boolean = true, status: StreamViewerStatus = streaming, ready: Boolean = true) =
-            screenControlSpecs(target, ready, canInput, status).map { it.control.description to it.enabled }
+            screenControlSpecs(target, ready, canInput, status).map { it.control.name to it.enabled }
         assertEquals(
-            listOf("Device back" to true, "Device home" to true, "Device app switcher" to true, "Rotate remote device" to false, "Type on remote device" to true),
+            listOf("DeviceBack" to true, "DeviceHome" to true, "DeviceAppSwitcher" to true, "DeviceRotate" to false, "DeviceType" to true),
             names(device),
         )
         assertEquals(
-            listOf("Device back" to false, "Device home" to true, "Device app switcher" to true, "Rotate remote device" to true, "Type on remote device" to false),
+            listOf("DeviceBack" to false, "DeviceHome" to true, "DeviceAppSwitcher" to true, "DeviceRotate" to true, "DeviceType" to false),
             names(ScreenTarget.Device("thread", "h", "d", "ios", "Phone")),
         )
-        assertEquals("Type on remote device" to false, names(device.copy(serveSimOnly = true)).last())
+        assertEquals("DeviceType" to false, names(device.copy(serveSimOnly = true)).last())
         assertEquals(
-            listOf("Browser back" to true, "Browser forward" to true, "Reload remote page" to true, "Type on remote browser" to true, "Release" to true),
+            listOf("BrowserBack" to true, "BrowserForward" to true, "BrowserReload" to true, "BrowserType" to true, "Release" to true),
             names(browser),
         )
         assertEquals(
-            listOf("Browser back" to false, "Browser forward" to false, "Reload remote page" to false, "Type on remote browser" to false, "Take control" to true),
+            listOf("BrowserBack" to false, "BrowserForward" to false, "BrowserReload" to false, "BrowserType" to false, "TakeControl" to true),
             names(browser, canInput = false),
         )
-        assertEquals("Take control" to false, names(browser, canInput = false, status = streaming.copy(canOperate = false)).last())
-        assertEquals("Take control" to false, names(browser, canInput = false, ready = false).last())
+        assertEquals("TakeControl" to false, names(browser, canInput = false, status = streaming.copy(canOperate = false)).last())
+        assertEquals("TakeControl" to false, names(browser, canInput = false, ready = false).last())
     }
 
     // ---- hinge geometry (pure) ----
@@ -259,7 +261,7 @@ class ScreenSessionsAdaptiveTest {
         compose.onNodeWithText("Send").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Device home").assertIsEnabled()
         compose.onNodeWithContentDescription("Rotate remote device").assertIsNotEnabled()
-        compose.onNodeWithText("SCREEN SESSIONS").assertExists()
+        compose.onNodeWithText(testString(R.string.dest_screens).uppercase()).assertExists()
         compose.onNode(hasText("Another Phone") and hasClickAction()).assertExists()
         compose.onNodeWithContentDescription("Enter full screen").assertExists()
         // The modal opened by the Type button is replaced by the inline field.
@@ -268,7 +270,7 @@ class ScreenSessionsAdaptiveTest {
 
     @Test fun tabletopFallsBackToTheNormalLayoutWhenTheHingeMissesTheViewer() {
         show(700, open = device, fold = tabletopFold.copy(start = 20f, end = 40f))
-        compose.onNodeWithText("SCREEN SESSIONS").assertDoesNotExist()
+        compose.onNodeWithText(testString(R.string.dest_screens).uppercase()).assertDoesNotExist()
         compose.onNodeWithContentDescription("Type on remote device").assertExists()
     }
 
@@ -290,7 +292,7 @@ class ScreenSessionsAdaptiveTest {
         val home = compose.onNodeWithContentDescription("Device home").getUnclippedBoundsInRoot()
         assertTrue("controls in the start half, right=${home.right}", home.right <= 490.dp)
         compose.onNodeWithContentDescription("Exit full screen").assertExists()
-        compose.onNodeWithText("SCREEN SESSIONS").assertExists()
+        compose.onNodeWithText(testString(R.string.dest_screens).uppercase()).assertExists()
     }
 
     @Test fun compactHeightUsesTheShorterBars() {
@@ -352,7 +354,7 @@ class ScreenSessionsAdaptiveTest {
             }
         }
         compose.runOnIdle { assertEquals(1, created); fold = tabletopFold }
-        compose.onNodeWithText("SCREEN SESSIONS").assertExists()
+        compose.onNodeWithText(testString(R.string.dest_screens).uppercase()).assertExists()
         compose.runOnIdle { assertEquals(1, created); assertEquals(0, disposed); fold = verticalFold; fullscreen = true }
         compose.onNodeWithContentDescription("Exit full screen").assertExists()
         compose.runOnIdle { assertEquals(1, created); assertEquals(0, disposed); fold = null; fullscreen = false }

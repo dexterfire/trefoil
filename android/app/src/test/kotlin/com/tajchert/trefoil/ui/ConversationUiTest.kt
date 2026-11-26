@@ -109,11 +109,11 @@ class ConversationUiTest {
     }
 
     @Test fun entryDescriptionCombinesFailureStaleAndStats() {
-        assertNull(entryDescription("Ran a", false, false, null))
-        assertEquals("Ran a, tool call failed", entryDescription("Ran a", true, false, null))
-        assertEquals("Ran a, outcome unknown", entryDescription("Ran a", false, true, null))
-        assertEquals("a.kt, +3 −1", entryDescription("a.kt", false, false, 3 to 1))
-        assertEquals("a.kt, tool call failed, outcome unknown, +3 −1", entryDescription("a.kt", true, true, 3 to 1))
+        assertNull(entryDescription("Ran a", false, false, null, failedText = "tool call failed", staleText = "outcome unknown"))
+        assertEquals("Ran a, tool call failed", entryDescription("Ran a", true, false, null, failedText = "tool call failed", staleText = "outcome unknown"))
+        assertEquals("Ran a, outcome unknown", entryDescription("Ran a", false, true, null, failedText = "tool call failed", staleText = "outcome unknown"))
+        assertEquals("a.kt, +3 −1", entryDescription("a.kt", false, false, 3 to 1, failedText = "tool call failed", staleText = "outcome unknown"))
+        assertEquals("a.kt, tool call failed, outcome unknown, +3 −1", entryDescription("a.kt", true, true, 3 to 1, failedText = "tool call failed", staleText = "outcome unknown"))
     }
 
     @Test fun runningEntryThatCompletesReplacesItsCachedLabel() {

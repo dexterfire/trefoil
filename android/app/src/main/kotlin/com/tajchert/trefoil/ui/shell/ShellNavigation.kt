@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -36,6 +37,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.tajchert.trefoil.R
 import com.tajchert.trefoil.core.model.ClientState
 import com.tajchert.trefoil.core.model.MachineProbe
 import com.tajchert.trefoil.core.model.SavedEnvironment
@@ -55,6 +57,7 @@ import com.tajchert.trefoil.ui.color
 import com.tajchert.trefoil.ui.limitChipDescription
 import com.tajchert.trefoil.ui.limitSeverity
 import com.tajchert.trefoil.ui.machineStatus
+import com.tajchert.trefoil.ui.resolvedLabel
 import com.tajchert.trefoil.ui.tightestLimitPercent
 import com.tajchert.trefoil.ui.adaptive.handPointer
 import com.tajchert.trefoil.ui.adaptive.focusRing
@@ -98,13 +101,14 @@ internal fun BadgeText(text: String) {
 internal fun ShellNavigationRail(model: ShellNavModel, modifier: Modifier = Modifier) {
     val c = Tf.colors
     val entries = model.entries
-    Box(modifier.width(AdaptiveSpec.RailWidth.dp).fillMaxHeight().background(c.rail).paneGroup("Navigation", PaneOrder.Navigation)) {
+    Box(modifier.width(AdaptiveSpec.RailWidth.dp).fillMaxHeight().background(c.rail).paneGroup(stringResource(R.string.pane_navigation), PaneOrder.Navigation)) {
         NavigationRail(
             modifier = Modifier.fillMaxSize(), containerColor = c.rail, contentColor = c.text, windowInsets = RailInsets,
             header = {
-                TfTooltip("Threads") {
-                    Box(Modifier.size(48.dp, 40.dp).clip(RoundedCornerShape(12.dp)).focusRing().handPointer().clickable(role = Role.Button, onClickLabel = "Show threads", onClick = model.onThreads)
-                        .semantics { contentDescription = "Trefoil, show threads" }, contentAlignment = Alignment.Center) {
+                TfTooltip(stringResource(R.string.dest_threads)) {
+                    val showThreadsDescription = stringResource(R.string.trefoil_show_threads)
+                    Box(Modifier.size(48.dp, 40.dp).clip(RoundedCornerShape(12.dp)).focusRing().handPointer().clickable(role = Role.Button, onClickLabel = stringResource(R.string.show_threads), onClick = model.onThreads)
+                        .semantics { contentDescription = showThreadsDescription }, contentAlignment = Alignment.Center) {
                         TrefoilMark(Modifier.size(28.dp), color = c.accent)
                     }
                 }
@@ -116,19 +120,22 @@ internal fun ShellNavigationRail(model: ShellNavModel, modifier: Modifier = Modi
             // machine switcher below stay pinned, and the section takes whatever room is left.
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                val threadsDescription = stringResource(R.string.needs_you_count, model.needsYou)
                 NavigationRailItem(model.selected(ShellDestination.Threads), model.onThreads, colors = colors,
                     icon = { CountBadge(model.needsYou, c.amber) { Icon(TfIcons.Threads, null, Modifier.size(22.dp)) } },
-                    label = { RailLabel("Threads") },
-                    modifier = Modifier.semantics { if (model.needsYou > 0) stateDescription = "${model.needsYou} need you" })
+                    label = { RailLabel(stringResource(R.string.dest_threads)) },
+                    modifier = Modifier.semantics { if (model.needsYou > 0) stateDescription = threadsDescription })
                 if (entries.screens) NavigationRailItem(model.selected(ShellDestination.Screens), { model.actions.onScreens?.invoke() }, enabled = entries.screensEnabled,
-                    colors = colors, icon = { Icon(TfIcons.Screens, null, Modifier.size(22.dp)) }, label = { RailLabel("Screens") })
+                    colors = colors, icon = { Icon(TfIcons.Screens, null, Modifier.size(22.dp)) }, label = { RailLabel(stringResource(R.string.dest_screens)) })
+                val forwardsDescription = stringResource(R.string.forwards_count, model.forwards)
                 if (entries.servers) NavigationRailItem(model.selected(ShellDestination.Servers), { model.actions.onDevServers?.invoke() }, enabled = entries.serversEnabled,
                     colors = colors, icon = { CountBadge(model.forwards, c.accent) { Icon(TfIcons.Globe, null, Modifier.size(22.dp)) } },
-                    label = { RailLabel("Servers") },
-                    modifier = Modifier.semantics { if (model.forwards > 0) stateDescription = "${model.forwards} forwarded" })
+                    label = { RailLabel(stringResource(R.string.dest_servers)) },
+                    modifier = Modifier.semantics { if (model.forwards > 0) stateDescription = forwardsDescription })
+                val usageDescription = limitChipDescription(model.limitPercent, stringResource(R.string.menu_limits_usage), model.limitPercent?.let { stringResource(R.string.usage_limit_left, it) }.orEmpty())
                 if (entries.usage) NavigationRailItem(model.selected(ShellDestination.Usage), { model.actions.onUsage?.invoke() }, colors = colors,
-                    icon = { UsageIcon(model.limitPercent, model.selected(ShellDestination.Usage)) }, label = { RailLabel("Usage") },
-                    modifier = Modifier.semantics { stateDescription = limitChipDescription(model.limitPercent) })
+                    icon = { UsageIcon(model.limitPercent, model.selected(ShellDestination.Usage)) }, label = { RailLabel(stringResource(R.string.dest_usage)) },
+                    modifier = Modifier.semantics { stateDescription = usageDescription })
             }
             HorizontalDivider(Modifier.width(32.dp).padding(bottom = 4.dp), color = c.line)
             MachineSwitcher(model)
@@ -168,9 +175,10 @@ private fun CountBadge(count: Int, color: Color, content: @Composable () -> Unit
 @Composable
 private fun NewThreadRailButton(enabled: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val c = Tf.colors
-    TfTooltip(tooltipWithShortcut("New thread", ShortcutId.NewThread)) {
+    val newThreadDescription = stringResource(R.string.new_thread)
+    TfTooltip(tooltipWithShortcut(newThreadDescription, ShortcutId.NewThread)) {
         Surface(onClick = onClick, enabled = enabled, shape = RoundedCornerShape(16.dp), color = if (enabled) c.accent else c.s2,
-            contentColor = if (enabled) c.onAccent else c.muted, modifier = modifier.size(56.dp).focusRing(RoundedCornerShape(16.dp)).handPointer(enabled).semantics { contentDescription = "New thread" }) {
+            contentColor = if (enabled) c.onAccent else c.muted, modifier = modifier.size(56.dp).focusRing(RoundedCornerShape(16.dp)).handPointer(enabled).semantics { contentDescription = newThreadDescription }) {
             Box(contentAlignment = Alignment.Center) { Icon(TfIcons.Plus, null, Modifier.size(24.dp)) }
         }
     }
@@ -207,16 +215,17 @@ private fun MachineSwitcher(model: ShellNavModel) {
     val environment = model.state.environment ?: return
     val c = Tf.colors
     val status = machineStatus(model.state)
+    val statusDescription = status.resolvedLabel()
     val active = model.destination == ShellDestination.Machines
     val fontScale = LocalDensity.current.fontScale
     var open by remember { mutableStateOf(false) }
     // Ctrl+Shift+M opens this menu (the rail is the only place it lives); not again while it is open.
     RegisterShortcut(ShortcutId.MachineSwitcher, enabled = !open) { open = true }
     Box {
-        TfTooltip(tooltipWithShortcut("${environment.name} · ${status.label}", ShortcutId.MachineSwitcher)) {
+        TfTooltip(tooltipWithShortcut("${environment.name} · ${status.resolvedLabel()}", ShortcutId.MachineSwitcher)) {
             Column(Modifier.width(72.dp).heightIn(min = 56.dp).clip(RoundedCornerShape(12.dp))
-                .focusRing().handPointer().clickable(role = Role.Button, onClickLabel = "Switch machine") { open = true }
-                .semantics(mergeDescendants = true) { contentDescription = environment.name; stateDescription = status.label }
+                .focusRing().handPointer().clickable(role = Role.Button, onClickLabel = stringResource(R.string.switch_machine)) { open = true }
+                .semantics(mergeDescendants = true) { contentDescription = environment.name; stateDescription = statusDescription }
                 .padding(vertical = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Box(Modifier.size(44.dp)) {
                     val shape = RoundedCornerShape(12.dp)
@@ -243,24 +252,26 @@ private fun MachineSwitcher(model: ShellNavModel) {
 internal fun ColumnScope.MachineMenuItems(model: ShellNavModel, close: () -> Unit) {
     val state = model.state
     val c = Tf.colors
+    val currentMachineSuffix = stringResource(R.string.current_machine_suffix)
     val active = state.environment
     val machines = if (active != null && model.saved.none { it.id == active.id }) listOf(active) + model.saved else model.saved
     machines.forEach { environment ->
         val current = environment.id == active?.id
         val status = if (current) machineStatus(state) else machineStatus(environment, state, model.probes)
+        val statusDescription = status.resolvedLabel()
         DropdownMenuItem(
             text = { Text(environment.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
             leadingIcon = { Box(Modifier.size(20.dp), contentAlignment = Alignment.Center) { MachineStatusIndicator(status) } },
             trailingIcon = if (current) ({ Icon(TfIcons.Check, null, Modifier.size(18.dp), tint = c.accent) }) else null,
             enabled = !state.busy || current,
-            modifier = Modifier.semantics { stateDescription = if (current) "${status.label}, current machine" else status.label },
+            modifier = Modifier.semantics { stateDescription = if (current) "$statusDescription, ${currentMachineSuffix}" else statusDescription },
             onClick = { close(); if (!current) model.onSelectMachine(environment) },
         )
     }
     if (machines.isNotEmpty()) HorizontalDivider(Modifier.padding(vertical = 4.dp))
-    DropdownMenuItem(text = { Text("Manage machines & routes…") }, leadingIcon = { Icon(TfIcons.Desktop, null, Modifier.size(20.dp)) },
+    DropdownMenuItem(text = { Text(stringResource(R.string.manage_machines)) }, leadingIcon = { Icon(TfIcons.Desktop, null, Modifier.size(20.dp)) },
         onClick = { close(); model.actions.onMachines() })
-    DropdownMenuItem(text = { Text("Connect machine") }, enabled = model.entries.connectEnabled, leadingIcon = { Icon(TfIcons.Plus, null, Modifier.size(20.dp)) },
+    DropdownMenuItem(text = { Text(stringResource(R.string.connect_machine)) }, enabled = model.entries.connectEnabled, leadingIcon = { Icon(TfIcons.Plus, null, Modifier.size(20.dp)) },
         onClick = { close(); model.actions.onConnectMachine() })
 }
 
@@ -272,7 +283,7 @@ private fun AppMenuButton(model: ShellNavModel) {
         DropdownMenu(open, { open = false }) {
             ShellMenuItems(model.state, model.actions) { open = false }
             model.onShortcuts?.let { show ->
-                DropdownMenuItem(text = { Text("Keyboard shortcuts") }, trailingIcon = { shortcutHint(ShortcutId.ShowShortcuts)?.let { Text(it, style = TrefoilType.meta, color = Tf.colors.muted) } },
+                DropdownMenuItem(text = { Text(stringResource(R.string.keyboard_shortcuts)) }, trailingIcon = { shortcutHint(ShortcutId.ShowShortcuts)?.let { Text(it, style = TrefoilType.meta, color = Tf.colors.muted) } },
                     onClick = { open = false; show() })
             }
         }
@@ -284,7 +295,8 @@ private fun AppMenuButton(model: ShellNavModel) {
 internal fun ShellDrawerSheet(model: ShellNavModel, drawerState: DrawerState, close: () -> Unit) {
     val c = Tf.colors
     val entries = model.entries
-    ModalDrawerSheet(drawerState, Modifier.width(300.dp).semantics { paneTitle = "Navigation" }, drawerContainerColor = c.sheet, drawerContentColor = c.text) {
+    val navigationTitle = stringResource(R.string.pane_navigation)
+    ModalDrawerSheet(drawerState, Modifier.width(300.dp).semantics { paneTitle = navigationTitle }, drawerContainerColor = c.sheet, drawerContentColor = c.text) {
         Column(Modifier.fillMaxHeight().verticalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 12.dp)) {
             Row(Modifier.padding(start = 16.dp, top = 8.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 TrefoilMark(Modifier.size(28.dp), color = c.accent)
@@ -296,27 +308,28 @@ internal fun ShellDrawerSheet(model: ShellNavModel, drawerState: DrawerState, cl
                 selectedBadgeColor = c.text, unselectedBadgeColor = c.muted,
             )
             fun go(action: (() -> Unit)?): () -> Unit = { close(); action?.invoke() }
-            DrawerItem("Threads", TfIcons.Threads, model.selected(ShellDestination.Threads), true, colors, go(model.onThreads),
+            DrawerItem(stringResource(R.string.dest_threads), TfIcons.Threads, model.selected(ShellDestination.Threads), true, colors, go(model.onThreads),
                 badge = model.needsYou.takeIf { it > 0 }?.let { n -> { DrawerCount(n, c.amber) } }, state = model.needsYou.takeIf { it > 0 }?.let { "$it need you" })
-            if (entries.screens) DrawerItem("Screens", TfIcons.Screens, model.selected(ShellDestination.Screens), entries.screensEnabled, colors, go(model.actions.onScreens))
-            if (entries.servers) DrawerItem("Servers", TfIcons.Globe, model.selected(ShellDestination.Servers), entries.serversEnabled, colors, go(model.actions.onDevServers),
+            if (entries.screens) DrawerItem(stringResource(R.string.dest_screens), TfIcons.Screens, model.selected(ShellDestination.Screens), entries.screensEnabled, colors, go(model.actions.onScreens))
+            if (entries.servers) DrawerItem(stringResource(R.string.dest_servers), TfIcons.Globe, model.selected(ShellDestination.Servers), entries.serversEnabled, colors, go(model.actions.onDevServers),
                 badge = model.forwards.takeIf { it > 0 }?.let { n -> { DrawerCount(n, c.accent) } }, state = model.forwards.takeIf { it > 0 }?.let { "$it forwarded" })
-            if (entries.usage) DrawerItem("Usage", TfIcons.Gauge, model.selected(ShellDestination.Usage), true, colors, go(model.actions.onUsage),
-                badge = model.limitPercent?.let { p -> { Text("$p%", style = TrefoilType.meta, color = limitSeverity(p).color(c)) } }, state = limitChipDescription(model.limitPercent))
+            if (entries.usage) DrawerItem(stringResource(R.string.dest_usage), TfIcons.Gauge, model.selected(ShellDestination.Usage), true, colors, go(model.actions.onUsage),
+                badge = model.limitPercent?.let { p -> { Text("$p%", style = TrefoilType.meta, color = limitSeverity(p).color(c)) } },
+                state = limitChipDescription(model.limitPercent, stringResource(R.string.menu_limits_usage), model.limitPercent?.let { stringResource(R.string.usage_limit_left, it) }.orEmpty()))
             HorizontalDivider(Modifier.padding(vertical = 8.dp), color = c.line)
-            Text("Machines", style = TrefoilType.meta, color = c.muted, modifier = Modifier.padding(start = 16.dp, top = 4.dp, bottom = 4.dp).semantics { heading() })
+            Text(stringResource(R.string.machines_title), style = TrefoilType.meta, color = c.muted, modifier = Modifier.padding(start = 16.dp, top = 4.dp, bottom = 4.dp).semantics { heading() })
             MachineMenuItems(model, close)
             val actions = model.actions
             if (actions.onKeepConnectedChange != null || actions.onAgentNotificationsChange != null || actions.onDisconnect != null) HorizontalDivider(Modifier.padding(vertical = 4.dp), color = c.line)
-            if (actions.onKeepConnectedChange != null) DropdownMenuItem(text = { Text("Keep connected in background") },
+            if (actions.onKeepConnectedChange != null) DropdownMenuItem(text = { Text(stringResource(R.string.keep_connected_background)) },
                 trailingIcon = { Checkbox(checked = actions.keepConnected, onCheckedChange = null) },
                 onClick = { close(); actions.onKeepConnectedChange.invoke(!actions.keepConnected) })
-            if (actions.onAgentNotificationsChange != null) DropdownMenuItem(text = { Text("Notify about agent activity") },
+            if (actions.onAgentNotificationsChange != null) DropdownMenuItem(text = { Text(stringResource(R.string.notify_agent_activity)) },
                 trailingIcon = { Checkbox(checked = actions.agentNotifications, onCheckedChange = null) },
                 onClick = { close(); actions.onAgentNotificationsChange.invoke(!actions.agentNotifications) })
-            if (actions.onDisconnect != null) DropdownMenuItem(text = { Text("Disconnect machine") },
+            if (actions.onDisconnect != null) DropdownMenuItem(text = { Text(stringResource(R.string.disconnect_machine)) },
                 leadingIcon = { Icon(TfIcons.Disconnect, null, Modifier.size(20.dp)) }, onClick = { close(); actions.onDisconnect.invoke() })
-            if (actions.onSettings != null) DrawerItem("Настройки", TfIcons.Settings, false, true, colors, { close(); actions.onSettings?.invoke() })
+            if (actions.onSettings != null) DrawerItem(stringResource(R.string.settings), TfIcons.Settings, false, true, colors, { close(); actions.onSettings?.invoke() })
         }
     }
 }
@@ -362,8 +375,8 @@ internal fun ParentBackButton(otherNeedsYou: Int, onClick: () -> Unit) {
 @Composable
 internal fun ShowThreadListButton(needsYou: Int, onClick: () -> Unit) {
     val c = Tf.colors
-    val label = if (needsYou > 0) "Show thread list, $needsYou need you" else "Show thread list"
-    TfTooltip(tooltipWithShortcut("Show thread list", ShortcutId.ToggleThreadList)) {
+    val label = if (needsYou > 0) stringResource(R.string.show_thread_list_needs_you, needsYou) else stringResource(R.string.show_thread_list)
+    TfTooltip(tooltipWithShortcut(stringResource(R.string.show_thread_list), ShortcutId.ToggleThreadList)) {
         IconButton(onClick = onClick, modifier = Modifier.size(48.dp)) {
             BadgedBox(badge = {
                 if (needsYou > 0) Badge(Modifier.clearAndSetSemantics {}, containerColor = c.amber, contentColor = c.onAccent) { BadgeText(if (needsYou > 9) "9+" else needsYou.toString()) }

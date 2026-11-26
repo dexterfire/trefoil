@@ -25,6 +25,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.platform.LocalLocale
 import androidx.compose.ui.platform.testTag
@@ -47,6 +48,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.isSpecified
+import com.tajchert.trefoil.R
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.ui.adaptive.TfIconButton
 import com.tajchert.trefoil.ui.adaptive.maxContentWidth
@@ -92,18 +94,18 @@ internal fun UsageScreen(
                     .heightIn(min = 64.dp).padding(horizontal = if (wide) 12.dp else if (paneTitle && onBack == null) 8.dp else 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (onBack != null) TfIconButton(TfIcons.Back, "Back", onBack, iconSize = 22.dp, tint = c.text)
+                if (onBack != null) TfIconButton(TfIcons.Back, stringResource(R.string.back), onBack, iconSize = 22.dp, tint = c.text)
                 Column(Modifier.weight(1f).padding(start = if (onBack != null) 4.dp else 12.dp)) {
-                    if (paneTitle) Text("Лимиты и использование", Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineSmall, color = c.text)
-                    else Text("Лимиты и использование", style = TrefoilType.rowTitle, color = c.text)
+                    if (paneTitle) Text(stringResource(R.string.menu_limits_usage), Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineSmall, color = c.text)
+                    else Text(stringResource(R.string.menu_limits_usage), style = TrefoilType.rowTitle, color = c.text)
                     state.environment?.name?.let { Text(it, style = TrefoilType.meta, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 }
-                if (!offline) TfIconButton(TfIcons.Refresh, "Refresh usage", onRefresh, iconSize = 22.dp, tint = c.text)
+                if (!offline) TfIconButton(TfIcons.Refresh, stringResource(R.string.refresh_usage), onRefresh, iconSize = 22.dp, tint = c.text)
             }
             if (!offline && (usage.limitsRefreshing || usage.refreshing)) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp))
             HorizontalDivider(color = c.line)
             if (!wide) TabRow(selectedTabIndex = tab, containerColor = c.bg, contentColor = c.text) {
-                listOf("Limits", "Cost", "Tokens").forEachIndexed { index, label ->
+                listOf(stringResource(R.string.tab_limits), stringResource(R.string.tab_cost), stringResource(R.string.tab_tokens)).forEachIndexed { index, label ->
                     Tab(selected = tab == index, onClick = { tab = index }, text = { Text(label) })
                 }
             }
@@ -137,13 +139,13 @@ private fun UsageTwoColumn(
         // The column heading and the toolbar share one height and the same top and bottom space, so the first card of each column starts on one line.
         val toolbar = UsageLayoutSpec.ToolbarHeight.dp
         UsageLimits(state.providers, if (offline) null else usage.limitsError, offline, Modifier.width(UsageLayoutSpec.LimitsColumnWidth.dp).fillMaxHeight(),
-            contentPadding = PaddingValues(top = 20.dp, bottom = 20.dp), title = "Provider limits", titleHeight = toolbar)
+            contentPadding = PaddingValues(top = 20.dp, bottom = 20.dp), title = stringResource(R.string.usage_provider_limits), titleHeight = toolbar)
         BoxWithConstraints(Modifier.weight(1f).fillMaxHeight()) {
             val split = usageSplitsBreakdown(maxWidth.value)
             Column(Modifier.fillMaxSize()) {
                 Row(Modifier.fillMaxWidth().padding(top = 20.dp, bottom = 12.dp).height(toolbar), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                     SingleChoiceSegmentedButtonRow {
-                        listOf("Cost" to true, "Tokens" to false).forEachIndexed { index, (label, isCost) ->
+                        listOf(stringResource(R.string.tab_cost) to true, stringResource(R.string.tab_tokens) to false).forEachIndexed { index, (label, isCost) ->
                             SegmentedButton(
                                 selected = cost == isCost, onClick = { onCost(isCost) }, shape = SegmentedButtonDefaults.itemShape(index, 2), icon = {},
                                 colors = SegmentedButtonDefaults.colors(
@@ -155,7 +157,7 @@ private fun UsageTwoColumn(
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        UsageRange.entries.forEach { option -> TfChip(option.label, { onSelectRange(option) }, Modifier.minimumInteractiveComponentSize(), selected = range == option) }
+                        UsageRange.entries.forEach { option -> TfChip(usageRangeLabel(option), { onSelectRange(option) }, Modifier.minimumInteractiveComponentSize(), selected = range == option) }
                     }
                 }
                 UsageHistoryBody(usage, range, offline, cost, onRetry, split, Modifier.weight(1f))
@@ -188,7 +190,7 @@ private fun UsageLimits(
         }
     }
     val freshness = usageFreshness(visible.mapNotNull { it.usageLimits }, now)
-    val leading = listOfNotNull(error, (if (offline) "No limits cached yet." else "No provider limits reported.").takeIf { visible.isEmpty() }).map { LimitEntry.Note(it) }
+    val leading = listOfNotNull(error, (if (offline) stringResource(R.string.usage_limits_none_cached) else stringResource(R.string.usage_limits_none)).takeIf { visible.isEmpty() }).map { LimitEntry.Note(it) }
     val entries = leading + visible.map { LimitEntry.Card(it) } + listOfNotNull((freshness as? UsageFreshness.Shared)?.let { LimitEntry.Note(it.text) })
     val key: (LimitEntry) -> Any = { when (it) { is LimitEntry.Note -> "note:${it.text}"; is LimitEntry.Card -> it.provider.instanceId } }
     val content: @Composable (LimitEntry) -> Unit = { entry ->
@@ -295,10 +297,10 @@ private fun LazyListScope.historyItems(usage: UsageUiState, range: UsageRange, o
     val report = usage.reports[range]
     if (report == null) {
         when {
-            offline -> item { UsageNote("Not available offline") }
-            usage.loading -> item { CircularProgressIndicator(Modifier.size(28.dp).semantics { contentDescription = "Loading usage" }) }
+            offline -> item { UsageNote(stringResource(R.string.usage_offline_note)) }
+            usage.loading -> item { val loadingDescription = stringResource(R.string.usage_loading_description); CircularProgressIndicator(Modifier.size(28.dp).semantics { contentDescription = loadingDescription }) }
             usage.failure != null -> item { UsageFailureNote(usage, onRetry) }
-            else -> item { UsageNote("No usage reported yet.") }
+            else -> item { UsageNote(stringResource(R.string.usage_none_yet)) }
         }
         return
     }
@@ -309,17 +311,17 @@ private fun LazyListScope.historyItems(usage: UsageUiState, range: UsageRange, o
         if (report.providers.isNotEmpty() || report.models.isNotEmpty()) item { UsageBreakdownCards(report, cost, cards) }
     } else {
         item { UsageHero(report, cost) }
-        if (updating) item { UsageNote("Updating…") }
+        if (updating) item { UsageNote(stringResource(R.string.usage_updating)) }
         if (range.days > 1) item { UsageDailyChart(report.days, cost, range) }
-        if (report.providers.isNotEmpty()) item { SectionLabel("Providers") }
+        if (report.providers.isNotEmpty()) item { SectionLabel(stringResource(R.string.usage_providers_section)) }
         items(report.providers) { UsageBreakdownRow(it, report, cost) }
-        if (report.models.isNotEmpty()) item { SectionLabel("Models") }
+        if (report.models.isNotEmpty()) item { SectionLabel(stringResource(R.string.usage_models_section)) }
         items(report.models) { UsageBreakdownRow(it, report, cost) }
     }
-    if (report.unpricedRecords > 0) item { UsageNote("${report.unpricedRecords} unpriced records; estimated cost may be incomplete.") }
-    if (report.pricingStatus == "unavailable") item { UsageNote("Model pricing is unavailable.") }
+    if (report.unpricedRecords > 0) item { UsageNote(stringResource(R.string.usage_unpriced, report.unpricedRecords)) }
+    if (report.pricingStatus == "unavailable") item { UsageNote(stringResource(R.string.usage_pricing_unavailable)) }
     items(report.sources.filter { it.status in setOf("missing", "partial", "failed") }) {
-        UsageNote("${usageProviderLabel(it.provider)} usage: ${it.status}")
+        UsageNote(stringResource(R.string.usage_source_status, usageProviderLabel(it.provider), it.status))
     }
 }
 
@@ -330,17 +332,18 @@ private fun UsageHero(report: UsageReport, cost: Boolean, modifier: Modifier = M
         Text(if (cost) formatUsageUsd(report.totalCostUsd) else formatUsageTokens(report.tokens.total), style = MaterialTheme.typography.headlineLarge, color = c.text)
         if (cost && wide) {
             // One wrapped line instead of two stacked notes.
+            val estimated = stringResource(R.string.usage_estimated_note)
             Text(buildAnnotatedString {
-                append("Estimated from model pricing")
+                append(estimated)
                 if (report.cacheSavingsUsd > 0) {
                     append(" · ")
-                    withStyle(SpanStyle(color = c.green, fontWeight = FontWeight.Medium)) { append("Cache saved ${formatUsageUsd(report.cacheSavingsUsd)}") }
+                    withStyle(SpanStyle(color = c.green, fontWeight = FontWeight.Medium)) { append(stringResource(R.string.usage_cache_saved, formatUsageUsd(report.cacheSavingsUsd))) }
                 }
             }, style = TrefoilType.meta, color = c.muted)
         } else if (cost) {
-            UsageNote("Estimated from model pricing")
-            if (report.cacheSavingsUsd > 0) UsageNote("Cache saved ${formatUsageUsd(report.cacheSavingsUsd)}")
-        } else UsageNote("Input ${formatUsageTokens(report.tokens.input)} · Output ${formatUsageTokens(report.tokens.output)} · Cached ${formatUsageTokens(report.tokens.cachedInput)}")
+            UsageNote(stringResource(R.string.usage_estimated_note))
+            if (report.cacheSavingsUsd > 0) UsageNote(stringResource(R.string.usage_cache_saved, formatUsageUsd(report.cacheSavingsUsd)))
+        } else UsageNote(stringResource(R.string.usage_io_breakdown, formatUsageTokens(report.tokens.input), formatUsageTokens(report.tokens.output), formatUsageTokens(report.tokens.cachedInput)))
     }
 }
 
@@ -355,7 +358,7 @@ private fun UsageHistoryCard(report: UsageReport, cost: Boolean, range: UsageRan
                 UsageHero(report, cost, Modifier.weight(1f), wide = true)
                 if (range.days > 1) UsageDayReadout(report.days.firstOrNull { it.day == selection.value }, cost, format, Modifier.padding(start = 12.dp))
             }
-            if (updating) UsageNote("Updating…")
+            if (updating) UsageNote(stringResource(R.string.usage_updating))
             if (range.days > 1) UsageDailyChart(report.days, cost, range, cards.chartHeight, selection = selection, readout = false, maxBarWidth = UsageLayoutSpec.ChartMaxBarWidth.dp)
         }
     }
@@ -403,11 +406,11 @@ private fun UsageBreakdownCards(report: UsageReport, cost: Boolean, cards: Histo
         }
     }
     if (cards.split) Row(Modifier.fillMaxWidth().height(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(gap)) {
-        if (report.providers.isNotEmpty()) Card("Providers", report.providers, Modifier.weight(1f).fillMaxHeight())
-        if (report.models.isNotEmpty()) Card("Models", report.models, Modifier.weight(1f).fillMaxHeight())
+        if (report.providers.isNotEmpty()) Card(stringResource(R.string.usage_providers_section), report.providers, Modifier.weight(1f).fillMaxHeight())
+        if (report.models.isNotEmpty()) Card(stringResource(R.string.usage_models_section), report.models, Modifier.weight(1f).fillMaxHeight())
     } else Column(verticalArrangement = Arrangement.spacedBy(gap)) {
-        if (report.providers.isNotEmpty()) Card("Providers", report.providers, Modifier.fillMaxWidth())
-        if (report.models.isNotEmpty()) Card("Models", report.models, Modifier.fillMaxWidth())
+        if (report.providers.isNotEmpty()) Card(stringResource(R.string.usage_providers_section), report.providers, Modifier.fillMaxWidth())
+        if (report.models.isNotEmpty()) Card(stringResource(R.string.usage_models_section), report.models, Modifier.fillMaxWidth())
     }
 }
 
@@ -444,13 +447,13 @@ private fun UsageDailyChart(
     val selected = days.firstOrNull { it.day == selectedDay }
     val max = days.maxOfOrNull { value(it) } ?: 0.0
     val peak = days.maxByOrNull { value(it) }?.takeIf { value(it) > 0 }
-    val what = if (cost) "cost" else "tokens"
-    val description = peak?.let { "Daily $what, ${range.label}. Peak ${usageDayTitle(it.day, locale, patterns)}: ${amount(it)}" } ?: "No daily usage"
+    val what = if (cost) stringResource(R.string.usage_word_cost) else stringResource(R.string.usage_word_tokens)
+    val description = peak?.let { stringResource(R.string.usage_chart_description, what, usageRangeLabel(range), usageDayTitle(it.day, locale, patterns), amount(it)) } ?: stringResource(R.string.usage_no_daily)
     val color = Tf.colors.green
     val baseline = Tf.colors.line
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         if (readout) Text(
-            selected?.let { "${usageDayTitle(it.day, locale, patterns)} · ${amount(it)}" } ?: "Tap a bar to see a day's $what",
+            selected?.let { "${usageDayTitle(it.day, locale, patterns)} · ${amount(it)}" } ?: stringResource(R.string.usage_day_hint, what),
             Modifier.semantics { liveRegion = LiveRegionMode.Polite },
             style = TrefoilType.meta, color = if (selected != null) Tf.colors.text else Tf.colors.muted,
         )
@@ -460,7 +463,7 @@ private fun UsageDailyChart(
                 Box(
                     Modifier.weight(1f).fillMaxHeight()
                         .semantics { contentDescription = "${usageDayTitle(day.day, locale, patterns)}: ${amount(day)}"; this.selected = isSelected }
-                        .focusRing().handPointer().clickable(onClickLabel = "Show value", role = Role.Button) { selectedDay = if (isSelected) null else day.day },
+                        .focusRing().handPointer().clickable(onClickLabel = stringResource(R.string.usage_show_value), role = Role.Button) { selectedDay = if (isSelected) null else day.day },
                 ) {
                     Canvas(Modifier.fillMaxSize()) {
                         drawLine(baseline, Offset(0f, size.height), Offset(size.width, size.height))
@@ -493,15 +496,23 @@ private fun UsageDailyChart(
 private fun UsageFailureNote(usage: UsageUiState, onRetry: () -> Unit) {
     Column {
         UsageNote(when (usage.failure) {
-            UsageFailure.NoPermission -> "This connection can't read usage. Pair again with a token that has diagnostics access."
-            UsageFailure.NotConnected -> "Connect to this machine to view usage."
-            UsageFailure.Unsupported -> "This T3 server doesn't report usage."
-            UsageFailure.TimedOut -> usage.failureMessage ?: "Reading usage timed out. Try again."
-            else -> usage.failureMessage ?: "This T3 server could not report usage."
+            UsageFailure.NoPermission -> stringResource(R.string.usage_failure_permission)
+            UsageFailure.NotConnected -> stringResource(R.string.usage_failure_not_connected)
+            UsageFailure.Unsupported -> stringResource(R.string.usage_failure_unsupported)
+            UsageFailure.TimedOut -> usage.failureMessage ?: stringResource(R.string.usage_failure_timeout)
+            else -> usage.failureMessage ?: stringResource(R.string.usage_failure_generic)
         })
-        if (usage.failure == UsageFailure.Failed || usage.failure == UsageFailure.TimedOut) TextButton(onClick = onRetry) { Text("Retry") }
+        if (usage.failure == UsageFailure.Failed || usage.failure == UsageFailure.TimedOut) TextButton(onClick = onRetry) { Text(stringResource(R.string.retry)) }
     }
 }
 
 @Composable
 private fun UsageNote(text: String) { Text(text, style = TrefoilType.meta, color = Tf.colors.muted) }
+
+/** Локализованные подписи диапазона (Today/7 days/30 days из core) — русские по умолчанию. */
+@Composable
+internal fun usageRangeLabel(range: UsageRange): String = stringResource(when (range) {
+    UsageRange.Today -> R.string.range_today
+    UsageRange.Week -> R.string.range_week
+    UsageRange.Month -> R.string.range_month
+})

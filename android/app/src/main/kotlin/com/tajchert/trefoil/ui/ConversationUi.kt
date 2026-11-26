@@ -585,8 +585,8 @@ internal fun ConversationComposer(
     val fieldColor = lerp(c.muted, c.text, solidify.value)
     val placeholderAlpha by animateFloatAsState(if (ghostOn) 0f else 1f, tween(if (reducedMotion) 0 else if (ghostOn) 220 else 120), label = "placeholder-alpha")
     ReadingDock(phoneHorizontal = 12.dp, top = if (compactHeight) 2.dp else 4.dp, bottom = if (compactHeight) 8.dp else 16.dp) {
-        if (!state.canWrite) Text("Read only · reconnect to continue", Modifier.padding(start = 6.dp, bottom = 6.dp), style = noticeStyle)
-        if (waiting) Text("Waiting for server confirmation…", Modifier.padding(start = 6.dp, bottom = 6.dp), style = noticeStyle)
+        if (!state.canWrite) Text(stringResource(R.string.read_only_reconnect), Modifier.padding(start = 6.dp, bottom = 6.dp), style = noticeStyle)
+        if (waiting) Text(stringResource(R.string.waiting_for_server_confirmation), Modifier.padding(start = 6.dp, bottom = 6.dp), style = noticeStyle)
         if (draft == null && (state.queuedMessages.isNotEmpty() || state.queueHeld)) QueuedMessagesStrip(state, canWriteNow && !queueBusy, onCancelQueued, onSteerQueued, onResumeQueue)
         Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = c.s1, contentColor = c.text, border = BorderStroke(1.dp, c.line)) {
             Column {
@@ -804,8 +804,8 @@ private fun ComposerPickers(state: ClientState, draft: ThreadDraft?, onSetRuntim
             val shown = catalogModel(model, state.models)
             val explicit = if (draft != null) draft.modelOptions else state.selectedModelOptions
             val loading = modelPickerLoading(state.models, state.connection)
-            val pillLabel = modelPillLabel(shown, explicit, loading)
-            TfPill(pillLabel, { modelOpen = true }, icon = TfIcons.Sparkle, enabled = loading || (enabled && state.models.isNotEmpty()), contentDescription = modelPillDescription(shown, explicit, loading))
+            val pillLabel = modelPillLabel(shown, explicit, loading, stringResource(R.string.picker_pill_empty), stringResource(R.string.picker_pill_fast), stringResource(R.string.picker_pill_loading))
+            TfPill(pillLabel, { modelOpen = true }, icon = TfIcons.Sparkle, enabled = loading || (enabled && state.models.isNotEmpty()), contentDescription = modelPillDescription(pillLabel.takeIf { shown != null }, loading, stringResource(R.string.picker_pill_prefix), stringResource(R.string.picker_pill_loading_state), stringResource(R.string.picker_pill_not_set)))
             if (modelOpen) ModelPickerSheet(
                 models = pickerModels(state.models, model, state.selectedProviderLocked, draft != null), providers = state.providers,
                 current = shown, explicit = explicit, enabled = enabled, dismiss = { modelOpen = false },

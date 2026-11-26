@@ -6,6 +6,8 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.dp
+import com.tajchert.trefoil.R
+import com.tajchert.trefoil.testString
 import com.tajchert.trefoil.core.model.*
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -107,7 +109,7 @@ class UsageAdaptiveTest {
         val cards = compose.onAllNodesWithTag("usage-limit-card")
         cards.assertCountEquals(2)
         assertEquals(cards[0].getBoundsInRoot().top, cards[1].getBoundsInRoot().top)
-        compose.onNodeWithText("Лимиты и использование").assert(SemanticsMatcher.keyIsDefined(androidx.compose.ui.semantics.SemanticsProperties.Heading))
+        compose.onNodeWithText(testString(R.string.menu_limits_usage)).assert(SemanticsMatcher.keyIsDefined(androidx.compose.ui.semantics.SemanticsProperties.Heading))
     }
 
     @Test fun backArrowStaysWhenAHandlerIsGiven() {

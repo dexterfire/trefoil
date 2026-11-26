@@ -21,6 +21,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -33,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.tajchert.trefoil.R
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.ui.adaptive.TfIconButton
 import java.time.ZoneId
@@ -63,13 +65,13 @@ internal fun MessageRow(message: ConversationMessage, stacked: Boolean, showMeta
         MessageFileCards(message, cardWidth)
         if (message.streaming) Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             WorkingSpinner(size = 14.dp)
-            Text("Writing…", style = TrefoilType.meta, color = c.blue)
+            Text(stringResource(R.string.work_writing), style = TrefoilType.meta, color = c.blue)
         } else if (showMetadata) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 val time = messageTime(message.updatedAt ?: message.createdAt)
                 time?.let { Text((if (!user) "T3 · " else "") + it, Modifier.padding(top = 6.dp, end = if (user) 4.dp else 0.dp), style = TrefoilType.meta.copy(fontSize = 12.sp), color = c.muted) }
                 // Wide column: with no timestamp in front, pull the 48dp button left so its glyph lines up with the prose edge (the hit area keeps its size).
-                if (!user) Box(if (layout.wide && time == null) Modifier.offset(x = (-16).dp) else Modifier) { TfIconButton(Icons.Default.ContentCopy, "Copy response", { clipboard.setText(AnnotatedString(message.text)) }, iconSize = 15.dp, tint = c.muted) }
+                if (!user) Box(if (layout.wide && time == null) Modifier.offset(x = (-16).dp) else Modifier) { TfIconButton(Icons.Default.ContentCopy, stringResource(R.string.copy_response), { clipboard.setText(AnnotatedString(message.text)) }, iconSize = 15.dp, tint = c.muted) }
             }
         }
     }
@@ -104,11 +106,13 @@ private fun WorkRow(
     trailing: @Composable RowScope.() -> Unit = {},
 ) {
     val c = Tf.colors
+    val stateExpanded = stringResource(R.string.state_expanded)
+    val stateCollapsed = stringResource(R.string.state_collapsed)
     Row(Modifier.fillMaxWidth().heightIn(min = 32.dp)
         .then(if (onClick != null) Modifier.focusRing().handPointer().clickable(role = Role.Button, onClickLabel = onClickLabel, onClick = onClick) else Modifier)
         .then(if (description != null || (expanded != null && onClick != null)) Modifier.semantics(mergeDescendants = true) {
             description?.let { contentDescription = it }
-            if (expanded != null && onClick != null) stateDescription = if (expanded) "Expanded" else "Collapsed"
+            if (expanded != null && onClick != null) stateDescription = if (expanded) stateExpanded else stateCollapsed
         } else Modifier)
         .padding(vertical = 4.dp), verticalAlignment = if (wrapLabel) Alignment.Top else Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         // A wrapped label's icon centres on its first line (18sp line height) rather than the whole block.
@@ -174,9 +178,12 @@ internal fun WorkGroup(activities: List<ToolActivity>, live: Boolean = false, ca
             // A running entry outside the live run has an unknown outcome; the header must say so even while the group is collapsed.
             val stale = visible.any { !live && it.isRunning }
             val base = running?.let(::liveWorkLabel) ?: summary.label
-            val label = if (stale) "$base · outcome unknown" else base
-            val description = listOfNotNull(if (summary.hasFailure) "tool call failed" else null, if (stale) "outcome unknown" else null)
-            WorkRow(summary.icon.vector, c.muted.copy(alpha = .7f), label, c.muted, expanded, { expanded = !expanded }, if (expanded) "Collapse work details" else "Expand work details",
+            val label = if (stale) stringResource(R.string.work_label_stale, base) else base
+            val failedText = stringResource(R.string.work_failed)
+            val staleText = stringResource(R.string.outcome_unknown)
+            val description = listOfNotNull(if (summary.hasFailure) failedText else null, if (stale) staleText else null)
+            WorkRow(summary.icon.vector, c.muted.copy(alpha = .7f), label, c.muted, expanded, { expanded = !expanded },
+                if (expanded) stringResource(R.string.collapse_work_details) else stringResource(R.string.expand_work_details),
                 spinner = running != null, description = if (description.isEmpty()) null else (listOf(base) + description).joinToString(", "))
             if (expanded) Column(Modifier.padding(start = 16.dp)) {
                 visible.forEach { activity -> key(activity.id) { WorkEntry(activity, single = false, live = live, canLoadActivity = canLoadActivity, onLoadActivity = onLoadActivity) } }
@@ -198,6 +205,8 @@ private fun WorkEntry(activity: ToolActivity, single: Boolean, live: Boolean, ca
     val warning = activity.isWarningNotice
     val running = live && activity.isRunning
     val stale = !live && activity.isRunning
+    val failedText = stringResource(R.string.work_failed)
+    val staleText = stringResource(R.string.outcome_unknown)
     val hasDetail = !notice && activity.hasExpandableDetail()
     var expanded by rememberSaveable(activity.id) { mutableStateOf(initiallyExpanded) }
     val label = remember(activity, running, single) { if (running && single) liveWorkLabel(activity) else if (single) singleWorkLabel(activity) else workEntryLabel(activity) }
@@ -208,10 +217,10 @@ private fun WorkEntry(activity: ToolActivity, single: Boolean, live: Boolean, ca
         WorkRow(if (severe || warning) TfIcons.Alert else if (notice) TfIcons.Bolt else icon.vector,
             if (severe) c.red else if (warning) c.amber else if (failed) c.red.copy(alpha = .4f) else c.muted.copy(alpha = if (stale) .45f else .7f),
             label, if (severe) c.red else if (warning) c.amber else c.muted, if (hasDetail) expanded else null, if (hasDetail) ({ expanded = !expanded }) else null,
-            if (expanded) "Collapse details" else "Expand details", spinner = running,
-            description = if (warning) "Warning: $label" else entryDescription(label, failed, stale, stats),
+            if (expanded) stringResource(R.string.collapse_details) else stringResource(R.string.expand_details), spinner = running,
+            description = if (warning) stringResource(R.string.warning_prefix, label) else entryDescription(label, failed, stale, stats, failedText, staleText),
             wrapLabel = notice, labelWeight = if (warning) FontWeight.Medium else null) {
-            if (stale) Text("· outcome unknown", style = WorkRowText, color = c.muted.copy(alpha = .7f), maxLines = 1)
+            if (stale) Text("· " + stringResource(R.string.outcome_unknown), style = WorkRowText, color = c.muted.copy(alpha = .7f), maxLines = 1)
             stats?.let { (added, removed) ->
                 Text("+$added", style = TrefoilType.mono, color = c.green)
                 Text("−$removed", style = TrefoilType.mono, color = c.red)
@@ -222,8 +231,8 @@ private fun WorkEntry(activity: ToolActivity, single: Boolean, live: Boolean, ca
 }
 
 /** Announced text for a row whose visual extras (failure tint, stale caption, diff counts) would otherwise be replaced by a bare label. */
-internal fun entryDescription(label: String, failed: Boolean, stale: Boolean, stats: Pair<Int, Int>?): String? {
-    val parts = listOfNotNull(if (failed) "tool call failed" else null, if (stale) "outcome unknown" else null, stats?.let { (added, removed) -> "+$added −$removed" })
+internal fun entryDescription(label: String, failed: Boolean, stale: Boolean, stats: Pair<Int, Int>?, failedText: String, staleText: String): String? {
+    val parts = listOfNotNull(if (failed) failedText else null, if (stale) staleText else null, stats?.let { (added, removed) -> "+$added −$removed" })
     return if (parts.isEmpty()) null else (listOf(label) + parts).joinToString(", ")
 }
 

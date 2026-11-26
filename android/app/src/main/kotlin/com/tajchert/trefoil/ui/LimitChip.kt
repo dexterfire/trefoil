@@ -15,10 +15,12 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.tajchert.trefoil.R
 import com.tajchert.trefoil.core.model.ProviderInstance
 import com.tajchert.trefoil.core.model.UsageLimitWindow
 import com.tajchert.trefoil.ui.adaptive.handPointer
@@ -54,8 +56,9 @@ internal fun tightestLimitPercent(providers: List<ProviderInstance>): Int? =
 private fun isModelScopedWindow(driver: String, window: UsageLimitWindow): Boolean =
     driver == "claudeAgent" && window.id.startsWith("seven_day_")
 
-internal fun limitChipDescription(percent: Int?): String =
-    if (percent == null) "Лимиты и использование" else "Лимиты и использование · осталось $percent%"
+/** [title] and [left] come from string resources: `Лимиты и использование` and `осталось N%`. */
+internal fun limitChipDescription(percent: Int?, title: String, left: String): String =
+    if (percent == null) title else "$title · $left"
 
 /**
  * Thread-list header entry to Limits & usage: ring gauge plus the tightest "NN% left", or the gauge icon alone
@@ -64,7 +67,9 @@ internal fun limitChipDescription(percent: Int?): String =
 @Composable
 internal fun LimitChip(percent: Int?, showNumber: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val c = Tf.colors
-    Box(modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics(mergeDescendants = true) { contentDescription = limitChipDescription(percent) }
+    val chipTitle = stringResource(R.string.menu_limits_usage)
+    val chipLeft = percent?.let { stringResource(R.string.usage_limit_left, it) }.orEmpty()
+    Box(modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics(mergeDescendants = true) { contentDescription = limitChipDescription(percent, chipTitle, chipLeft) }
         .focusRing().handPointer().clickable(role = Role.Button, onClick = onClick), contentAlignment = Alignment.Center) {
         Row(Modifier.height(32.dp).background(c.s2, RoundedCornerShape(16.dp)).padding(horizontal = 9.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {

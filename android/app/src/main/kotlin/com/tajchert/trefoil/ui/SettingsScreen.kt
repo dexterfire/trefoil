@@ -15,6 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -24,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import com.tajchert.trefoil.R
 import com.tajchert.trefoil.ui.adaptive.TfIconButton
 import com.tajchert.trefoil.ui.adaptive.focusRing
 import com.tajchert.trefoil.ui.adaptive.handPointer
@@ -47,8 +49,8 @@ internal fun SettingsScreen(
     Column(Modifier.fillMaxSize().background(c.bg)) {
         Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(start = 4.dp, end = 12.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            TfIconButton(TfIcons.Back, "Назад", onBack, iconSize = 22.dp, tint = c.text)
-            Text("Настройки", Modifier.weight(1f), fontFamily = InterFamily, fontWeight = FontWeight.Bold, fontSize = 22.sp,
+            TfIconButton(TfIcons.Back, stringResource(R.string.back), onBack, iconSize = 22.dp, tint = c.text)
+            Text(stringResource(R.string.settings), Modifier.weight(1f), fontFamily = InterFamily, fontWeight = FontWeight.Bold, fontSize = 22.sp,
                 letterSpacing = (-0.01).em, color = c.text)
         }
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 32.dp)) {

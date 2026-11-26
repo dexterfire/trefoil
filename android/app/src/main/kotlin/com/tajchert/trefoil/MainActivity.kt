@@ -71,7 +71,7 @@ class MainActivity : ComponentActivity() {
     }
     /** The system Keyboard Shortcut Helper (Meta+/) lists the same table the app dispatches from. */
     override fun onProvideKeyboardShortcuts(data: MutableList<KeyboardShortcutGroup>, menu: Menu?, deviceId: Int) {
-        data += keyboardShortcutGroups()
+        data += keyboardShortcutGroups(this)
     }
     private val model: TrefoilViewModel by viewModels()
     private val fileActions by lazy { DownloadFileActions(this) }
