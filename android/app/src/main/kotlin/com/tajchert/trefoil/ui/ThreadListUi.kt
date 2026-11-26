@@ -291,7 +291,9 @@ internal fun ThreadList(
         (!expansionChosen && key !in expandedProjects) || key in expandedProjects
     val listState = rememberLazyListState()
     var jump by remember { mutableStateOf<ProjectJump?>(null) }
-    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    // Previews and screenshot tests freeze the clock (LocalFixedClock); live lists read the wall time and tick.
+    val fixedNow = LocalFixedClock.current
+    var now by remember { mutableLongStateOf(fixedNow ?: System.currentTimeMillis()) }
     val groups = remember(filtered, state.projects, preferences.pinnedOrder, preferences.otherOrder, preferences.threadOrder, preferences.pinnedProjects, now) {
         projectGroups(
             threads = filtered, projects = state.projects,
@@ -313,6 +315,10 @@ internal fun ThreadList(
             (threadIndicator(thread).kind == "waiting" && validThreadInstant(thread.latestRunCompletedAt) != null)
     } }
     LaunchedEffect(lifecycle, liveTiming, state.threads) {
+        if (fixedNow != null) {
+            now = fixedNow
+            return@LaunchedEffect
+        }
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (coroutineContext.isActive) {
                 val current = System.currentTimeMillis()
