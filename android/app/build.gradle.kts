@@ -26,6 +26,9 @@ android {
         // Compose Preview Screenshot Testing via AGP test suites; see src/screenshotTest/.../screenshots/README.md.
         screenshotTests.create("screenshotTest") {
             engineVersion = libs.versions.screenshot.get()
+            // Layoutlib antialiasing is not bit-stable between runs on Windows (~<=0.3% of pixels differ by 1/255),
+            // while a real layout break measures in whole percents. 0.003 = fraction of pixels allowed to differ.
+            imageDifferenceThreshold = 0.003f
             targetVariants.add("debug")
             dependencies {
                 implementation(project.dependencies.platform(libs.compose.bom))
@@ -55,7 +58,13 @@ android {
     }
 }
 // One screenshot run renders every preview in a single test JVM; Gradle's 512 MB default runs out of heap.
-tasks.withType<Test>().configureEach { if (name.contains("ScreenshotTest")) maxHeapSize = "2g" }
+tasks.withType<Test>().configureEach {
+    // Layoutlib writes SVG viewport numbers with the JVM's decimal separator; on comma-decimal locales (ru) the
+    // renderer rejects its own output ("532,090027" cannot be converted to float). Pin the test JVMs to en-US.
+    systemProperty("user.language", "en")
+    systemProperty("user.country", "US")
+    if (name.contains("ScreenshotTest")) maxHeapSize = "2g"
+}
 dependencies {
     implementation(project(":core:model")); implementation(project(":core:session")); implementation(project(":core:ssh"))
     implementation(platform(libs.compose.bom))

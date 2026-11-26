@@ -88,7 +88,11 @@ fun Usage_Limits_Dark() { UsageShot(0, dark = true) }  // helper in UsageScreens
 
 - **Fake data only.** Never real machines, hosts, tokens, threads or conversation content. Reuse the helpers in `ScreenshotFixtures.kt`.
 - **Keep renders deterministic.** Anything tied to the wall clock shifts pixels between runs and fails the comparison:
-  - use `ScreenshotFixtures.ago(minutes)` for relative labels;
+  - use `ScreenshotFixtures.ago(minutes)` for relative labels; every timestamp derives from one instant captured when the
+    fixture object initializes, so the whole suite re-anchors to each run's JVM and renders the same labels;
+  - previews that render live lists (`ThreadList`, `TrefoilApp`) freeze the clock with
+    `CompositionLocalProvider(LocalFixedClock provides ScreenshotFixtures.listClock())`; without it the list ticks and
+    relative labels and row bands drift while the suite runs (see `ReadmeScreenshots.kt`);
   - use fixed dates for charts;
   - leave out elapsed timers, pace markers and other live values.
 - **Render stateless composables.** UI composables take state and callbacks, never the ViewModel. When something is buried in a loader or popup, extract a small stateless composable instead of faking it. `LoadedImageContent`, `ShellMenuItems` and `MachineMenuItems` were extracted this way.
