@@ -340,10 +340,11 @@ class KeepAliveLifecycleTest {
         failConnection("Could not reconnect.")
         assertEquals("Could not reconnect.", model.notice.value)
         model.reconnect()
-        assertEquals(message, model.notice.value)
+        // The banner comes back when the reconnect starts, which runs a looper pass later on a loaded runner.
+        idleUntil { model.notice.value == message }
         failConnection("Could not reconnect.")
         model.reconnect()
-        assertNull(model.notice.value)
+        idleUntil { model.notice.value == null }
     }
 
     @Test fun aFailedReopenLeavesTheEarlierHoldAndItsDeadline() {
