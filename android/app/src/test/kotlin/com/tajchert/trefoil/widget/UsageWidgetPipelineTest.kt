@@ -29,14 +29,31 @@ class UsageWidgetPipelineTest {
         assertEquals(1, updates)
         val report = UsageWidgetSamples.report(UsageRange.Month).copy(sources = listOf(UsageSourceState("codex", "failed", "private path")))
         store.update { mergeWidgetReport(it, report, 300) }
-        val restored = UsageWidgetStore(AtomicFile(file)) {}.read()!!
-        assertEquals(store.snapshot.value, restored)
-        assertNull(restored.reports[UsageRange.Month]!!.sources.single().message)
-        assertFalse(file.readText().contains("private path"))
+        assertNull("A server message never reaches the snapshot", store.snapshot.value!!.reports[UsageRange.Month]!!.sources.single().message)
+        // Robolectric on Windows cannot replace an existing AtomicFile (the rename of the finished .new file fails), so
+        // the on-disk half of this round-trip runs only where the platform supports a rewrite; Linux and CI do it.
+        if (atomicFileCanReplaceExisting()) {
+            val restored = UsageWidgetStore(AtomicFile(file)) {}.read()!!
+            assertEquals(store.snapshot.value, restored)
+            assertNull(restored.reports[UsageRange.Month]!!.sources.single().message)
+            assertFalse(file.readText().contains("private path"))
+        }
         store.update { null }
         assertNull(store.read())
         assertFalse(file.exists())
         assertEquals(3, updates)
+    }
+
+    /** Robolectric on Windows cannot replace an existing AtomicFile: the rename of the finished .new file fails. */
+    private fun atomicFileCanReplaceExisting(): Boolean {
+        val probe = File(temporary.root, "atomic-probe.bin")
+        fun write(value: Byte) {
+            val atomic = AtomicFile(probe)
+            val out = atomic.startWrite()
+            out.write(byteArrayOf(value))
+            atomic.finishWrite(out)
+        }
+        return try { write(1); write(2); probe.readBytes().contentEquals(byteArrayOf(2)) } catch (_: Exception) { false }
     }
 
     @Test fun mapsEnabledProvidersAndOmitsServerMessages() {
