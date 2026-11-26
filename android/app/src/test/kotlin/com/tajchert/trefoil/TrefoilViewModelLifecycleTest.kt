@@ -68,8 +68,7 @@ class TrefoilViewModelLifecycleTest {
         setPongAge(20_001)
         // The assertion is about "a reconnect started", not about how fast the fixture host fails: pin the attempt behind
         // the connection lock it takes first, so it cannot settle into Failed on a looper pass before the assertion.
-        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
-        assertTrue(mutex.tryLock())
+        val mutex = lockConnection()
         try {
             model.resume(); advance(0)
             assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
@@ -109,8 +108,7 @@ class TrefoilViewModelLifecycleTest {
         model.pause(); advance(1_000)
         mutable.value = mutable.value.copy(connection = ConnectionStatus.Error, canWrite = false, error = "Connection lost")
         // The resume starts the attempt; pin the lock it takes so the fixture host cannot settle it into Failed first.
-        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
-        assertTrue(mutex.tryLock())
+        val mutex = lockConnection()
         try {
             model.resume()
             assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
@@ -124,6 +122,18 @@ class TrefoilViewModelLifecycleTest {
     }
 
     private fun field(name: String) = TrefoilViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
+
+    /** The previous attempt may still hold the connection lock: idle until it is free, then take it. */
+    private fun lockConnection(): kotlinx.coroutines.sync.Mutex {
+        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
+        var locked = mutex.tryLock()
+        val deadline = System.currentTimeMillis() + 5_000
+        while (!locked && System.currentTimeMillis() < deadline) {
+            shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(5); locked = mutex.tryLock()
+        }
+        assertTrue("connection lock is free", locked)
+        return mutex
+    }
 
     /** As after a successful connect: the machine is saved and the view model owns the live connection. */
     private fun armLiveConnection() {
@@ -143,8 +153,7 @@ class TrefoilViewModelLifecycleTest {
         assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
         // The attempt is started by the backoff timer and leaves Testing asynchronously: pin the lock it takes so the
         // fixture host cannot settle it into Failed before the check.
-        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
-        assertTrue(mutex.tryLock())
+        val mutex = lockConnection()
         try {
             advance(1)
             assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
@@ -167,8 +176,7 @@ class TrefoilViewModelLifecycleTest {
     @Test fun reselectingAStaleLiveMachineReconnects() {
         armLiveConnection()
         setPongAge(RETAINED_CONNECTION_FRESHNESS_MS + 1)
-        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
-        assertTrue(mutex.tryLock())
+        val mutex = lockConnection()
         try {
             model.selectMachine(environment); advance(0)
             assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
@@ -181,8 +189,7 @@ class TrefoilViewModelLifecycleTest {
         @Suppress("UNCHECKED_CAST")
         (field("_environments").get(model) as MutableStateFlow<List<SavedEnvironment>>).value = listOf(environment, other)
         // Pin the attempt's lock for the phase check only: the close below has to be free to run.
-        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
-        assertTrue(mutex.tryLock())
+        val mutex = lockConnection()
         try {
             model.selectMachine(other)
             assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
@@ -219,8 +226,7 @@ class TrefoilViewModelLifecycleTest {
         dropConnection(); advance(30_000)
         assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
         // Same pin: the episode's first attempt runs without the initial backoff, so only the lock keeps it in Testing.
-        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
-        assertTrue(mutex.tryLock())
+        val mutex = lockConnection()
         try {
             model.onDefaultNetwork(2); advance(0)
             assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
@@ -246,8 +252,7 @@ class TrefoilViewModelLifecycleTest {
         assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
         // Dropped and already walking the plan: no initial 2 s backoff. Pin the lock the attempt takes so the phase
         // cannot settle into Failed before the check.
-        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
-        assertTrue(mutex.tryLock())
+        val mutex = lockConnection()
         try {
             advance(1)
             assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
@@ -302,8 +307,7 @@ class TrefoilViewModelLifecycleTest {
         assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
         dropConnection(); advance(1_999)
         assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
-        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
-        assertTrue(mutex.tryLock())
+        val mutex = lockConnection()
         try {
             advance(1)
             assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)

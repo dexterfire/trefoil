@@ -81,6 +81,18 @@ class KeepAliveLifecycleTest {
     }
     private fun field(name: String) = TrefoilViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
 
+    /** The previous attempt may still hold the connection lock: idle until it is free, then take it. */
+    private fun lockConnection(): kotlinx.coroutines.sync.Mutex {
+        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
+        var locked = mutex.tryLock()
+        val deadline = System.currentTimeMillis() + 5_000
+        while (!locked && System.currentTimeMillis() < deadline) {
+            shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(5); locked = mutex.tryLock()
+        }
+        assertTrue("connection lock is free", locked)
+        return mutex
+    }
+
     /** As after a successful connect: the machine is saved and the view model owns the live connection. */
     private fun armLiveConnection() {
         val initialized = field("initialized").get(model) as kotlinx.coroutines.Deferred<*>
@@ -156,10 +168,15 @@ class KeepAliveLifecycleTest {
         dropConnection(); advance(1_999)
         assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
         assertTrue(model.keepAliveActive.value)
-        advance(1)
-        assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
-        assertTrue(model.connectionAttempt.value.id > 0)
-        assertTrue(model.keepAliveActive.value)
+        // The backoff timer starts the attempt asynchronously and it leaves Testing through an IO hop that the same
+        // idleFor can drain: pin the lock it takes so the fixture host cannot settle it into Failed first.
+        val mutex = lockConnection()
+        try {
+            advance(1)
+            assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+            assertTrue(model.connectionAttempt.value.id > 0)
+            assertTrue(model.keepAliveActive.value)
+        } finally { mutex.unlock(); advance(0) }
     }
 
     @Test fun dropWhileOfflineInBackgroundKeepsTheServiceUntilTheNetworkReturns() {
@@ -171,8 +188,7 @@ class KeepAliveLifecycleTest {
         assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
         assertTrue(model.keepAliveActive.value)
         // The held lock keeps the reconnect in Testing, however fast the fixture host fails to resolve.
-        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
-        assertTrue(mutex.tryLock())
+        val mutex = lockConnection()
         try {
             model.onDefaultNetwork(2); advance(0)
             assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
@@ -243,11 +259,15 @@ class KeepAliveLifecycleTest {
         advance(1)
         assertEquals(ConnectionStatus.Disconnected, model.state.value.connection)
         assertEquals(1, control.stops)
-        // Read before the reconnect that resume starts can report its own outcome.
-        model.resume()
-        val message = model.notice.value!!
-        assertTrue(message, message.startsWith("30-min browser limit ended port 5173") && message.contains("Keep connected in background"))
-        assertTrue(model.portForwards.stoppedNotices.value.getValue("fixture").message.contains("30 minutes"))
+        // The resume reconnects; pin that attempt behind the connection lock so the banner it announces cannot be
+        // replaced by the attempt's own failure before the read.
+        val mutex = lockConnection()
+        try {
+            model.resume()
+            val message = model.notice.value!!
+            assertTrue(message, message.startsWith("30-min browser limit ended port 5173") && message.contains("Keep connected in background"))
+            assertTrue(model.portForwards.stoppedNotices.value.getValue("fixture").message.contains("30 minutes"))
+        } finally { mutex.unlock(); advance(0) }
     }
 
     /** Deep sleep: Handler time stood still, elapsed real time did not; the return ends the hold. */
@@ -271,10 +291,14 @@ class KeepAliveLifecycleTest {
         assertTrue(model.portForwards.externalForwards.value.isEmpty())
         assertEquals(ConnectionStatus.Connected, model.state.value.connection)
         dropConnection(); mutable.value = mutable.value.copy(portForwards = emptyList()); advance(0)
-        model.resume()
-        val message = model.notice.value!!
-        assertTrue(message, message.contains("port 5173") && !message.contains("Keep connected"))
-        assertFalse(model.portForwards.stoppedNotices.value.getValue("fixture").message.contains("Keep connected"))
+        // The resume reconnects; pin that attempt behind the connection lock so only the announced banner decides.
+        val mutex = lockConnection()
+        try {
+            model.resume()
+            val message = model.notice.value!!
+            assertTrue(message, message.contains("port 5173") && !message.contains("Keep connected"))
+            assertFalse(model.portForwards.stoppedNotices.value.getValue("fixture").message.contains("Keep connected"))
+        } finally { mutex.unlock(); advance(0) }
     }
 
     @Test fun pairingAnotherMachineEndsTheHoldWithoutANotice() {
@@ -325,13 +349,18 @@ class KeepAliveLifecycleTest {
     /** Seen: a Reconnect tap with the banner on screen consumes it, so failed attempts never bring it back. */
     @Test fun aReconnectTapWithTheBannerShowingConsumesIt() {
         loseForwardInTheBackgroundAndReturn()
-        model.reconnect()
-        assertNull(model.notice.value)
-        failConnection("Could not reconnect.")
-        model.reconnect()
-        assertNull(model.notice.value)
-        // The ports screen keeps its record.
-        assertNotNull(model.portForwards.stoppedNotices.value["fixture"])
+        // The tap starts a connection attempt; pin it behind the connection lock it takes first, so its own failure
+        // cannot reach _notice (and cannot flip forwardBannerDisplaced) before the assertions below.
+        val mutex = lockConnection()
+        try {
+            model.reconnect()
+            assertNull(model.notice.value)
+            failConnection("Could not reconnect.")
+            model.reconnect()
+            assertNull(model.notice.value)
+            // The ports screen keeps its record.
+            assertNotNull(model.portForwards.stoppedNotices.value["fixture"])
+        } finally { mutex.unlock(); advance(0) }
     }
 
     /** Unseen: a failure that replaced the banner before the user acted gives it back once, never again. */
@@ -389,14 +418,19 @@ class KeepAliveLifecycleTest {
         model.pause(); advance(30_000)
         dropConnection(); mutable.value = mutable.value.copy(portForwards = emptyList()); advance(0)
         assertFalse(model.keepAliveActive.value)
-        model.resume()
-        val message = model.notice.value!!
-        assertTrue(message, message.startsWith("Connection ended: port 5173"))
-        assertTrue(model.portForwards.stoppedNotices.value.getValue("fixture").message.contains("port 5173"))
-        // Dismissing on the ports screen clears the banner that announced it too.
-        model.dismissStoppedForwards("fixture")
-        assertNull(model.notice.value)
-        assertTrue(model.portForwards.stoppedNotices.value.isEmpty())
+        // The resume reconnects (the drop ended the connection): pin that attempt, so neither its failure nor the fixed
+        // machine check can replace the banner the resume announces. The clear below comes from the notices collector.
+        val mutex = lockConnection()
+        try {
+            model.resume()
+            val message = model.notice.value!!
+            assertTrue(message, message.startsWith("Connection ended: port 5173"))
+            assertTrue(model.portForwards.stoppedNotices.value.getValue("fixture").message.contains("port 5173"))
+            // Dismissing on the ports screen clears the banner that announced it too.
+            model.dismissStoppedForwards("fixture")
+            idleUntil { model.notice.value == null }
+            assertTrue(model.portForwards.stoppedNotices.value.isEmpty())
+        } finally { mutex.unlock(); advance(0) }
     }
 
     @Test fun clearingTheNoticeByANewOpenClearsTheBannerToo() {
@@ -429,9 +463,9 @@ class KeepAliveLifecycleTest {
         assertEquals(setOf(3000, 5173), model.portForwards.stoppedNotices.value.getValue("fixture").lost.keys)
         model.pause(); model.resume()
         assertEquals(second, model.notice.value)
-        // One dismissal clears the ports notice and the banner.
+        // One dismissal clears the ports notice and the banner; the clear itself comes from the notices collector.
         model.dismissStoppedForwards("fixture")
-        assertNull(model.notice.value)
+        idleUntil { model.notice.value == null }
     }
 
     @Test fun aLossOnAnotherMachineIsNotAnnouncedHere() {
@@ -604,8 +638,7 @@ class KeepAliveLifecycleTest {
     @Test fun disconnectWhileTheConnectionLockIsHeldNeverRestartsTheService() {
         armLiveConnection()
         enableKeepAlive()
-        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
-        assertTrue(mutex.tryLock())
+        val mutex = lockConnection()
         model.disconnect(); advance(100)
         // The state is still live while the disconnect waits for the lock; the posted check must not start it again.
         assertEquals(ConnectionStatus.Connected, model.state.value.connection)
@@ -620,8 +653,7 @@ class KeepAliveLifecycleTest {
         enableKeepAlive()
         model.pause()
         // The held lock keeps the episode's first attempt running.
-        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
-        assertTrue(mutex.tryLock())
+        val mutex = lockConnection()
         dropConnection(); advance(2_000)
         val attempt = model.connectionAttempt.value
         assertEquals(ConnectionPhase.Testing, attempt.phase)
@@ -683,8 +715,7 @@ class KeepAliveLifecycleTest {
         assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
         // The episode handed over to the network watch, which connects once a network returns. The held lock keeps
         // that attempt in Testing, so the assertion does not depend on how fast the fixture host fails to resolve.
-        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
-        assertTrue(mutex.tryLock())
+        val mutex = lockConnection()
         model.onDefaultNetwork(2); advance(0)
         assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
         mutex.unlock(); advance(0)
