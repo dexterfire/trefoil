@@ -51,6 +51,18 @@ class ComposerSuggestionsTest {
         assertTrue(suggestions("$").none { it.name == "hidden" })
     }
 
+    @Test fun aSkillSearchMatchesItsDisplayNameAndDescriptions() {
+        // displayName falls into `label`, the description into `detail`: both match, and so does shortDescription.
+        assertEquals(listOf("\$frontend-design"), suggestions("\$design").map { it.label })
+        assertEquals(listOf("\$frontend-design"), suggestions("\$distinctive").map { it.label })
+        // The query alone narrows by name as before.
+        assertEquals(listOf("\$frontend-design"), suggestions("\$front").map { it.label })
+    }
+
+    @Test fun aSkillQueryNoNameOrFieldMatchesOffersNothing() {
+        assertTrue(suggestions("\$nothing").isEmpty())
+    }
+
     @Test fun aPathIsNotACommand() {
         assertNull(composerToken("/usr/bin", 8))
         assertTrue(suggestions("/usr/bin").isEmpty())

@@ -593,14 +593,35 @@ internal fun ConversationComposer(
                 // `/` commands and `$` skills: the word at the caret decides, so a path or a price never opens the list.
                 val token = composerToken(value.text, value.selection.start)
                 val suggestions = composerSuggestions(state, token)
-                if (token != null && suggestions.isNotEmpty()) ComposerSuggestionsRow(suggestions) { picked ->
-                    val (next, at) = applyComposerSuggestion(value.text, token, picked.name)
+                // Escape closes the list for the word it was open on; typing on (a new token) reopens it, as does any other word.
+                var dismissed by remember { mutableStateOf<ComposerToken?>(null) }
+                val popover = token != null && token != dismissed && suggestions.isNotEmpty()
+                val highlight = remember(token) { mutableIntStateOf(0) }
+                fun pickSuggestion(picked: ComposerSuggestion) {
+                    val open = token ?: return
+                    dismissed = null
+                    highlight.intValue = 0
+                    val (next, at) = applyComposerSuggestion(value.text, open, picked.name)
                     edited(TextFieldValue(next, TextRange(at)))
                 }
+                // While the list is open the arrows move the highlight, Enter writes the highlighted name into the draft
+                // (never sends) and Escape closes. The handler sits before the Enter-sends one in the modifier chain,
+                // so an open list always wins over the field's own Enter handling.
+                val popoverKeys = if (!popover) Modifier else Modifier.onPreviewKeyEvent { event ->
+                    if (event.type != KeyEventType.KeyDown) false
+                    else when (event.key) {
+                        Key.DirectionDown -> { highlight.intValue = (highlight.intValue + 1).coerceIn(0, suggestions.size - 1); true }
+                        Key.DirectionUp -> { highlight.intValue = (highlight.intValue - 1).coerceIn(0, suggestions.size - 1); true }
+                        Key.Enter, Key.NumPadEnter -> { pickSuggestion(suggestions[highlight.intValue.coerceIn(suggestions.indices)]); true }
+                        Key.Escape -> { dismissed = token; true }
+                        else -> false
+                    }
+                }
+                if (popover) ComposerSuggestionsRow(suggestions, highlight.intValue.coerceIn(suggestions.indices), ::pickSuggestion)
                 BasicTextField(
                     value = value, onValueChange = ::edited, maxLines = if (compactHeight) 2 else 6,
                     textStyle = MaterialTheme.typography.bodyLarge.copy(color = fieldColor), cursorBrush = SolidColor(c.accent),
-                    modifier = suggestionKeys.then(enterKeys).then(suggestionSwipe).focusRequester(focus)
+                    modifier = popoverKeys.then(suggestionKeys).then(enterKeys).then(suggestionSwipe).focusRequester(focus)
                         // The size animation is only for the hint wrapping onto a second line; typed text must grow the field as before.
                         // It clips, so it wraps the field's padding, which has the room the 28dp accept pill overflows a line into.
                         .then(if (text.isEmpty() && !reducedMotion) Modifier.animateContentSize(tween(180)) else Modifier)
@@ -628,14 +649,14 @@ internal fun ConversationComposer(
     }
 }
 
-/** The `/` and `$` rows above the field: a name and what the server says it does. A tap writes the name into the draft. */
+/** The `/` and `$` rows above the field: a name and what the server says it does. A tap or Enter writes the name into the draft. */
 @Composable
-private fun ComposerSuggestionsRow(suggestions: List<ComposerSuggestion>, onPick: (ComposerSuggestion) -> Unit) {
+private fun ComposerSuggestionsRow(suggestions: List<ComposerSuggestion>, highlight: Int, onPick: (ComposerSuggestion) -> Unit) {
     val c = Tf.colors
-    Column(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        suggestions.forEach { suggestion ->
+    Column(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp).testTag("composer-suggestions"), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        suggestions.forEachIndexed { index, suggestion ->
             Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(c.s2).clickable { onPick(suggestion) }
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(if (index == highlight) c.s3 else c.s2).clickable { onPick(suggestion) }
                     .padding(horizontal = 10.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
