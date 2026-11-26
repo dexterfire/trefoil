@@ -4,7 +4,7 @@ import androidx.benchmark.macro.MacrobenchmarkScope
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.Until
 
-internal const val TARGET_PACKAGE = "com.tajchert.trefoil"
+internal const val TARGET_PACKAGE = "com.tajchert.trefoil.plus"
 private const val TIMEOUT_MS = 5_000L
 
 /** Opens "Pair with link" on the machines screen, waits for the dialog, then dismisses it. */

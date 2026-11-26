@@ -1,5 +1,13 @@
 # Android releases
 
+Release `0.25.1` (`versionCode = 45`) ships the same code as `0.25.0` under a separate identity: the label is
+**Trefoil Plus** and the application ID is `com.tajchert.trefoil.plus`, so it installs next to the existing
+Trefoil instead of updating it (separate data, widgets and shortcuts; the two apps never share files). It also
+carries the post-0.25.0 fixes: the whole UI moved to string resources with Russian as the default locale and an
+English mirror, the composer searches skills by every T3 name and is driven from the keyboard, and the timing
+tests no longer race the runner. Check that both apps install side by side, that Trefoil Plus opens an
+environment on its own and that its widget entries appear under its own name.
+
 Release `0.25.0` (`versionCode = 44`) groups the thread list by project with per-project pins, folds and a remembered list order; each project can carry its own icon and colour from the project menu; six theme families with an explicit brightness; a settings screen (overflow menu and the 600-779 dp drawer) with a width override; and Russian list chrome (accessibility labels, drawer entries, project headers, filters). The composer offers the provider's T3 slash commands after `/` and its invocable skills after `$`; a typed `$name` rides along with the dispatch as T3 `composerContext`, so the server loads that skill for the turn (200 records and 16 MB per message, unique context IDs), while `/commands` and ordinary messages stay plain text. A layout switch between the two-pane and phone layouts with a thread open no longer re-registers the saveable-state keys and keeps the scroll position. Check the grouped list, project colours, `$` skill dispatch and the settings width override against a real environment on a device.
 
 Release `0.24.1` (`versionCode = 43`) stops a thread too large for mobile from breaking the connection. A
