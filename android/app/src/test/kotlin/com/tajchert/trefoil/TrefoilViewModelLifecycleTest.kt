@@ -136,9 +136,15 @@ class TrefoilViewModelLifecycleTest {
         armLiveConnection()
         dropConnection(); advance(1_999)
         assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
-        advance(1)
-        assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
-        assertTrue(model.connectionAttempt.value.id > 0)
+        // The attempt is started by the backoff timer and leaves Testing asynchronously: pin the lock it takes so the
+        // fixture host cannot settle it into Failed before the check.
+        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
+        assertTrue(mutex.tryLock())
+        try {
+            advance(1)
+            assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+            assertTrue(model.connectionAttempt.value.id > 0)
+        } finally { mutex.unlock(); advance(0) }
     }
 
     @Test fun reselectingTheLiveMachineFromTheListReusesTheSession() {
@@ -281,8 +287,12 @@ class TrefoilViewModelLifecycleTest {
         assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
         dropConnection(); advance(1_999)
         assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
-        advance(1)
-        assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
+        assertTrue(mutex.tryLock())
+        try {
+            advance(1)
+            assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+        } finally { mutex.unlock(); advance(0) }
     }
 
     @Test fun filePickerKeepsSshLoginWhileGraceStillExpires() {
