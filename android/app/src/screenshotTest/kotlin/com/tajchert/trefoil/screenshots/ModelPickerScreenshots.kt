@@ -66,12 +66,11 @@ private fun Picker(
 ) {
     val fx = ModelPickerFixtures
     TrefoilTheme(darkTheme = dark) {
-        WithRuLocale {
         ModelPickerContent(
             models, fx.providers, current, explicit, enabled, {}, {}, { _, _ -> }, Modifier.background(Tf.colors.sheet),
             preferences = prefs, canWriteSettings = canWriteSettings, initialQuery = query, startOnFavourites = startOnFavourites, threadSelection = threadSelection, loading = loading,
         )
-            }
+    }
 }
 
 @PreviewTest

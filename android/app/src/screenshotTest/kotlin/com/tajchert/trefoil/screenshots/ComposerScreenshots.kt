@@ -22,14 +22,13 @@ private val fx = ConversationFixtures
 @Composable
 private fun Composer(state: ClientState, text: String = "", dark: Boolean = false, stopPending: Boolean = false, compactHeight: Boolean = false, hint: PromptSuggestionUi = PromptSuggestionUi()) {
     TrefoilTheme(darkTheme = dark) {
-        WithRuLocale {
         Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.background) {
             CompositionLocalProvider(LocalCompactHeight provides compactHeight) {
                 ConversationComposer(state, null, text, {}, false, stopPending, {}, {}, { _, _ -> }, stop = {}, onSend = {},
                     onCancelQueued = {}, onSteerQueued = {}, onResumeQueue = {}, promptSuggestions = hint)
             }
         }
-            }
+    }
 }
 
 /** The hint shows from the first frame here (no 350 ms wait), since a render has no time for the delay. */

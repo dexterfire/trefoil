@@ -30,22 +30,20 @@ private val chooserProbes = ShellFixtures.probes + (RouteFixtures.lanWithTunnel.
 @Composable
 private fun MachinesShot(saved: List<SavedEnvironment>, state: ClientState, dark: Boolean = false, back: Boolean = false, probes: Map<String, MachineProbe> = emptyMap()) =
     TrefoilTheme(darkTheme = dark) {
-        WithRuLocale {
         Box(Modifier.fillMaxSize().background(Tf.colors.bg)) {
             MachinesScreen(state, saved, onConnect = {}, onForget = {}, onPair = {}, onSsh = {}, onDisconnect = {}, onBack = if (back) ({}) else null, probes = probes, onOpenUsage = {})
         }
-            }
+    }
 
 @Composable
 private fun PairShot(dark: Boolean = false, privateHttp: Boolean = true) =
     TrefoilTheme(darkTheme = dark) {
-        WithRuLocale {
         Box(Modifier.fillMaxSize().background(Tf.colors.bg)) {
             MachinesScreen(connectedState, connectedSaved, onConnect = {}, onForget = {}, onPair = {}, onSsh = {}, onDisconnect = {}, onBack = null, probes = chooserProbes, onOpenUsage = {})
             // Fake link: the pairing link is masked in the field and never leaves the preview.
             PairDialog(busy = false, dismiss = {}, initialLink = if (privateHttp) "http://192.168.1.20:3773/pair#token=fake-token" else "", pair = { _, _, _ -> })
         }
-            }
+    }
 
 @PreviewTest @Preview(showBackground = true, widthDp = 1200, heightDp = 800)
 @Composable fun Machines_Connected_TabletLandscape() = MachinesShot(connectedSaved, connectedState, probes = chooserProbes)

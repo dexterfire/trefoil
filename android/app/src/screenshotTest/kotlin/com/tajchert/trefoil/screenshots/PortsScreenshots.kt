@@ -27,8 +27,7 @@ import com.tajchert.trefoil.ui.ports.TunnelBrowserLayout
 
 @Composable
 private fun PortsShot(state: PortsUiState, dark: Boolean = false) {
-    TrefoilTheme(darkTheme = dark) {
-        WithRuLocale { PortsScreen(state, PortsFixtures.actions)         }
+    TrefoilTheme(darkTheme = dark) { PortsScreen(state, PortsFixtures.actions) }
 }
 
 @PreviewTest
@@ -93,8 +92,7 @@ fun Ports_ReadOnly_Light() { PortsShot(PortsFixtures.readOnly) }
 
 @Composable
 private fun ChipShot(content: @Composable () -> Unit) {
-    TrefoilTheme {
-        WithRuLocale { Column(Modifier.background(Tf.colors.bg).padding(16.dp)) { content() }         }
+    TrefoilTheme { Column(Modifier.background(Tf.colors.bg).padding(16.dp)) { content() } }
 }
 
 @PreviewTest
@@ -111,21 +109,19 @@ fun ThreadPortsChip_Multiple_Light() { ChipShot { ThreadPortsChip(listOf(PortsFi
 @Preview(showBackground = true, widthDp = 400, heightDp = 80, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun ThreadPortsChip_Single_Dark() {
-    TrefoilTheme(darkTheme = true) {
-        WithRuLocale { Column(Modifier.background(Tf.colors.bg).padding(16.dp)) { ThreadPortsChip(listOf(PortsFixtures.vite), onClick = {}) }         }
+    TrefoilTheme(darkTheme = true) { Column(Modifier.background(Tf.colors.bg).padding(16.dp)) { ThreadPortsChip(listOf(PortsFixtures.vite), onClick = {}) } }
 }
 
 /** The WebView itself does not render under Layoutlib, so a placeholder stands in for the page. */
 @Composable
 private fun BrowserShot(error: String? = null, loading: Boolean = false, dark: Boolean = false) {
     TrefoilTheme(darkTheme = dark) {
-        WithRuLocale {
         TunnelBrowserLayout(
             title = "vite", address = "http://localhost:5173/", canGoBack = true, canGoForward = false,
             loading = loading, progress = 60, error = error,
             onClose = {}, onPageBack = {}, onPageForward = {}, onReload = {}, onStop = {}, onOpenExternal = {},
         ) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Page", color = Tf.colors.muted) } }
-            }
+    }
 }
 
 @PreviewTest
@@ -157,7 +153,6 @@ private val openVite = PortBrowserState("env-workstation", 5173, "http://localho
 @Composable
 private fun DevServersShot(state: PortsUiState, browser: PortBrowserState?, hosted: Boolean = false, dark: Boolean = false, compactHeight: Boolean = false) {
     TrefoilTheme(darkTheme = dark) {
-        WithRuLocale {
         CompositionLocalProvider(LocalCompactHeight provides compactHeight) {
             DevServersPaneLayout(state, PortsFixtures.actions, browser, hosted) { url, title, singleToolbar ->
                 TunnelBrowserLayout(
@@ -166,7 +161,7 @@ private fun DevServersShot(state: PortsUiState, browser: PortBrowserState?, host
                 ) { FakePage() }
             }
         }
-            }
+    }
 }
 
 @PreviewTest

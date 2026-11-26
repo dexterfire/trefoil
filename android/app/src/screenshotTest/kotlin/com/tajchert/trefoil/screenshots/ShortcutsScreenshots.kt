@@ -28,7 +28,6 @@ private const val DARK = Configuration.UI_MODE_NIGHT_YES
 
 @Composable
 private fun ShortcutsDialog(width: Dp, height: Dp, dark: Boolean) = TrefoilTheme(darkTheme = dark) {
-        WithRuLocale {
     Box(Modifier.fillMaxSize().background(Tf.colors.bg)) {
         Box(Modifier.fillMaxSize().background(Tf.colors.scrim), contentAlignment = Alignment.Center) {
             Surface(
@@ -37,7 +36,7 @@ private fun ShortcutsDialog(width: Dp, height: Dp, dark: Boolean) = TrefoilTheme
             ) { Column { KeyboardShortcutsContent(onClose = {}) } }
         }
     }
-        }
+}
 
 @PreviewTest @Preview(showBackground = true, widthDp = 1280, heightDp = 800)
 @Composable fun Dialog_Shortcuts_TabletLandscape() = ShortcutsDialog(720.dp, 640.dp, dark = false)

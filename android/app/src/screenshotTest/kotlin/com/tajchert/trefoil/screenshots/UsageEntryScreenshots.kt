@@ -36,8 +36,7 @@ private fun usageState(): ClientState = ShellFixtures.connected().copy(providers
 
 @Composable
 private fun Phone(content: @Composable androidx.compose.foundation.layout.BoxScope.() -> Unit) {
-    TrefoilTheme(darkTheme = false) {
-        WithRuLocale { Box(Modifier.fillMaxSize().background(Tf.colors.bg)) { content() }         }
+    TrefoilTheme(darkTheme = false) { Box(Modifier.fillMaxSize().background(Tf.colors.bg)) { content() } }
 }
 
 @Composable
@@ -77,9 +76,8 @@ private fun amberState(): ClientState = ShellFixtures.connected().copy(providers
 
 @Composable
 private fun HeaderList(state: ClientState, dark: Boolean = false) = TrefoilTheme(darkTheme = dark) {
-        WithRuLocale {
     Box(Modifier.fillMaxSize().background(Tf.colors.bg)) { ThreadList(state, select = {}, create = {}, shell = ShellFixtures.noActions) }
-        }
+}
 
 @PreviewTest @Preview(showBackground = true, widthDp = 400, heightDp = 400)
 @Composable fun UsageEntry_ThreadListHeader_Light() = HeaderList(usageState())

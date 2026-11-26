@@ -17,16 +17,14 @@ import com.tajchert.trefoil.ui.theme.ThemeFamily
 @Preview(showBackground = true, widthDp = 400, heightDp = 880)
 @Composable
 fun Settings_Default_Light() {
-    TrefoilTheme(darkTheme = false) {
-        WithRuLocale { SettingsScreen(AppPreferences(), 400f, onChange = {}, onBack = {})         }
+    TrefoilTheme(darkTheme = false) { SettingsScreen(AppPreferences(), 400f, onChange = {}, onBack = {}) }
 }
 
 @PreviewTest
 @Preview(showBackground = true, widthDp = 400, heightDp = 880, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun Settings_Default_Dark() {
-    TrefoilTheme(darkTheme = true) {
-        WithRuLocale { SettingsScreen(AppPreferences(), 400f, onChange = {}, onBack = {})         }
+    TrefoilTheme(darkTheme = true) { SettingsScreen(AppPreferences(), 400f, onChange = {}, onBack = {}) }
 }
 
 /** A non-default family (Teal) with a forced 1280 dp width: the slider shows the override. */
@@ -36,6 +34,5 @@ private val overridden = AppPreferences(themeFamily = ThemeFamily.Teal, forcedWi
 @Preview(showBackground = true, widthDp = 400, heightDp = 880, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun Settings_WidthOverride_Dark() {
-    TrefoilTheme(darkTheme = true, family = ThemeFamily.Teal) {
-        WithRuLocale { Box(Modifier.fillMaxSize()) { SettingsScreen(overridden, 1280f, onChange = {}, onBack = {}) }         }
+    TrefoilTheme(darkTheme = true, family = ThemeFamily.Teal) { Box(Modifier.fillMaxSize()) { SettingsScreen(overridden, 1280f, onChange = {}, onBack = {}) } }
 }

@@ -26,24 +26,21 @@ import com.tajchert.trefoil.ui.adaptive.ThreadListChrome
 @Preview(showBackground = true, widthDp = 400, heightDp = 800)
 @Composable
 fun ThreadList_Populated_Light() {
-    TrefoilTheme(darkTheme = false) {
-        WithRuLocale { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {})         }
+    TrefoilTheme(darkTheme = false) { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}) }
 }
 
 @PreviewTest
 @Preview(showBackground = true, widthDp = 400, heightDp = 800, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun ThreadList_Populated_Dark() {
-    TrefoilTheme(darkTheme = true) {
-        WithRuLocale { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {})         }
+    TrefoilTheme(darkTheme = true) { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}) }
 }
 
 @PreviewTest
 @Preview(showBackground = true, widthDp = 400, heightDp = 800)
 @Composable
 fun ThreadList_Refreshing_Light() {
-    TrefoilTheme(darkTheme = false) {
-        WithRuLocale { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, isRefreshing = true)         }
+    TrefoilTheme(darkTheme = false) { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, isRefreshing = true) }
 }
 
 /** Waiting threads name what they want: amber kind label, then the preview; a long preview gives way, the label never does. */
@@ -51,16 +48,14 @@ fun ThreadList_Refreshing_Light() {
 @Preview(showBackground = true, widthDp = 400, heightDp = 420)
 @Composable
 fun ThreadList_NeedsYouPreview_Light() {
-    TrefoilTheme(darkTheme = false) {
-        WithRuLocale { ThreadList(ScreenshotFixtures.connectedState(needsYouThreads()), select = {}, create = {})         }
+    TrefoilTheme(darkTheme = false) { ThreadList(ScreenshotFixtures.connectedState(needsYouThreads()), select = {}, create = {}) }
 }
 
 @PreviewTest
 @Preview(showBackground = true, widthDp = 400, heightDp = 420, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun ThreadList_NeedsYouPreview_Dark() {
-    TrefoilTheme(darkTheme = true) {
-        WithRuLocale { ThreadList(ScreenshotFixtures.connectedState(needsYouThreads()), select = {}, create = {})         }
+    TrefoilTheme(darkTheme = true) { ThreadList(ScreenshotFixtures.connectedState(needsYouThreads()), select = {}, create = {}) }
 }
 
 private fun needsYouThreads() = listOf(
@@ -91,16 +86,14 @@ private fun draftThreads() = listOf(
 @Preview(showBackground = true, widthDp = 400, heightDp = 520)
 @Composable
 fun ThreadList_Drafts_Light() {
-    TrefoilTheme(darkTheme = false) {
-        WithRuLocale { ThreadList(ScreenshotFixtures.connectedState(draftThreads()), select = {}, create = {}, composerDrafts = draftsUi())         }
+    TrefoilTheme(darkTheme = false) { ThreadList(ScreenshotFixtures.connectedState(draftThreads()), select = {}, create = {}, composerDrafts = draftsUi()) }
 }
 
 @PreviewTest
 @Preview(showBackground = true, widthDp = 400, heightDp = 520, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun ThreadList_Drafts_Dark() {
-    TrefoilTheme(darkTheme = true) {
-        WithRuLocale { ThreadList(ScreenshotFixtures.connectedState(draftThreads()), select = {}, create = {}, composerDrafts = draftsUi())         }
+    TrefoilTheme(darkTheme = true) { ThreadList(ScreenshotFixtures.connectedState(draftThreads()), select = {}, create = {}, composerDrafts = draftsUi()) }
 }
 
 /** Rows restored from the on-device cache (or kept from the last connection) while connecting: shown, not live, under the progress bar. */
@@ -111,16 +104,14 @@ private fun cachedWhileConnectingState() = ScreenshotFixtures.connectedState().c
 @Preview(showBackground = true, widthDp = 400, heightDp = 800)
 @Composable
 fun ThreadList_CachedWhileConnecting_Light() {
-    TrefoilTheme(darkTheme = false) {
-        WithRuLocale { ThreadList(cachedWhileConnectingState(), select = {}, create = {})         }
+    TrefoilTheme(darkTheme = false) { ThreadList(cachedWhileConnectingState(), select = {}, create = {}) }
 }
 
 @PreviewTest
 @Preview(showBackground = true, widthDp = 400, heightDp = 800, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun ThreadList_CachedWhileConnecting_Dark() {
-    TrefoilTheme(darkTheme = true) {
-        WithRuLocale { ThreadList(cachedWhileConnectingState(), select = {}, create = {})         }
+    TrefoilTheme(darkTheme = true) { ThreadList(cachedWhileConnectingState(), select = {}, create = {}) }
 }
 
 /** Connected (or connecting) before the first shell snapshot: placeholder rows and the progress bar, never "no threads". */
@@ -130,16 +121,14 @@ private fun loadingState() = ScreenshotFixtures.connectedState(emptyList()).copy
 @Preview(showBackground = true, widthDp = 400, heightDp = 800)
 @Composable
 fun ThreadList_Loading_Light() {
-    TrefoilTheme(darkTheme = false) {
-        WithRuLocale { ThreadList(loadingState(), select = {}, create = {})         }
+    TrefoilTheme(darkTheme = false) { ThreadList(loadingState(), select = {}, create = {}) }
 }
 
 @PreviewTest
 @Preview(showBackground = true, widthDp = 400, heightDp = 800, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun ThreadList_Loading_Dark() {
-    TrefoilTheme(darkTheme = true) {
-        WithRuLocale { ThreadList(loadingState(), select = {}, create = {})         }
+    TrefoilTheme(darkTheme = true) { ThreadList(loadingState(), select = {}, create = {}) }
 }
 
 /* ---------- Adaptive chrome (tablets and foldables) ---------- */
@@ -158,12 +147,11 @@ private val navChrome = ThreadListChrome(onCollapse = {}, onOpenNavigation = {})
 
 @Composable
 private fun WideList(dark: Boolean = false, chrome: ThreadListChrome = railChrome, selectedId: String? = null, compact: Boolean = false, fontScale: Float = 1f) = TrefoilTheme(darkTheme = dark) {
-        WithRuLocale {
     val density = LocalDensity.current
     CompositionLocalProvider(LocalCompactHeight provides compact, LocalDensity provides Density(density.density, fontScale)) {
         Box(Modifier.fillMaxSize()) { ThreadList(wideState(), select = {}, create = {}, shell = ShellFixtures.noActions, selectedId = selectedId, chrome = chrome) }
     }
-        }
+}
 
 @PreviewTest
 @Preview(showBackground = true, widthDp = 300, heightDp = 1280)

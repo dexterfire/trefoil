@@ -21,11 +21,10 @@ private const val NIGHT = Configuration.UI_MODE_NIGHT_YES
 @Composable
 private fun RouteMachine(environment: SavedEnvironment, state: ClientState, dark: Boolean = false) =
     TrefoilTheme(darkTheme = dark) {
-        WithRuLocale {
         Box(Modifier.fillMaxSize().background(Tf.colors.bg)) {
             MachinesScreen(state, listOf(environment), onConnect = {}, onForget = {}, onPair = {}, onSsh = {}, onDisconnect = {}, onBack = {}, expandedRoutes = setOf(environment.id))
         }
-            }
+    }
 
 private val lanActive = RouteFixtures.connected(RouteFixtures.lanWithTunnel, RouteFixtures.paired(RouteKind.Lan, "http://192.168.1.20:3773"))
 private val tunnelActive = RouteFixtures.connected(RouteFixtures.awayOnTunnel, RouteFixtures.paired(RouteKind.Tunnel, "https://prod-0123abcd.t3coderelay.com"))
