@@ -71,7 +71,8 @@ internal object FormFactorFixtures {
         @PreviewTest
         @Preview(showBackground = true, widthDp = 1280, heightDp = 800)
         @Composable
-        fun ThreadList_Populated_TabletLandscape() { TrefoilTheme(darkTheme = false) { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, shell = ShellFixtures.noActions, railLayout = true) } }
+        fun ThreadList_Populated_TabletLandscape() { TrefoilTheme(darkTheme = false) {
+        WithRuLocale { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, shell = ShellFixtures.noActions, railLayout = true)         } }
         ```
 
         Run `./gradlew :app:testDebugScreenshotTestDefaultTestSuite` to verify.

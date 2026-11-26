@@ -41,10 +41,11 @@ private val rx = ReadmeFixtures
 @Composable
 private fun ReadmeFrame(dark: Boolean, content: @Composable () -> Unit) {
     TrefoilTheme(darkTheme = dark) {
+        WithRuLocale {
         CompositionLocalProvider(LocalFixedClock provides rx.now) {
             Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { content() }
         }
-    }
+            }
 }
 
 @Composable
@@ -58,10 +59,11 @@ private fun ReadmeConversation(state: ClientState, showAgentsChip: Boolean = fal
 fun Readme_Threads_Dark() {
     // ThreadList honors LocalFixedClock, so the frozen fixture clock keeps every relative label and the group order stable.
     TrefoilTheme(darkTheme = true) {
+        WithRuLocale {
         CompositionLocalProvider(LocalFixedClock provides ScreenshotFixtures.listClock()) {
             ThreadList(rx.threadListState(), select = {}, create = {})
         }
-    }
+            }
 }
 
 @PreviewTest
@@ -108,8 +110,9 @@ fun Readme_Approval_Light() = ReadmeFrame(dark = false) { ReadmeConversation(rx.
 @Composable
 fun Readme_Usage_Dark() {
     TrefoilTheme(darkTheme = true) {
+        WithRuLocale {
         UsageScreen(rx.usageState(), UsageFixtures.usage(), onBack = {}, onRefresh = {}, onSelectRange = {}, onRetry = {}, initialTab = 0)
-    }
+            }
 }
 
 /**

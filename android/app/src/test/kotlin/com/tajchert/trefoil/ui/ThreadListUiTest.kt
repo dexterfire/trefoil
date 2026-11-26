@@ -16,6 +16,8 @@ import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
+import com.tajchert.trefoil.R
+import com.tajchert.trefoil.testString
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.core.session.ComposerDraft
 import com.tajchert.trefoil.core.session.ComposerDraftKey
@@ -282,10 +284,10 @@ class ThreadListUiTest {
         val env = SavedEnvironment("fixture", "Mac mini", "https://fixture.invalid", "fixture-token")
         compose.setContent { TrefoilApp(fixture.copy(environment = env), listOf(env), { _, _, _ -> }, {}, {}, {}, {}, { _, _, _ -> }, null, {}, {}, {}, {}, {}, {}, {}) }
         compose.onNodeWithContentDescription("Меню").performClick()
-        listOf("Screen sessions", "Лимиты и использование", "Machines", "Connect machine", "Disconnect machine").forEach { compose.onNodeWithText(it).assertExists() }
-        compose.onNodeWithText("Screen sessions").performClick()
+        listOf(testString(R.string.screen_sessions), testString(R.string.menu_limits_usage), testString(R.string.machines_title), testString(R.string.connect_machine), testString(R.string.disconnect_machine)).forEach { compose.onNodeWithText(it).assertExists() }
+        compose.onNodeWithText(testString(R.string.screen_sessions)).performClick()
         compose.onNodeWithContentDescription("Back to conversations").performClick()
-        compose.onNodeWithContentDescription("Сменить машину").assertExists()
+        compose.onNodeWithContentDescription(testString(R.string.machine_switch)).assertExists()
     }
     @Test @Config(sdk = [35], qualifiers = "w840dp-h900dp") fun twoPaneHighlightsSelectionWithoutBackButton() {
         compose.setContent { TrefoilApp(fixture.copy(environment = SavedEnvironment("fixture", "Fixture", "https://fixture.invalid", "fixture-token"), selectedThreadId = "active"),

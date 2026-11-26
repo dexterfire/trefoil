@@ -21,6 +21,7 @@ private val drivers = listOf("codex", "claudeAgent", "cursor", "grok", "opencode
 @Composable
 private fun Marks(dark: Boolean) {
     TrefoilTheme(darkTheme = dark) {
+        WithRuLocale {
         Column(Modifier.background(Tf.colors.bg).padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             drivers.chunked(6).forEach { row ->
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -28,7 +29,7 @@ private fun Marks(dark: Boolean) {
                 }
             }
         }
-    }
+            }
 }
 
 @PreviewTest @Preview(name = "provider marks light") @Composable fun ProviderMarksLight() = Marks(dark = false)

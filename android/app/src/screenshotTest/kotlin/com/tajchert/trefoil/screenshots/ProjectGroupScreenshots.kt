@@ -26,14 +26,16 @@ private val groupedPrefs = ListPreferences(
 @Preview(showBackground = true, widthDp = 400, heightDp = 800)
 @Composable
 fun ThreadList_Grouped_Light() {
-    TrefoilTheme(darkTheme = false) { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, preferences = groupedPrefs) }
+    TrefoilTheme(darkTheme = false) {
+        WithRuLocale { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, preferences = groupedPrefs)         }
 }
 
 @PreviewTest
 @Preview(showBackground = true, widthDp = 400, heightDp = 800, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun ThreadList_Grouped_Dark() {
-    TrefoilTheme(darkTheme = true) { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, preferences = groupedPrefs) }
+    TrefoilTheme(darkTheme = true) {
+        WithRuLocale { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, preferences = groupedPrefs)         }
 }
 
 /** The trefoil group folded to its header, the website group open: the fold is remembered per project. */
@@ -47,14 +49,16 @@ private val foldedPrefs = ListPreferences(
 @Preview(showBackground = true, widthDp = 400, heightDp = 560)
 @Composable
 fun ThreadList_GroupFolded_Light() {
-    TrefoilTheme(darkTheme = false) { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, preferences = foldedPrefs) }
+    TrefoilTheme(darkTheme = false) {
+        WithRuLocale { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, preferences = foldedPrefs)         }
 }
 
 @PreviewTest
 @Preview(showBackground = true, widthDp = 400, heightDp = 560, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun ThreadList_GroupFolded_Dark() {
-    TrefoilTheme(darkTheme = true) { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, preferences = foldedPrefs) }
+    TrefoilTheme(darkTheme = true) {
+        WithRuLocale { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, preferences = foldedPrefs)         }
 }
 
 /** Every thread in the project waits: the amber needs-you band on the group header. */
@@ -69,14 +73,16 @@ private fun needsYouState() = ScreenshotFixtures.connectedState(listOf(
 @Preview(showBackground = true, widthDp = 400, heightDp = 420)
 @Composable
 fun ThreadList_NeedsYouBand_Light() {
-    TrefoilTheme(darkTheme = false) { ThreadList(needsYouState(), select = {}, create = {}, preferences = groupedPrefs) }
+    TrefoilTheme(darkTheme = false) {
+        WithRuLocale { ThreadList(needsYouState(), select = {}, create = {}, preferences = groupedPrefs)         }
 }
 
 @PreviewTest
 @Preview(showBackground = true, widthDp = 400, heightDp = 420, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun ThreadList_NeedsYouBand_Dark() {
-    TrefoilTheme(darkTheme = true) { ThreadList(needsYouState(), select = {}, create = {}, preferences = groupedPrefs) }
+    TrefoilTheme(darkTheme = true) {
+        WithRuLocale { ThreadList(needsYouState(), select = {}, create = {}, preferences = groupedPrefs)         }
 }
 
 /** A thread whose project left the environment: the orphan bucket under the "Без проекта" header. */
@@ -92,14 +98,16 @@ private fun orphansState() = ScreenshotFixtures.connectedState(listOf(
 @Preview(showBackground = true, widthDp = 400, heightDp = 480)
 @Composable
 fun ThreadList_Orphans_Light() {
-    TrefoilTheme(darkTheme = false) { ThreadList(orphansState(), select = {}, create = {}, preferences = groupedPrefs) }
+    TrefoilTheme(darkTheme = false) {
+        WithRuLocale { ThreadList(orphansState(), select = {}, create = {}, preferences = groupedPrefs)         }
 }
 
 @PreviewTest
 @Preview(showBackground = true, widthDp = 400, heightDp = 480, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun ThreadList_Orphans_Dark() {
-    TrefoilTheme(darkTheme = true) { ThreadList(orphansState(), select = {}, create = {}, preferences = groupedPrefs) }
+    TrefoilTheme(darkTheme = true) {
+        WithRuLocale { ThreadList(orphansState(), select = {}, create = {}, preferences = groupedPrefs)         }
 }
 
 /** The trefoil project with a picked glyph and colour: rocket on teal, kept per project id. */
@@ -114,14 +122,16 @@ private val lookPrefs = ListPreferences(
 @Preview(showBackground = true, widthDp = 400, heightDp = 800)
 @Composable
 fun ThreadList_ProjectLook_Light() {
-    TrefoilTheme(darkTheme = false) { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, preferences = lookPrefs) }
+    TrefoilTheme(darkTheme = false) {
+        WithRuLocale { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, preferences = lookPrefs)         }
 }
 
 @PreviewTest
 @Preview(showBackground = true, widthDp = 400, heightDp = 800, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun ThreadList_ProjectLook_Dark() {
-    TrefoilTheme(darkTheme = true) { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, preferences = lookPrefs) }
+    TrefoilTheme(darkTheme = true) {
+        WithRuLocale { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, preferences = lookPrefs)         }
 }
 
 /** The picker with a picked glyph and colour: the tile previews the choice live. */
@@ -130,8 +140,9 @@ fun ThreadList_ProjectLook_Dark() {
 @Composable
 fun ProjectAppearance_Picked_Light() {
     TrefoilTheme(darkTheme = false) {
+        WithRuLocale {
         Box(Modifier.fillMaxSize()) { ProjectAppearanceSheet("trefoil", ProjectIcon.byId("rocket"), ProjectColor.byId("amber"), onPickIcon = {}, onPickColor = {}, onClose = {}) }
-    }
+            }
 }
 
 @PreviewTest
@@ -139,8 +150,9 @@ fun ProjectAppearance_Picked_Light() {
 @Composable
 fun ProjectAppearance_Picked_Dark() {
     TrefoilTheme(darkTheme = true) {
+        WithRuLocale {
         Box(Modifier.fillMaxSize()) { ProjectAppearanceSheet("trefoil", ProjectIcon.byId("rocket"), ProjectColor.byId("amber"), onPickIcon = {}, onPickColor = {}, onClose = {}) }
-    }
+            }
 }
 
 /** The grouped list at a narrow phone width: Russian chrome and the jump chip stay inside the window. */
@@ -148,12 +160,14 @@ fun ProjectAppearance_Picked_Dark() {
 @Preview(showBackground = true, widthDp = 360, heightDp = 800)
 @Composable
 fun ThreadList_GroupedNarrow_Light() {
-    TrefoilTheme(darkTheme = false) { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, preferences = groupedPrefs) }
+    TrefoilTheme(darkTheme = false) {
+        WithRuLocale { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, preferences = groupedPrefs)         }
 }
 
 @PreviewTest
 @Preview(showBackground = true, widthDp = 360, heightDp = 800, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun ThreadList_GroupedNarrow_Dark() {
-    TrefoilTheme(darkTheme = true) { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, preferences = groupedPrefs) }
+    TrefoilTheme(darkTheme = true) {
+        WithRuLocale { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, preferences = groupedPrefs)         }
 }

@@ -35,11 +35,12 @@ import com.tajchert.trefoil.ui.screens.StreamViewerStatus
 private fun SessionsShot(catalog: ScreenCatalog, dark: Boolean = false) {
     val state: ClientState = ScreenshotFixtures.connectedState().copy(selectedThreadId = "t-approval", screens = catalog)
     TrefoilTheme(darkTheme = dark) {
+        WithRuLocale {
         ScreenSessionsScreen(
             state, ScreenViewerState(), fullscreen = false, onFullscreen = {}, onRefresh = {},
             onOpen = {}, onClose = {}, onLeave = {},
         )
-    }
+            }
 }
 
 @PreviewTest
@@ -76,13 +77,14 @@ private fun AdaptiveSessionsShot(open: Boolean, dark: Boolean = false, fullscree
         ScreenAccess("fixture", 1, shotTarget, "https://fixture.invalid/api/device-hub", "wss://fixture.invalid/api/device-hub", mapOf("wsTicket" to "fixture-media", "hostId" to "host-1"), interactive = true),
     )
     TrefoilTheme(darkTheme = dark) {
+        WithRuLocale {
         CompositionLocalProvider(LocalFold provides fold, LocalCompactHeight provides compactHeight) {
             ScreenSessionsScreen(
                 state, viewer, fullscreen = fullscreen, onFullscreen = {}, onRefresh = {}, onOpen = {}, onClose = {}, onLeave = null,
                 isAccessCurrent = { true }, viewerContent = fakeStream,
             )
         }
-    }
+            }
 }
 
 @PreviewTest

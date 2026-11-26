@@ -27,12 +27,13 @@ private fun Pane(label: String, color: (com.tajchert.trefoil.ui.TrefoilColors) -
 
 @Composable
 private fun TwoPanes(width: Dp = 340.dp, dark: Boolean = false, locked: Boolean = false, hinge: Dp = 0.dp) = TrefoilTheme(darkTheme = dark) {
+        WithRuLocale {
     // Rail colour behind the panes so the empty hinge band is visible in the locked preview.
     Box(Modifier.fillMaxSize().background(Tf.colors.rail)) {
         TfTwoPane(rememberTwoPaneState(width), defaultStartWidth = 340.dp, start = { Pane("List") { it.bg } }, end = { Pane("Conversation") { it.s1 } },
             modifier = Modifier.fillMaxSize(), locked = locked, hingeWidth = hinge)
     }
-}
+        }
 
 @PreviewTest @Preview(showBackground = true, widthDp = 841, heightDp = 673)
 @Composable fun Adaptive_TwoPane_Default_FoldLandscape() = TwoPanes()

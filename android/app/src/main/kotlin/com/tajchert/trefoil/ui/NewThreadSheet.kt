@@ -21,6 +21,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.onPreviewKeyEvent
@@ -39,6 +40,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.tajchert.trefoil.R
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.core.session.ComposerDraft
 import com.tajchert.trefoil.core.session.ComposerDraftDiscard
@@ -364,7 +366,8 @@ internal fun NewThreadSheetContent(
             var modeMenu by remember { mutableStateOf(false) }
             Box {
                 val modelsLoading = modelPickerLoading(state.models, state.connection)
-                SheetPill(modelPillLabel(model, explicitOptions, modelsLoading, empty = "No models"), TfIcons.Sparkle, modelPillDescription(model, explicitOptions, modelsLoading), enabled = state.models.isNotEmpty() || modelsLoading) { modelMenu = true }
+                val pillLabel = modelPillLabel(model, explicitOptions, modelsLoading, stringResource(R.string.picker_pill_no_models), stringResource(R.string.picker_pill_fast), stringResource(R.string.picker_pill_loading))
+                SheetPill(pillLabel, TfIcons.Sparkle, modelPillDescription(pillLabel.takeIf { model != null }, modelsLoading, stringResource(R.string.picker_pill_prefix), stringResource(R.string.picker_pill_loading_state), stringResource(R.string.picker_pill_not_set)), enabled = state.models.isNotEmpty() || modelsLoading) { modelMenu = true }
             }
             if (model != null && reasoning != null) {
                 val choices = reasoning.selectableChoices

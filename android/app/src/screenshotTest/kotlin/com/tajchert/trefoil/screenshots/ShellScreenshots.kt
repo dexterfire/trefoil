@@ -54,7 +54,8 @@ private const val NIGHT = Configuration.UI_MODE_NIGHT_YES
 
 @Composable
 private fun Phone(dark: Boolean = false, content: @Composable () -> Unit) {
-    TrefoilTheme(darkTheme = dark) { Box(Modifier.fillMaxSize().background(Tf.colors.bg)) { content() } }
+    TrefoilTheme(darkTheme = dark) {
+        WithRuLocale { Box(Modifier.fillMaxSize().background(Tf.colors.bg)) { content() }         }
 }
 
 @Composable

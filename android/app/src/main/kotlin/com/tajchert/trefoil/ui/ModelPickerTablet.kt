@@ -13,6 +13,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
@@ -26,6 +27,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tajchert.trefoil.core.model.ModelOption
+import com.tajchert.trefoil.R
 import com.tajchert.trefoil.core.model.ModelOptionValues
 import com.tajchert.trefoil.ui.adaptive.handPointer
 import com.tajchert.trefoil.ui.adaptive.focusRing
@@ -49,7 +51,7 @@ internal fun TabletPickerBody(ui: PickerUi, closeSheet: () -> Unit, loading: Boo
             when {
                 skeleton -> TabletSkeleton()
                 ui.models.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    EmptyState(TfIcons.Sparkle, "No models available", "Reconnect to refresh configuration.")
+                    EmptyState(TfIcons.Sparkle, stringResource(R.string.picker_no_models_title), stringResource(R.string.picker_no_models_body))
                 }
                 // The options pane is 200dp in a dialog narrower than 640dp (a 673dp window leaves 625dp after the 24dp margins), else 224dp.
                 else -> BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -82,7 +84,7 @@ private fun ProviderRail(ui: PickerUi, onRail: (String) -> Unit) {
     Row(Modifier.fillMaxHeight()) {
         Column(Modifier.width(56.dp).fillMaxHeight().background(c.rail).navigationBarsPadding().verticalScroll(rememberScrollState()).padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             val onFavourites = !ui.searching && ui.activeTab == FAVOURITES_TAB
-            RailButton(onFavourites, if (favourites.isEmpty()) "Favourites" else "Favourites, ${favourites.size} models", { onRail(FAVOURITES_TAB) }) {
+            RailButton(onFavourites, if (favourites.isEmpty()) stringResource(R.string.picker_favourites) else stringResource(R.string.picker_favourites_count, favourites.size), { onRail(FAVOURITES_TAB) }) {
                 Icon(if (onFavourites) TfIcons.StarFilled else TfIcons.Star, null, Modifier.size(20.dp), tint = if (onFavourites) c.amber else c.muted)
             }
             ui.catalog.sections.forEach { section ->
@@ -125,7 +127,7 @@ private fun OptionsPane(
         if (reasoning != null) {
             val choices = reasoning.selectableChoices
             val choice = reasoningChoice(model, values, threadSelection)
-            SectionLabel(reasoning.label.ifBlank { "Reasoning" }, Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 4.dp))
+            SectionLabel(reasoning.label.ifBlank { stringResource(R.string.reasoning_default) }, Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 4.dp))
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 choices.forEachIndexed { index, option ->
                     val selected = option.id == choice?.id
@@ -151,7 +153,7 @@ private fun OptionsPane(
         } else Spacer(Modifier.weight(1f))
         if (fast != null) {
             val on = fastModeOn(model, values)
-            val label = fast.label.ifBlank { "Fast mode" }
+            val label = fast.label.ifBlank { stringResource(R.string.fast_mode) }
             if (reasoning != null) HorizontalDivider(color = c.line)
             Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp)) {
                 SectionLabel(label, Modifier.padding(start = 4.dp, bottom = 6.dp))
@@ -164,12 +166,12 @@ private fun OptionsPane(
                     )
                     SegmentedButton(
                         !on, { if (on) onSetModelOption(fast.id, false) }, SegmentedButtonDefaults.itemShape(0, 2), Modifier.heightIn(min = 48.dp), optionsEnabled, colors,
-                        border = SegmentedButtonDefaults.borderStroke(segmentBorder(!on, optionsEnabled)), icon = {}, label = { Text("Standard", style = MaterialTheme.typography.labelMedium.copy(fontSize = 13.sp), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        border = SegmentedButtonDefaults.borderStroke(segmentBorder(!on, optionsEnabled)), icon = {}, label = { Text(stringResource(R.string.standard_chip), style = MaterialTheme.typography.labelMedium.copy(fontSize = 13.sp), maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     )
                     SegmentedButton(
                         on, { if (!on) onSetModelOption(fast.id, true) }, SegmentedButtonDefaults.itemShape(1, 2), Modifier.heightIn(min = 48.dp), optionsEnabled, colors,
                         border = SegmentedButtonDefaults.borderStroke(segmentBorder(on, optionsEnabled)),
-                        icon = { Icon(TfIcons.Bolt, null, Modifier.size(SegmentedButtonDefaults.IconSize)) }, label = { Text("Fast", style = MaterialTheme.typography.labelMedium.copy(fontSize = 13.sp), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        icon = { Icon(TfIcons.Bolt, null, Modifier.size(SegmentedButtonDefaults.IconSize)) }, label = { Text(stringResource(R.string.fast_chip), style = MaterialTheme.typography.labelMedium.copy(fontSize = 13.sp), maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     )
                 }
             }
@@ -195,7 +197,9 @@ private fun segmentBorder(active: Boolean, enabled: Boolean): Color {
 private fun TabletSkeleton() {
     val c = Tf.colors
     val alpha = rememberSkeletonAlpha()
-    Row(Modifier.fillMaxSize().testTag("model-picker-loading").semantics(mergeDescendants = true) { contentDescription = "Loading models" }) {
+    val loadingDescription = stringResource(R.string.picker_loading_description)
+    val searchPlaceholder = stringResource(R.string.picker_search_placeholder)
+    Row(Modifier.fillMaxSize().testTag("model-picker-loading").semantics(mergeDescendants = true) { contentDescription = loadingDescription }) {
         Column(Modifier.width(56.dp).fillMaxHeight().background(c.rail).navigationBarsPadding().padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             val dot = if (c.isDark) c.s3 else c.muted.copy(alpha = .22f)
             repeat(3) { Box(Modifier.fillMaxWidth().height(48.dp), contentAlignment = Alignment.Center) { Box(Modifier.size(22.dp).graphicsLayer { this.alpha = alpha() }.background(dot, CircleShape)) } }
@@ -204,7 +208,7 @@ private fun TabletSkeleton() {
         Column(Modifier.weight(1f).fillMaxHeight().navigationBarsPadding()) {
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
-                "", {}, enabled = false, singleLine = true, placeholder = { Text("Search models…") }, shape = TfFieldShape, colors = tfFieldColors(),
+                "", {}, enabled = false, singleLine = true, placeholder = { Text(searchPlaceholder) }, shape = TfFieldShape, colors = tfFieldColors(),
                 leadingIcon = { Icon(TfIcons.Search, null, Modifier.size(18.dp), tint = c.muted.copy(alpha = .5f)) },
                 modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
             )

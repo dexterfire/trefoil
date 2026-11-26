@@ -46,10 +46,11 @@ private const val DARK = Configuration.UI_MODE_NIGHT_YES
 @Composable
 private fun Backdrop(dark: Boolean, align: Alignment = Alignment.Center, content: @Composable () -> Unit) {
     TrefoilTheme(darkTheme = dark) {
+        WithRuLocale {
         Box(Modifier.fillMaxSize().background(Tf.colors.bg)) {
             Box(Modifier.fillMaxSize().background(Tf.colors.scrim), contentAlignment = align) { content() }
         }
-    }
+            }
 }
 
 @Composable
@@ -129,7 +130,8 @@ private fun AgentsBody() = ThreadAgentsSheetContent(agentRowsFixture, onOpen = {
 // ---- SSH ----
 
 @Composable
-private fun Window(content: @Composable () -> Unit) = TrefoilTheme { Box(Modifier.fillMaxSize().background(Tf.colors.bg)) { content() } }
+private fun Window(content: @Composable () -> Unit) = TrefoilTheme {
+        WithRuLocale { Box(Modifier.fillMaxSize().background(Tf.colors.bg)) { content() }         }
 
 @PreviewTest @Preview(showBackground = true, widthDp = 1280, heightDp = 800)
 @Composable fun Dialog_SshConnection_Tablet1280x800() = Window { SshConnectionDialog(busy = false, initial = null, dismiss = {}, pickerActive = {}, connect = {}) }

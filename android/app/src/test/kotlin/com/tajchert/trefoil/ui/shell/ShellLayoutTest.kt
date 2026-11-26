@@ -7,6 +7,8 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
+import com.tajchert.trefoil.R
+import com.tajchert.trefoil.testString
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.ui.ShellStart
 import com.tajchert.trefoil.ui.TrefoilApp
@@ -90,10 +92,10 @@ class ShellLayoutTest {
     @Test fun usageBesideTheRailReturnsToThreadsOnBack() {
         setApp()
         railItem("Usage").performClick()
-        compose.onNodeWithText("Лимиты и использование").assertExists()
+        compose.onNodeWithText(testString(R.string.menu_limits_usage)).assertExists()
         rail().assertExists()
         systemBack()
-        compose.onNodeWithText("Лимиты и использование").assertDoesNotExist()
+        compose.onNodeWithText(testString(R.string.menu_limits_usage)).assertDoesNotExist()
         compose.onNodeWithText("Fixture thread").assertExists()
     }
 
@@ -101,9 +103,9 @@ class ShellLayoutTest {
         val restore = StateRestorationTester(compose)
         restore.setContent { app(fixture, ShellStart()) }
         railItem("Usage").performClick()
-        compose.onNodeWithText("Лимиты и использование").assertExists()
+        compose.onNodeWithText(testString(R.string.menu_limits_usage)).assertExists()
         restore.emulateSavedInstanceStateRestore()
-        compose.onNodeWithText("Лимиты и использование").assertExists()
+        compose.onNodeWithText(testString(R.string.menu_limits_usage)).assertExists()
     }
 
     @Test @Config(sdk = [35], qualifiers = "w673dp-h841dp") fun separatingFoldLeavesTheHingeEmpty() {

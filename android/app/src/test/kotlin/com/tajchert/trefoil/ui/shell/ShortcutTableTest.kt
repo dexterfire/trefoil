@@ -19,10 +19,13 @@ import com.tajchert.trefoil.core.model.FollowUpMode
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class ShortcutTableTest {
+    /** Robolectric context so label/group resources resolve; labels keep testing approval-word rules. */
+    private val context get() = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+
     @Test fun everyEntryHasALabelAGroupAndAChord() {
         ShortcutTable.forEach { entry ->
-            assertTrue("${entry.id} label", entry.label.isNotBlank())
-            assertTrue("${entry.id} group ${entry.group}", entry.group in ShortcutGroups)
+            assertTrue("${entry.id} label", entry.labelRes != 0)
+            assertTrue("${entry.id} group ${entry.groupRes}", entry.groupRes in ShortcutGroups)
             assertTrue("${entry.id} chords", entry.chords.isNotEmpty())
         }
     }
@@ -50,22 +53,25 @@ class ShortcutTableTest {
 
     @Test fun noGlobalShortcutAnswersAnApproval() {
         val approvalWords = listOf("allow", "deny", "approve", "reject", "accept", "decline")
-        ShortcutTable.forEach { entry -> approvalWords.forEach { assertTrue("${entry.id} '${entry.label}'", !entry.label.lowercase().contains(it)) } }
+        ShortcutTable.forEach { entry ->
+            val label = context.getString(entry.labelRes)
+            approvalWords.forEach { assertTrue("${entry.id} '$label'", !label.lowercase().contains(it)) }
+        }
     }
 
     @Test fun theSystemHelperListsExactlyTheTable() {
-        val groups = keyboardShortcutGroups()
+        val groups = keyboardShortcutGroups(context)
         val listed = groups.flatMap { group -> group.items.map { Triple(group.label.toString(), it.label.toString(), it.keycode to it.modifiers) } }
-        val expected = ShortcutTable.flatMap { entry -> entry.chords.map { Triple(entry.group, entry.label, it.key.nativeKeyCode to it.modifiers) } }
+        val expected = ShortcutTable.flatMap { entry -> entry.chords.map { Triple(context.getString(entry.groupRes), context.getString(entry.labelRes), it.key.nativeKeyCode to it.modifiers) } }
         assertEquals(expected.sortedBy { it.toString() }, listed.sortedBy { it.toString() })
-        assertEquals(ShortcutGroups.filter { g -> ShortcutTable.any { it.group == g } }, groups.map { it.label.toString() })
+        assertEquals(ShortcutGroups.map { context.getString(it) }.filter { g -> ShortcutTable.any { context.getString(it.groupRes) == g } }, groups.map { it.label.toString() })
     }
 
     @Test fun theCheatSheetRowsComeFromTheTable() {
         // The sheet draws ShortcutTable per group in ShortcutGroups order, so its rows are these.
-        val rows = ShortcutGroups.flatMap { g -> ShortcutTable.filter { it.group == g }.map { it.label to it.chords.map { c -> c.label } } }
+        val rows = ShortcutGroups.flatMap { g -> ShortcutTable.filter { it.groupRes == g }.map { context.getString(it.labelRes) to it.chords.map { c -> c.label } } }
         assertEquals(ShortcutTable.size, rows.size)
-        assertEquals(ShortcutTable.map { it.id }.toSet(), ShortcutTable.filter { it.group in ShortcutGroups }.map { it.id }.toSet())
+        assertEquals(ShortcutTable.map { it.id }.toSet(), ShortcutTable.filter { it.groupRes in ShortcutGroups }.map { it.id }.toSet())
     }
 
     @Test fun hintsAndLabelsComeFromTheFirstChord() {

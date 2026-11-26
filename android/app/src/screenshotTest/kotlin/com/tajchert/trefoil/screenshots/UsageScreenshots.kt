@@ -19,8 +19,9 @@ private fun UsageShot(
 ) {
     val state = UsageFixtures.state(providers)
     TrefoilTheme(darkTheme = dark) {
+        WithRuLocale {
         UsageScreen(if (offline) state.copy(connection = ConnectionStatus.Disconnected, canRead = false, canWrite = false) else state, usage, onBack = if (back) ({}) else null, onRefresh = {}, onSelectRange = {}, onRetry = {}, initialTab = tab)
-    }
+            }
 }
 
 @PreviewTest

@@ -23,10 +23,11 @@ private val reference = HtmlRenderReference(attachmentId = "att-demo", title = "
 @Composable
 private fun CardShot(state: HtmlRenderState, dark: Boolean, canRetry: Boolean = false) {
     TrefoilTheme(darkTheme = dark) {
+        WithRuLocale {
         Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.background) {
             HtmlRenderCardContent(reference, state, Modifier.padding(16.dp), canRetry = canRetry)
         }
-    }
+            }
 }
 
 /** An assistant turn with command activity, then an HTML render row, then the final reply. */
@@ -44,10 +45,11 @@ private fun renderState(): ClientState {
 @Composable
 private fun ConversationShot(dark: Boolean) {
     TrefoilTheme(darkTheme = dark) {
+        WithRuLocale {
         Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.background) {
             Conversation(renderState(), send = {}, interrupt = {}, respond = { _, _, _ -> }, onBack = {}, onOpenAgents = null)
         }
-    }
+            }
 }
 
 @PreviewTest

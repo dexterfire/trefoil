@@ -4,6 +4,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import com.tajchert.trefoil.R
+import com.tajchert.trefoil.testString
 import com.tajchert.trefoil.core.model.*
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -65,7 +67,7 @@ class UsageScreenTest {
         var backs = 0
         var refreshes = 0
         compose.setContent { TrefoilTheme { UsageScreen(state, UsageUiState(), { backs++ }, { refreshes++ }, { selected = it }, {}) } }
-        compose.onNodeWithText("Лимиты и использование").assertExists()
+        compose.onNodeWithText(testString(R.string.menu_limits_usage)).assertExists()
         compose.onNodeWithText("Mac mini").assertExists()
         compose.onNodeWithContentDescription("Back").performClick()
         compose.onNodeWithContentDescription("Refresh usage").performClick()
@@ -77,7 +79,7 @@ class UsageScreenTest {
     @Test fun permissionFailureExplainsRequiredScope() {
         compose.setContent { TrefoilTheme { UsageScreen(state, UsageUiState(failure = UsageFailure.NoPermission), {}, {}, {}, {}) } }
         compose.onNodeWithText("Cost").performClick()
-        compose.onNodeWithText("This connection can't read usage. Pair again with a token that has diagnostics access.").assertExists()
+        compose.onNodeWithText(testString(R.string.usage_failure_permission)).assertExists()
         compose.onNodeWithText("Retry").assertDoesNotExist()
     }
 
@@ -135,7 +137,7 @@ class UsageScreenTest {
     @Test fun tappingABarShowsThatDaysValue() {
         compose.setContent { TrefoilTheme { UsageScreen(state, UsageUiState(reports = mapOf(UsageRange.Week to report)), {}, {}, {}, {}) } }
         compose.onNodeWithText("Cost").performClick()
-        compose.onNodeWithText("Tap a bar to see a day's cost").assertExists()
+        compose.onNodeWithText(testString(R.string.usage_day_hint, testString(R.string.usage_word_cost))).assertExists()
         compose.onNodeWithContentDescription("Wed, Jan 7: $10.00").performClick()
         compose.onNodeWithText("Wed, Jan 7 · $10.00").assertExists()
     }

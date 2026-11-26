@@ -1,0 +1,401 @@
+# Allowlist for UiStringLiteralGuardTest: `path::literal` entries the UI layers may still carry.
+# This list only shrinks: every entry is a localization TODO (see docs/LOCALIZATION.md).
+# Add an entry only when the literal is not user-facing UI text (a key, a tag, a domain phrase)
+# or when its extraction is deferred to a follow-up ticket.
+com/tajchert/trefoil/notifications/AgentAlertNotifier.kt::Agent alerts
+com/tajchert/trefoil/notifications/AgentAlertNotifier.kt::Agent failed
+com/tajchert/trefoil/notifications/AgentAlertNotifier.kt::Agent finished
+com/tajchert/trefoil/notifications/AgentAlertNotifier.kt::Approval needed
+com/tajchert/trefoil/notifications/AgentAlertNotifier.kt::Untitled conversation
+com/tajchert/trefoil/notifications/AgentAlertNotifier.kt::Waiting for input
+com/tajchert/trefoil/ui/BackgroundWorkPresentation.kt::$count ${if (count == 1) names.singular else names.plural}
+com/tajchert/trefoil/ui/BackgroundWorkPresentation.kt::Running a $noun
+com/tajchert/trefoil/ui/BackgroundWorkPresentation.kt::Waiting on a $noun
+com/tajchert/trefoil/ui/BackgroundWorkPresentation.kt::background task
+com/tajchert/trefoil/ui/BackgroundWorkPresentation.kt::background tasks
+com/tajchert/trefoil/ui/ComposerActions.kt::Queue a message…
+com/tajchert/trefoil/ui/ComposerActions.kt::Queue message
+com/tajchert/trefoil/ui/ComposerActions.kt::Reply…
+com/tajchert/trefoil/ui/ComposerActions.kt::Send message
+com/tajchert/trefoil/ui/ComposerActions.kt::Steer message
+com/tajchert/trefoil/ui/ComposerActions.kt::Steer or queue a message…
+com/tajchert/trefoil/ui/ComposerActions.kt::What should the agent do?
+com/tajchert/trefoil/ui/ConversationParts.kt::Collapse completed work
+com/tajchert/trefoil/ui/ConversationParts.kt::Copy activity
+com/tajchert/trefoil/ui/ConversationParts.kt::Expand completed work
+com/tajchert/trefoil/ui/ConversationParts.kt::File changes
+com/tajchert/trefoil/ui/ConversationParts.kt::File details are not included in this snapshot.
+com/tajchert/trefoil/ui/ConversationParts.kt::Load details
+com/tajchert/trefoil/ui/ConversationParts.kt::Load output
+com/tajchert/trefoil/ui/ConversationParts.kt::Needs you
+com/tajchert/trefoil/ui/ConversationParts.kt::Output is not included in this snapshot.
+com/tajchert/trefoil/ui/ConversationParts.kt::Previewed HTML
+com/tajchert/trefoil/ui/ConversationParts.kt::Previewing HTML
+com/tajchert/trefoil/ui/ConversationParts.kt::Rendered HTML
+com/tajchert/trefoil/ui/ConversationParts.kt::Rendering HTML
+com/tajchert/trefoil/ui/ConversationParts.kt::Run command
+com/tajchert/trefoil/ui/ConversationParts.kt::Search files
+com/tajchert/trefoil/ui/ConversationParts.kt::Search the web
+com/tajchert/trefoil/ui/ConversationParts.kt::Submit answers
+com/tajchert/trefoil/ui/ConversationParts.kt::This request is not supported here. Open another T3 client to respond.
+com/tajchert/trefoil/ui/ConversationParts.kt::Your answer
+com/tajchert/trefoil/ui/ConversationTimeline.kt::Worked for ${workDuration(Duration.between(start, end).toMillis().coerceAtLeast(0))}
+com/tajchert/trefoil/ui/ConversationUi.kt::Choose a thread from the list, or start a new one.
+com/tajchert/trefoil/ui/ConversationUi.kt::Choose steer or queue
+com/tajchert/trefoil/ui/ConversationUi.kt::New thread
+com/tajchert/trefoil/ui/ConversationUi.kt::New thread in ${project?.title ?: 
+com/tajchert/trefoil/ui/ConversationUi.kt::Not supported by this agent right now
+com/tajchert/trefoil/ui/ConversationUi.kt::Nothing here yet
+com/tajchert/trefoil/ui/ConversationUi.kt::Open parent
+com/tajchert/trefoil/ui/ConversationUi.kt::Pick a thread
+com/tajchert/trefoil/ui/ConversationUi.kt::Queue message
+com/tajchert/trefoil/ui/ConversationUi.kt::Queue paused
+com/tajchert/trefoil/ui/ConversationUi.kt::Redirect the running turn now
+com/tajchert/trefoil/ui/ConversationUi.kt::Remove queued message
+com/tajchert/trefoil/ui/ConversationUi.kt::Runs on its own
+com/tajchert/trefoil/ui/ConversationUi.kt::Runtime mode: ${mode?.label ?: 
+com/tajchert/trefoil/ui/ConversationUi.kt::Send a message to get started.
+com/tajchert/trefoil/ui/ConversationUi.kt::Send after the current turn finishes
+com/tajchert/trefoil/ui/ConversationUi.kt::Send now
+com/tajchert/trefoil/ui/ConversationUi.kt::Steer message
+com/tajchert/trefoil/ui/ConversationUi.kt::Untitled conversation
+com/tajchert/trefoil/ui/ConversationUi.kt::Your first message starts the thread.
+com/tajchert/trefoil/ui/FileDownloadCards.kt::${fileByteLabel(completed.sizeBytes)} · Saved to Downloads/Trefoil
+com/tajchert/trefoil/ui/FileDownloadCards.kt::%.1f GB
+com/tajchert/trefoil/ui/FileDownloadCards.kt::%.1f KB
+com/tajchert/trefoil/ui/FileDownloadCards.kt::%.1f MB
+com/tajchert/trefoil/ui/FileDownloadCards.kt::Android package
+com/tajchert/trefoil/ui/FileDownloadCards.kt::Cancel download ${reference.fileName}
+com/tajchert/trefoil/ui/FileDownloadCards.kt::Download cancelled
+com/tajchert/trefoil/ui/FileDownloadCards.kt::Download failed
+com/tajchert/trefoil/ui/FileDownloadCards.kt::Download fresh copy of ${reference.fileName}
+com/tajchert/trefoil/ui/FileDownloadCards.kt::Retry download ${reference.fileName}
+com/tajchert/trefoil/ui/FileDownloadCards.kt::Tap Retry to try again.
+com/tajchert/trefoil/ui/InlineImage.kt::Close image
+com/tajchert/trefoil/ui/InlineImage.kt::Open image full screen
+com/tajchert/trefoil/ui/InlineImage.kt::Saved ${reference.fileName} to Downloads
+com/tajchert/trefoil/ui/LimitChip.kt::Лимиты и использование
+com/tajchert/trefoil/ui/LimitChip.kt::Лимиты и использование · осталось $percent%
+com/tajchert/trefoil/ui/LiveTurnPresentation.kt::Waiting on $count subagents
+com/tajchert/trefoil/ui/LiveTurnPresentation.kt::Waiting on a subagent
+com/tajchert/trefoil/ui/LiveTurnRows.kt::Working for ${workingTimerLabel(now - startedAt)}
+com/tajchert/trefoil/ui/LiveTurnRows.kt::Working…
+com/tajchert/trefoil/ui/MarkdownContent.kt::Copy code
+com/tajchert/trefoil/ui/NewThreadSheet.kt::Change project
+com/tajchert/trefoil/ui/NewThreadSheet.kt::Clear search
+com/tajchert/trefoil/ui/NewThreadSheet.kt::New thread
+com/tajchert/trefoil/ui/NewThreadSheet.kt::No models reported by this environment. Reconnect to refresh configuration.
+com/tajchert/trefoil/ui/NewThreadSheet.kt::No projects match \"${query.trim()}\".
+com/tajchert/trefoil/ui/NewThreadSheet.kt::No projects reported by this environment.
+com/tajchert/trefoil/ui/NewThreadSheet.kt::Search projects
+com/tajchert/trefoil/ui/NewThreadSheet.kt::Show all ${filtered.size} projects
+com/tajchert/trefoil/ui/NewThreadSheet.kt::Show all projects
+com/tajchert/trefoil/ui/NewThreadSheet.kt::What should the agent do?
+com/tajchert/trefoil/ui/NewThreadSheet.kt::Workspace uses the server default.
+com/tajchert/trefoil/ui/ProjectAppearanceSheet.kt::Без иконки
+com/tajchert/trefoil/ui/ProjectAppearanceSheet.kt::Готово
+com/tajchert/trefoil/ui/ProjectAppearanceSheet.kt::Иконка
+com/tajchert/trefoil/ui/ProjectAppearanceSheet.kt::Иконка и цвет
+com/tajchert/trefoil/ui/ProjectAppearanceSheet.kt::Цвет
+com/tajchert/trefoil/ui/ProjectAppearanceSheet.kt::Цвет по умолчанию
+com/tajchert/trefoil/ui/ProjectGrouping.kt::Без проекта
+com/tajchert/trefoil/ui/PromptSuggestionHint.kt::Dismiss suggestion
+com/tajchert/trefoil/ui/PromptSuggestionHint.kt::Suggested message: ${suggestion.text}
+com/tajchert/trefoil/ui/PromptSuggestionHint.kt::Use suggestion
+com/tajchert/trefoil/ui/ProviderIconUi.kt::Агент: $displayName
+com/tajchert/trefoil/ui/SettingsScreen.kt::Боковая панель
+com/tajchert/trefoil/ui/SettingsScreen.kt::Включено
+com/tajchert/trefoil/ui/SettingsScreen.kt::Выключено
+com/tajchert/trefoil/ui/SettingsScreen.kt::Закреплённые проекты
+com/tajchert/trefoil/ui/SettingsScreen.kt::Как отдаёт сервер
+com/tajchert/trefoil/ui/SettingsScreen.kt::Назад
+com/tajchert/trefoil/ui/SettingsScreen.kt::Настройки
+com/tajchert/trefoil/ui/SettingsScreen.kt::Остальные проекты
+com/tajchert/trefoil/ui/SettingsScreen.kt::Оформление
+com/tajchert/trefoil/ui/SettingsScreen.kt::Планшетный режим
+com/tajchert/trefoil/ui/SettingsScreen.kt::По активности
+com/tajchert/trefoil/ui/SettingsScreen.kt::По алфавиту
+com/tajchert/trefoil/ui/SettingsScreen.kt::По дате создания
+com/tajchert/trefoil/ui/SettingsScreen.kt::Сбросить
+com/tajchert/trefoil/ui/SettingsScreen.kt::Светлая
+com/tajchert/trefoil/ui/SettingsScreen.kt::Системная
+com/tajchert/trefoil/ui/SettingsScreen.kt::Треды внутри проекта
+com/tajchert/trefoil/ui/SettingsScreen.kt::Тёмная
+com/tajchert/trefoil/ui/SettingsScreen.kt::Ширина окна
+com/tajchert/trefoil/ui/SettingsScreen.kt::Яркость
+com/tajchert/trefoil/ui/SettingsScreen.kt::светлая половина
+com/tajchert/trefoil/ui/SettingsScreen.kt::тёмная половина
+com/tajchert/trefoil/ui/SshConnectionDialog.kt::Cannot open file
+com/tajchert/trefoil/ui/SshConnectionDialog.kt::for key in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf \"\$key\" -E sha256; done
+com/tajchert/trefoil/ui/SubagentPresentation.kt:: }}/${agents.size} agents done
+com/tajchert/trefoil/ui/SubagentPresentation.kt::${roster.liveCount} of $total agents working
+com/tajchert/trefoil/ui/SubagentPresentation.kt::^Child task ended with status\\b
+com/tajchert/trefoil/ui/ThreadActionsUi.kt::Copy thread
+com/tajchert/trefoil/ui/ThreadActionsUi.kt::Copy thread ID
+com/tajchert/trefoil/ui/ThreadActionsUi.kt::Custom date and time…
+com/tajchert/trefoil/ui/ThreadActionsUi.kt::For one hour
+com/tajchert/trefoil/ui/ThreadActionsUi.kt::In one week
+com/tajchert/trefoil/ui/ThreadActionsUi.kt::Rename thread
+com/tajchert/trefoil/ui/ThreadActionsUi.kt::Snooze thread
+com/tajchert/trefoil/ui/ThreadActionsUi.kt::Snooze…
+com/tajchert/trefoil/ui/ThreadActionsUi.kt::Thread actions
+com/tajchert/trefoil/ui/ThreadActionsUi.kt::Thread actions for ${thread.title}
+com/tajchert/trefoil/ui/ThreadActionsUi.kt::Tomorrow at 9 AM
+com/tajchert/trefoil/ui/ThreadAgentsSheet.kt::No agents in this turn.
+com/tajchert/trefoil/ui/ThreadAgentsSheet.kt::Stop agent?
+com/tajchert/trefoil/ui/ThreadAttention.kt::${announce.size} threads need you
+com/tajchert/trefoil/ui/ThreadAttention.kt::Back to threads
+com/tajchert/trefoil/ui/ThreadAttention.kt::Back to threads, $otherNeedsYou threads need you
+com/tajchert/trefoil/ui/ThreadAttention.kt::Back to threads, 1 thread needs you
+com/tajchert/trefoil/ui/ThreadAttention.kt::Untitled conversation
+com/tajchert/trefoil/ui/ThreadListParts.kt::Без названия
+com/tajchert/trefoil/ui/ThreadListParts.kt::Вид проекта
+com/tajchert/trefoil/ui/ThreadListParts.kt::Все
+com/tajchert/trefoil/ui/ThreadListParts.kt::Все проекты
+com/tajchert/trefoil/ui/ThreadListParts.kt::Действия для ${thread.title}
+com/tajchert/trefoil/ui/ThreadListParts.kt::Действия с тредом
+com/tajchert/trefoil/ui/ThreadListParts.kt::Загрузка тредов
+com/tajchert/trefoil/ui/ThreadListParts.kt::Закрепить проект
+com/tajchert/trefoil/ui/ThreadListParts.kt::Закреплённый проект
+com/tajchert/trefoil/ui/ThreadListParts.kt::Закрыть поиск
+com/tajchert/trefoil/ui/ThreadListParts.kt::Здесь начнётся ваша следующая идея
+com/tajchert/trefoil/ui/ThreadListParts.kt::Иконка и цвет
+com/tajchert/trefoil/ui/ThreadListParts.kt::К проекту
+com/tajchert/trefoil/ui/ThreadListParts.kt::Меню
+com/tajchert/trefoil/ui/ThreadListParts.kt::Меню навигации
+com/tajchert/trefoil/ui/ThreadListParts.kt::Меню приложения
+com/tajchert/trefoil/ui/ThreadListParts.kt::Меню проекта
+com/tajchert/trefoil/ui/ThreadListParts.kt::Начните тред в одном из своих проектов.
+com/tajchert/trefoil/ui/ThreadListParts.kt::Ничего не найдено
+com/tajchert/trefoil/ui/ThreadListParts.kt::Новый тред
+com/tajchert/trefoil/ui/ThreadListParts.kt::Нужен ответ
+com/tajchert/trefoil/ui/ThreadListParts.kt::Открепить проект
+com/tajchert/trefoil/ui/ThreadListParts.kt::Открыть навигацию
+com/tajchert/trefoil/ui/ThreadListParts.kt::Открыть тред
+com/tajchert/trefoil/ui/ThreadListParts.kt::Открыть черновик
+com/tajchert/trefoil/ui/ThreadListParts.kt::Очистить поиск
+com/tajchert/trefoil/ui/ThreadListParts.kt::Поиск
+com/tajchert/trefoil/ui/ThreadListParts.kt::Поиск тредов
+com/tajchert/trefoil/ui/ThreadListParts.kt::Попробуйте другое название, проект или фильтр.
+com/tajchert/trefoil/ui/ThreadListParts.kt::Проект
+com/tajchert/trefoil/ui/ThreadListParts.kt::Проект ${group.title}
+com/tajchert/trefoil/ui/ThreadListParts.kt::Работает
+com/tajchert/trefoil/ui/ThreadListParts.kt::Развернуть проект
+com/tajchert/trefoil/ui/ThreadListParts.kt::Развёрнуто
+com/tajchert/trefoil/ui/ThreadListParts.kt::Раздел $title
+com/tajchert/trefoil/ui/ThreadListParts.kt::Свернуть проект
+com/tajchert/trefoil/ui/ThreadListParts.kt::Свёрнуто
+com/tajchert/trefoil/ui/ThreadListParts.kt::Скрыть список тредов
+com/tajchert/trefoil/ui/ThreadListParts.kt::Треды
+com/tajchert/trefoil/ui/ThreadListParts.kt::Удалить черновик
+com/tajchert/trefoil/ui/ThreadListParts.kt::Черновик
+com/tajchert/trefoil/ui/ThreadListParts.kt::Черновик без названия
+com/tajchert/trefoil/ui/ThreadListParts.kt::Черновик в ${project.title}: $title
+com/tajchert/trefoil/ui/ThreadListParts.kt::Черновик: $firstLine
+com/tajchert/trefoil/ui/ThreadListUi.kt::Needs approval
+com/tajchert/trefoil/ui/ThreadListUi.kt::Needs attention
+com/tajchert/trefoil/ui/ThreadListUi.kt::Needs input
+com/tajchert/trefoil/ui/ThreadListUi.kt::Needs you
+com/tajchert/trefoil/ui/ThreadListUi.kt::draft:${(draft.key as ComposerDraftKey.NewThread).projectId}
+com/tajchert/trefoil/ui/ThreadListUi.kt::Черновики
+com/tajchert/trefoil/ui/TrefoilApp.kt::${state.environment?.id}:${if (draft != null) draftComposerKey(draft) else state.selectedThreadId}
+com/tajchert/trefoil/ui/TrefoilApp.kt::Add environment
+com/tajchert/trefoil/ui/TrefoilApp.kt::Connect over SSH
+com/tajchert/trefoil/ui/TrefoilApp.kt::Dock beside thread
+com/tajchert/trefoil/ui/TrefoilApp.kt::Draft discarded
+com/tajchert/trefoil/ui/TrefoilApp.kt::New thread
+com/tajchert/trefoil/ui/TrefoilApp.kt::Pair with link
+com/tajchert/trefoil/ui/TrefoilApp.kt::Subagent of ${it.title}
+com/tajchert/trefoil/ui/TrefoilApp.kt::Thread list
+com/tajchert/trefoil/ui/TrefoilApp.kt::Thread settled
+com/tajchert/trefoil/ui/UsagePresentation.kt::$subject checked $first min ago
+com/tajchert/trefoil/ui/UsagePresentation.kt::$subject checked just now
+com/tajchert/trefoil/ui/UsagePresentation.kt::All limits
+com/tajchert/trefoil/ui/UsagePresentation.kt::Checked $it min ago
+com/tajchert/trefoil/ui/UsagePresentation.kt::EEE, MMM d
+com/tajchert/trefoil/ui/UsagePresentation.kt::Limit reached
+com/tajchert/trefoil/ui/UsagePresentation.kt::MMM d
+com/tajchert/trefoil/ui/UsagePresentation.kt::Offline · showing last known data
+com/tajchert/trefoil/ui/UsagePresentation.kt::Resets momentarily
+com/tajchert/trefoil/ui/UsagePresentation.kt::Usage can't be read on this connection · showing last known data
+com/tajchert/trefoil/ui/UsagePresentation.kt::ahead of pace
+com/tajchert/trefoil/ui/UsagePresentation.kt::on pace
+com/tajchert/trefoil/ui/UsagePresentation.kt::resets in ${formatUsageDuration(reset - now)}
+com/tajchert/trefoil/ui/UsagePresentation.kt::resets now
+com/tajchert/trefoil/ui/UsagePresentation.kt::under pace
+com/tajchert/trefoil/ui/UsageScreen.kt::Tap a bar to see a day's ${if (cost) 
+com/tajchert/trefoil/ui/WorkLogPresentation.kt:: + t3FailureFlag)\n/** The flag as the last key of the envelope: closed by the final brace, or by the embedded envelope's brace before `
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::$n ${if (n == 1) one else many}
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::${if (completed.isNotEmpty()) past else 
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::) ?: text, depth + 1)\n        }\n        is JsonObject -> (value[
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::)\n            t3ResultFailed((text as? JsonObject)?.get(
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::)\n\nprivate fun t3ResultFailed(value: JsonElement?, depth: Int): Boolean {\n    if (value == null || depth > 4) return false\n    return when (value) {\n        is JsonPrimitive -> value.isString && runCatching { Json.parseToJsonElement(value.content) }.getOrNull()?.let { t3ResultFailed(it, depth + 1) } == true\n        is JsonArray -> value.any { block ->\n            val record = block as? JsonObject\n            val text = record?.get(
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::)\nprivate val markdownEmphasis = Regex(
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::)\nprivate val markdownLink = Regex(
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::)\nprivate val markdownListMarker = Regex(
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::)\nprivate val sentenceEnd = Regex(
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::)\nprivate val whitespace = Regex(
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::, RegexOption.MULTILINE)\nprivate val markdownCodeBoldStrike = Regex(
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Choose|Choosing|Chose|an option in the preview browser
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Click|Clicking|Clicked|in the preview browser
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Close|Closing|Closed|a device
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Close|Closing|Closed|a preview tab
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Declined to ${tool.verb.lowercase()}
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Drag|Dragging|Dragged|in the preview browser
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Evaluate|Evaluating|Evaluated|script in the preview browser
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Failed to ${tool.verb.lowercase()}
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::File change
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Get|Getting|Got|preview browser status
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::HTML page
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::HTML pages
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Hover|Hovering|Hovered|in the preview browser
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::List|Listing|Listed|preview tabs
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::List|Listing|Listed|simulators and emulators
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Navigate|Navigating|Navigated|the preview browser
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Open|Opening|Opened|a device in the Device panel
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Open|Opening|Opened|a page in the preview browser
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Performed $remaining other ${if (remaining == 1) 
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Press|Pressing|Pressed|a key in the preview browser
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Preview|Previewing|Previewed|an HTML page
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Read file
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Render|Rendering|Rendered|an HTML page
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Resize|Resizing|Resized|the preview browser
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Respond|Responding|Responded|to a preview browser dialog
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Scroll|Scrolling|Scrolled|the preview browser
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Searched code ${count(entries.size, 
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Searched files
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Searched the web ${count(entries.size, 
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Set|Setting|Set|preview browser appearance
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Start|Starting|Started|recording the preview browser
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Stop|Stopping|Stopped|recording the preview browser
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Take a screenshot of|Taking a screenshot of|Took a screenshot of|the device
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Take a snapshot of|Taking a snapshot of|Took a snapshot of|the preview page
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Type|Typing|Typed|in the preview browser
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Upload|Uploading|Uploaded|files to the preview browser
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Use|Using|Used|the preview browser
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Wait|Waiting|Waited|for the preview page
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::Web search
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::] !is JsonNull) ||\n            t3ResultFailed(value[
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::], depth + 1)\n    }\n}\n\n// endregion\n\n// region Thought preview\n\nprivate const val maxThoughtSource = 4_000\nprivate val thoughtHeading = Regex(
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::^(?:read|read_file|read file)$
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::because it does not exist
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::cannot find path
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::device controls ${count(selected.size, 
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::enoent|no such|no files found|not found|commandnotfound|not recognized|cannot (?:find path|be found)|exit
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::exit code\s*[:\s]\s*[1-9]\d*\b
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::exit(?:ed)? with exit code\s+[1-9]\d*
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::file not found|no files found|enoent|no such file|commandnotfoundexception|command not found|is not recognized as the name of a cmdlet|a parameter cannot be found that matches parameter name
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::is not recognized
+com/tajchert/trefoil/ui/WorkLogPresentation.kt::the term '
+com/tajchert/trefoil/ui/adaptive/TwoPane.kt::Hide pane
+com/tajchert/trefoil/ui/adaptive/TwoPane.kt::Reset width
+com/tajchert/trefoil/ui/adaptive/TwoPane.kt::Resize panes
+com/tajchert/trefoil/ui/adaptive/TwoPane.kt::TfTwoPane needs a bounded width; do not place it in a horizontally scrolling parent
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderCard.kt::Open full screen
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderCard.kt::Open “${reference.title}” full screen
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderCard.kt::Reconnect to load “${reference.title}”
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderCard.kt::Unable to load “${reference.title}”
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderCard.kt::“${reference.title}” is too large to preview
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderSubresources.kt::Bad Gateway
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderSubresources.kt::Blocked host
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderSubresources.kt::Blocked peer
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderSubresources.kt::Gate closed
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderSubresources.kt::Non-public address
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderTheme.kt::-apple-system, BlinkMacSystemFont, \"Segoe UI\", system-ui, sans-serif
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderTheme.kt::\"SF Mono\", \"SFMono-Regular\", Menlo, Consolas, \"Liberation Mono\", monospace
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderWebView.kt::(function(){var n=['RTCPeerConnection','webkitRTCPeerConnection','WebTransport','caches'];
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderWebView.kt::<script>(function(){var p=window.$HTML_RENDER_BRIDGE,h;if(!p||!p.postMessage)return;
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderWebView.kt::Legacy callback remains blocked
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderWebView.kt::connect-src https: data: blob:; form-action 'none'; object-src 'none'; 
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderWebView.kt::frame-src 'none'; child-src 'none'; worker-src 'none'; sandbox allow-scripts
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderWebView.kt::function l(w){if(w)for(var i=0;i<n.length;i++){try{Object.defineProperty(w,n[i],{value:undefined,writable:false,enumerable:false,configurable:false});}catch(e){}}return w;}
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderWebView.kt::function z(){var r=document.documentElement,v=Math.ceil(r.scrollHeight>r.clientHeight?r.scrollHeight:r.getBoundingClientRect().height);
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderWebView.kt::if(d&&d.get&&d.configurable)Object.defineProperty(p,'contentDocument',{get:function(){var x=d.get.call(this);if(x)l(x.defaultView);return x;},enumerable:d.enumerable,configurable:false});})();
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderWebView.kt::if(w&&w.get&&w.configurable)Object.defineProperty(p,'contentWindow',{get:function(){return l(w.get.call(this));},enumerable:w.enumerable,configurable:false});
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderWebView.kt::if(window.ResizeObserver){var o=new ResizeObserver(z);o.observe(document.documentElement);if(document.body)o.observe(document.body);}
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderWebView.kt::l(window);var p=window.HTMLIFrameElement&&HTMLIFrameElement.prototype;if(!p)return;
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderWebView.kt::not an html render document
+com/tajchert/trefoil/ui/htmlrender/HtmlRenderWebView.kt::var w=Object.getOwnPropertyDescriptor(p,'contentWindow'),d=Object.getOwnPropertyDescriptor(p,'contentDocument');
+com/tajchert/trefoil/ui/ports/PortForwardCoordinator.kt::$holdMinutes minutes. Turn on Keep connected in background to remove this limit.
+com/tajchert/trefoil/ui/ports/PortForwardCoordinator.kt::$holdMinutes-min browser limit ended ${ports(list)}; Keep connected in background lifts it.
+com/tajchert/trefoil/ui/ports/PortForwardCoordinator.kt::${ports(list)} stopped because the connection to the machine ended.
+com/tajchert/trefoil/ui/ports/PortForwardCoordinator.kt::${ports(list)} stopped in the background: Trefoil keeps a forward opened in your browser connected for 
+com/tajchert/trefoil/ui/ports/PortForwardCoordinator.kt::Browser tunnels are turned off on this T3 server.
+com/tajchert/trefoil/ui/ports/PortForwardCoordinator.kt::Choose a port from 1 to 65535.
+com/tajchert/trefoil/ui/ports/PortForwardCoordinator.kt::Connection ended: ${ports(list)} stopped in your browser.
+com/tajchert/trefoil/ui/ports/PortForwardCoordinator.kt::Could not forward port $port. Check the connection and try again.
+com/tajchert/trefoil/ui/ports/PortForwardCoordinator.kt::Could not forward the port. Check the connection and try again.
+com/tajchert/trefoil/ui/ports/PortForwardCoordinator.kt::Could not stop the forward for port $port.
+com/tajchert/trefoil/ui/ports/PortForwardCoordinator.kt::Forward failed: ${ports(list)} stopped in your browser.
+com/tajchert/trefoil/ui/ports/PortForwardCoordinator.kt::No free port on this device to forward to.
+com/tajchert/trefoil/ui/ports/PortForwardCoordinator.kt::Not authorized to open tunnels. Reconnect this machine.
+com/tajchert/trefoil/ui/ports/PortForwardCoordinator.kt::Open $them again to keep using $them in your browser.
+com/tajchert/trefoil/ui/ports/PortForwardCoordinator.kt::Reconnect with write access to open dev servers.
+com/tajchert/trefoil/ui/ports/PortForwardCoordinator.kt::The forward for port ${list[0]}
+com/tajchert/trefoil/ui/ports/PortForwardCoordinator.kt::The forwards for ports ${list.joinToString(
+com/tajchert/trefoil/ui/ports/PortForwardCoordinator.kt::This T3 server is too old for port forwarding.
+com/tajchert/trefoil/ui/ports/TunnelBrowserScreen.kt::Legacy callback stays blocked
+com/tajchert/trefoil/ui/screens/ScreenSessionCoordinator.kt::Could not open this screen. Refresh sessions or reconnect, then try again.
+com/tajchert/trefoil/ui/screens/ScreenSessionCoordinator.kt::Could not refresh screen sessions. Reconnect and try again.
+com/tajchert/trefoil/ui/screens/ScreenSessionCoordinator.kt::Screen session changed. Refresh sessions and try again.
+com/tajchert/trefoil/ui/screens/StreamDocument.kt::<!doctype html><html><head><meta http-equiv=
+com/tajchert/trefoil/ui/screens/StreamDocument.kt::><meta name=
+com/tajchert/trefoil/ui/screens/StreamDocument.kt::><style>$css</style></head><body><script nonce=
+com/tajchert/trefoil/ui/screens/StreamDocument.kt::Video decoder restarted.
+com/tajchert/trefoil/ui/screens/StreamDocument.kt::\n      (() => {\n        let streaming=false, input=false, control=false;\n        const interactive=$interactive;\n        window.__trefoilCanInput=()=>interactive&&streaming&&${if (browser) 
+com/tajchert/trefoil/ui/screens/StreamDocument.kt::html,body{height:100%;overflow:hidden;margin:0;background:#101014}body>div{position:fixed;inset:0;overflow:hidden}canvas,video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}canvas{touch-action:none;user-select:none;-webkit-user-select:none}video{pointer-events:none}textarea{position:fixed;left:0;top:0;width:1px;height:1px;padding:0;margin:-1px;border:0;overflow:hidden;clip:rect(0,0,0,0);font-size:16px}.agent-cursor{position:absolute;left:0;top:0;width:20px;height:20px;pointer-events:none;opacity:0}.agent-cursor svg{position:relative;display:block}
+com/tajchert/trefoil/ui/screens/StreamDocument.kt::img-src $httpOrigin blob: data:; media-src $httpOrigin blob:; 
+com/tajchert/trefoil/ui/screens/StreamDocument.kt::};\n        window.ReactNativeWebView=Object.freeze({postMessage(value){\n          try { const m=JSON.parse(value);\n            if(m.type==='status'){streaming=m.status==='streaming';if(!streaming){input=false;control=false;}}\n            if(m.type==='input')input=m.connected===true;\n            if(m.type==='control')control=m.canOperate===true&&m.controller==='you';\n          } catch(_) {return;}\n          window.$bridgeName.postMessage(value);\n        }});\n        for(const name of ['pointerdown','pointermove','pointerup','pointercancel','keydown','keyup','beforeinput','input','compositionend','wheel']){\n          window.addEventListener(name,event=>{if(!window.__trefoilCanInput()){event.preventDefault();event.stopImmediatePropagation();}},true);\n        }\n        // ICE may contain arbitrary STUN/TURN addresses. Only the pinned HTTP/WS media transports\n        // are admitted by Trefoil's shared endpoint policy; do not open an ICE side channel.\n        Object.defineProperty(window,'RTCPeerConnection',{value:undefined,configurable:false});\n        const failed=()=>window.ReactNativeWebView.postMessage(JSON.stringify({type:'status',status:'error'}));\n        window.addEventListener('error',failed);window.addEventListener('unhandledrejection',failed);\n        window.__trefoilStop=()=>{streaming=input=control=false;window.$viewer?.stop();};\n      })();\n    
+com/tajchert/trefoil/ui/screens/StreamWebView.kt::Device stream unavailable. Update Android System WebView and use an HTTP/WebSocket stream; WebRTC-only hosts are not supported.
+com/tajchert/trefoil/ui/screens/StreamWebView.kt::Legacy callback remains blocked
+com/tajchert/trefoil/ui/screens/StreamWebView.kt::Screen viewer stopped. Reconnect to try again.
+com/tajchert/trefoil/ui/screens/StreamWebView.kt::Video decoding failed. Reconnect to try again, or update Android System WebView.
+com/tajchert/trefoil/ui/shell/BrandPanel.kt::Connect a machine to start
+com/tajchert/trefoil/ui/shell/EmptyDetail.kt::$needsYou threads need you
+com/tajchert/trefoil/ui/shell/EmptyDetail.kt::1 thread needs you
+com/tajchert/trefoil/ui/shell/EmptyDetail.kt::Choose a thread from the list, or start a new one.
+com/tajchert/trefoil/ui/shell/EmptyDetail.kt::New thread
+com/tajchert/trefoil/ui/shell/EmptyDetail.kt::Pick a thread
+com/tajchert/trefoil/ui/shell/HeaderBudget.kt::Dev servers (${ports.size})
+com/tajchert/trefoil/ui/shell/HeaderBudget.kt::Dev servers (:${ports[0]})
+com/tajchert/trefoil/ui/shell/ShellNavigation.kt::$it forwarded
+com/tajchert/trefoil/ui/shell/ShellNavigation.kt::$it need you
+com/tajchert/trefoil/ui/shell/ShellNavigation.kt::Настройки
+com/tajchert/trefoil/ui/shell/ShellPanes.kt::Resize thread list
+com/tajchert/trefoil/ui/shell/ShellPanes.kt::Side panel divider
+com/tajchert/trefoil/ui/shell/ShellPanes.kt::Thread list divider
+com/tajchert/trefoil/ui/shell/Shortcuts.kt::Keyboard shortcuts
+com/tajchert/trefoil/widget/UsageWidgetFormat.kt::just now
+com/tajchert/trefoil/widget/UsageWidgetSamples.kt::Opus weekly
+com/tajchert/trefoil/widget/UsageWidgetSync.kt::Could not refresh usage.
+com/tajchert/trefoil/widget/UsageWidgetWorker.kt::Could not refresh usage.
+com/tajchert/trefoil/widget/UsageWidgetWorker.kt::Open Trefoil to refresh this machine.
+com/tajchert/trefoil/widget/UsageWidgetWorker.kt::Usage refresh timed out.
+com/tajchert/trefoil/widget/WidgetChrome.kt::Open Trefoil to connect a machine
+com/tajchert/trefoil/widget/WidgetChrome.kt::Refresh usage
+com/tajchert/trefoil/widget/limits/LimitBarsWidget.kt::Lowest limits
+com/tajchert/trefoil/widget/limits/LimitBarsWidget.kt::No provider limits reported
+com/tajchert/trefoil/widget/limits/LimitBarsWidget.kt::Reset since last check
+com/tajchert/trefoil/widget/limits/LimitRingsWidget.kt::+$more more
+com/tajchert/trefoil/widget/limits/LimitRingsWidget.kt::Lowest limits
+com/tajchert/trefoil/widget/limits/LimitRingsWidget.kt::No provider limits reported
+com/tajchert/trefoil/widget/limits/LimitRingsWidget.kt::Open Trefoil to see usage limits
+com/tajchert/trefoil/widget/limits/LimitRingsWidget.kt::Reset since last check
+com/tajchert/trefoil/widget/limits/LimitWidgetPresentation.kt::Limits not available
+com/tajchert/trefoil/widget/limits/LimitWidgetPresentation.kt::No subscription limits
+com/tajchert/trefoil/widget/limits/LimitWidgetPresentation.kt::Reset since last check
+com/tajchert/trefoil/widget/limits/LimitWidgetPresentation.kt::Reset time unavailable
+com/tajchert/trefoil/widget/limits/LimitWidgetPresentation.kt::resets in 
+com/tajchert/trefoil/widget/usage/UsageWidgetContent.kt::$tokens tokens
+com/tajchert/trefoil/widget/usage/UsageWidgetContent.kt::${report.unpricedRecords} unpriced records · cost may be incomplete
+com/tajchert/trefoil/widget/usage/UsageWidgetContent.kt::Cache saved ${formatUsageUsd(report.cacheSavingsUsd)} · 30 days
+com/tajchert/trefoil/widget/usage/UsageWidgetContent.kt::Model pricing unavailable
+com/tajchert/trefoil/widget/usage/UsageWidgetContent.kt::No daily usage yet
+com/tajchert/trefoil/widget/usage/UsageWidgetContent.kt::No data yet for ${range.label.lowercase()}
+com/tajchert/trefoil/widget/usage/UsageWidgetContent.kt::No usage reported yet
+com/tajchert/trefoil/widget/usage/UsageWidgetContent.kt::Top model · ${it.model ?: it.provider}
+com/tajchert/trefoil/widget/usage/UsageWidgetContent.kt::Top provider · ${usageProviderLabel(it.provider)}
+com/tajchert/trefoil/widget/usage/UsageWidgetContent.kt::Top usage
+com/tajchert/trefoil/widget/usage/UsageWidgetContent.kt::Top usage · ${range.label}
+com/tajchert/trefoil/widget/usage/UsageWidgetContent.kt::est. · $tokens tok
+com/tajchert/trefoil/widget/usage/UsageWidgetContent.kt::est. · $tokens tokens

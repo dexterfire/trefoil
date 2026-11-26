@@ -26,12 +26,13 @@ private const val NIGHT = Configuration.UI_MODE_NIGHT_YES
 @Composable
 private fun Pane(state: ClientState, dark: Boolean = false, compactHeight: Boolean = false, drafts: ComposerDraftUi = ComposerDraftUi()) {
     TrefoilTheme(darkTheme = dark) {
+        WithRuLocale {
         CompositionLocalProvider(LocalFixedClock provides fx.now, LocalCompactHeight provides compactHeight) {
             Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                 Conversation(state, send = {}, interrupt = {}, respond = { _, _, _ -> }, onBack = {}, onOpenAgents = null, onOpenThread = {}, composerDrafts = drafts)
             }
         }
-    }
+            }
 }
 
 private const val MULTILINE = "Use the existing helper instead of adding a new one.\nKeep the public signature as it is.\nAnd add a test for the empty case."

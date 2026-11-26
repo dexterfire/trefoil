@@ -50,7 +50,8 @@ object ConversationFixtures {
         @Preview(showBackground = true)
         @Composable
         fun ThreadList_Populated_Light() {
-            TrefoilTheme(darkTheme = false) { ThreadList(state) }
+            TrefoilTheme(darkTheme = false) {
+        WithRuLocale { ThreadList(state)         }
         }
         ```
 

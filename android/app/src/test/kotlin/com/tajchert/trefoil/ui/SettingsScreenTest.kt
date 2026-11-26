@@ -10,6 +10,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import com.tajchert.trefoil.R
+import com.tajchert.trefoil.testString
 import com.tajchert.trefoil.core.model.*
 import com.tajchert.trefoil.ui.theme.ThemeFamily
 import org.junit.Assert.*
@@ -168,20 +170,20 @@ class SettingsScreenTest {
     @Test fun overflowMenuOpensSettingsAndBackReturnsToTheList() {
         compose.setContent { TestApp(AppPreferences()) }
         overflowMenu().performClick()
-        compose.onNodeWithText("Настройки").performClick()
+        compose.onNodeWithText(testString(R.string.settings)).performClick()
         compose.waitForIdle()
-        compose.onNodeWithText("Настройки").assertExists()
+        compose.onNodeWithText(testString(R.string.settings)).assertExists()
         compose.onNodeWithText("ЗАКРЕПЛЁННЫЕ ПРОЕКТЫ").assertExists()
         compose.onNodeWithText("ОСТАЛЬНЫЕ ПРОЕКТЫ").assertExists()
         systemBackToTheList()
-        compose.onNodeWithText("Настройки").assertDoesNotExist()
+        compose.onNodeWithText(testString(R.string.settings)).assertDoesNotExist()
     }
 
     @Test @Config(sdk = [35], qualifiers = "w700dp-h900dp") fun drawerOffersTheSettingsEntry() {
         compose.setContent { TestApp(AppPreferences()) }
         compose.onNodeWithContentDescription("Открыть навигацию").performClick()
         compose.waitForIdle()
-        compose.onNodeWithText("Настройки").performClick()
+        compose.onNodeWithText(testString(R.string.settings)).performClick()
         compose.waitForIdle()
         compose.onNodeWithText("ЗАКРЕПЛЁННЫЕ ПРОЕКТЫ").assertExists()
         compose.onNodeWithText("ОСТАЛЬНЫЕ ПРОЕКТЫ").assertExists()
@@ -191,7 +193,7 @@ class SettingsScreenTest {
         val preferences = mutableStateOf(AppPreferences())
         compose.setContent { TestApp(preferences.value) { preferences.value = it(preferences.value) } }
         // A phone width keeps the header and the list's own New action.
-        compose.onNodeWithContentDescription("Сменить машину").assertExists()
+        compose.onNodeWithContentDescription(testString(R.string.machine_switch)).assertExists()
         compose.onNodeWithContentDescription("Новый тред").assertExists()
         compose.onNodeWithContentDescription("New thread").assertDoesNotExist()
         compose.runOnIdle { preferences.value = AppPreferences(forceRail = true) }
@@ -199,7 +201,7 @@ class SettingsScreenTest {
         // The rail is the real one for the window, not a drawing of it: same New thread control and no list FAB.
         compose.onNodeWithContentDescription("New thread").assertExists()
         compose.onNodeWithContentDescription("Новый тред").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Сменить машину").assertDoesNotExist()
+        compose.onNodeWithContentDescription(testString(R.string.machine_switch)).assertDoesNotExist()
     }
 
     @Test fun forcedWidthSwitchesTheLayoutToTwoPanes() {

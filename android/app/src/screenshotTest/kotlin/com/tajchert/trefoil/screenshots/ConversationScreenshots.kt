@@ -44,10 +44,11 @@ private val fx = ConversationFixtures
 @Composable
 private fun Frame(dark: Boolean = false, content: @Composable () -> Unit) {
     TrefoilTheme(darkTheme = dark) {
+        WithRuLocale {
         CompositionLocalProvider(LocalFixedClock provides fx.now) {
             Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.background) { content() }
         }
-    }
+            }
 }
 
 @Composable
@@ -280,10 +281,11 @@ fun AgentsChip_Light() {
 private fun AgentsSheet(dark: Boolean) {
     val rows = agentRows(fx.roster(), providers = emptyList(), models = listOf(fx.model), now = 0L, canWrite = true)
     TrefoilTheme(darkTheme = dark) {
+        WithRuLocale {
         Surface(Modifier.fillMaxWidth(), color = com.tajchert.trefoil.ui.Tf.colors.sheet) {
             ThreadAgentsSheetContent(rows, onOpen = {}, onStop = {})
         }
-    }
+            }
 }
 
 @PreviewTest

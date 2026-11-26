@@ -8,8 +8,11 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.ScreenRotation
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.tajchert.trefoil.R
 import com.tajchert.trefoil.core.model.ScreenTarget
 import com.tajchert.trefoil.ui.adaptive.AdaptiveSpec
 import com.tajchert.trefoil.ui.adaptive.Fold
@@ -63,23 +66,27 @@ private fun hingeSplit(fold: Fold, from: Float, to: Float): HingeSplit? {
     return if (first >= MinSplitPartDp && second >= MinSplitPartDp) HingeSplit(first, fold.end - fold.start, second) else null
 }
 
-/** What the viewer's status line says today; the same text in every layout. */
+/** What the viewer's status line says today; the same text in every layout. Composable so it reads string resources. */
+@Composable
 internal fun viewerStatusText(connected: Boolean, canInput: Boolean, status: StreamViewerStatus): String =
-    if (!connected) "Disconnected" else if (canInput) "Live · controls connected" else if (status.phase == StreamPhase.Streaming) "Live · view only" else "${status.phase}"
+    if (!connected) stringResource(R.string.viewer_disconnected)
+    else if (canInput) stringResource(R.string.viewer_live_controls)
+    else if (status.phase == StreamPhase.Streaming) stringResource(R.string.viewer_live_view_only)
+    else "${status.phase}"
 
-/** Every control the screen shows for a target, in order. [description] is the accessibility label, [label] the short caption. */
-internal enum class ScreenControl(val description: String, val label: String, val icon: ImageVector?) {
-    DeviceBack("Device back", "Back", Icons.AutoMirrored.Filled.ArrowBack),
-    DeviceHome("Device home", "Home", Icons.Default.Home),
-    DeviceAppSwitcher("Device app switcher", "App switcher", Icons.Default.Apps),
-    DeviceRotate("Rotate remote device", "Rotate", Icons.Default.ScreenRotation),
-    DeviceType("Type on remote device", "Type", Icons.Default.Keyboard),
-    BrowserBack("Browser back", "Back", Icons.AutoMirrored.Filled.ArrowBack),
-    BrowserForward("Browser forward", "Forward", Icons.AutoMirrored.Filled.ArrowForward),
-    BrowserReload("Reload remote page", "Reload", Icons.Default.Refresh),
-    BrowserType("Type on remote browser", "Type", Icons.Default.Keyboard),
-    Release("Release", "Release", null),
-    TakeControl("Take control", "Take control", null);
+/** Every control the screen shows for a target, in order. [descriptionRes] is the accessibility label, [labelRes] the short caption. */
+internal enum class ScreenControl(@androidx.annotation.StringRes val descriptionRes: Int, @androidx.annotation.StringRes val labelRes: Int, val icon: ImageVector?) {
+    DeviceBack(R.string.screen_device_back, R.string.back, Icons.AutoMirrored.Filled.ArrowBack),
+    DeviceHome(R.string.screen_device_home, R.string.screen_home, Icons.Default.Home),
+    DeviceAppSwitcher(R.string.screen_device_app_switcher, R.string.screen_app_switcher, Icons.Default.Apps),
+    DeviceRotate(R.string.screen_device_rotate, R.string.screen_rotate, Icons.Default.ScreenRotation),
+    DeviceType(R.string.screen_device_type, R.string.screen_type, Icons.Default.Keyboard),
+    BrowserBack(R.string.screen_browser_back, R.string.back, Icons.AutoMirrored.Filled.ArrowBack),
+    BrowserForward(R.string.screen_browser_forward, R.string.screen_forward, Icons.AutoMirrored.Filled.ArrowForward),
+    BrowserReload(R.string.screen_browser_reload, R.string.screen_reload, Icons.Default.Refresh),
+    BrowserType(R.string.screen_browser_type, R.string.screen_type, Icons.Default.Keyboard),
+    Release(R.string.screen_release, R.string.screen_release_short, null),
+    TakeControl(R.string.screen_take_control, R.string.screen_take_control_short, null);
 
     val isType: Boolean get() = this == DeviceType || this == BrowserType
 
