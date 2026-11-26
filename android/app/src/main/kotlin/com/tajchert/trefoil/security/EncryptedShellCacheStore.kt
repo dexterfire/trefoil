@@ -12,6 +12,7 @@ import java.io.File
 import java.io.InputStream
 import java.io.FileNotFoundException
 import java.security.MessageDigest
+import java.security.SecureRandom
 import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
@@ -19,15 +20,21 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * AES-GCM sealing of shell cache files with the key [keys] loads. Every [seal] lets the cipher pick a fresh random nonce
- * (the Keystore requires randomized encryption), so a nonce is never reused; [aad] binds a file to its environment.
+ * AES-GCM sealing of shell cache files with the key [keys] loads. Every [seal] draws 12 fresh bytes from [nonceSource]
+ * (a process-wide [SecureRandom] in production, as the Keystore requires randomized encryption) and passes them as the
+ * GCM IV, so a nonce is never reused; [aad] binds a file to its environment.
  */
-internal class ShellCacheCipher(private val keys: ProcessKeyCache) {
-    fun seal(plaintext: ByteArray, aad: ByteArray): ByteArray {
+internal class ShellCacheCipher(
+    private val keys: ProcessKeyCache,
+    /** A fresh 12-byte nonce per call; tests substitute a scripted source, production never does. */
+    private val nonceSource: () -> ByteArray = { ByteArray(NONCE_BYTES).also(RANDOM::nextBytes) },
+) {
+    fun seal(plaintext: ByteArray, aad: ByteArray): ByteArray = keys.use { key ->
+        val nonce = nonceSource()
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        keys.use { cipher.init(Cipher.ENCRYPT_MODE, it) }
+        cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(128, nonce))
         cipher.updateAAD(aad)
-        return SecretEnvelope.encode(cipher.iv, cipher.doFinal(plaintext))
+        SecretEnvelope.encode(nonce, cipher.doFinal(plaintext))
     }
 
     /** [IllegalArgumentException] for a malformed envelope and [AEADBadTagException] for a failed tag: both mean the file is corrupt. */
@@ -37,6 +44,12 @@ internal class ShellCacheCipher(private val keys: ProcessKeyCache) {
         keys.use { cipher.init(Cipher.DECRYPT_MODE, it, GCMParameterSpec(128, nonce)) }
         cipher.updateAAD(aad)
         return cipher.doFinal(encrypted)
+    }
+
+    private companion object {
+        /** One thread-safe instance per process: every seal still draws from the platform CSPRNG. */
+        const val NONCE_BYTES = 12
+        val RANDOM = SecureRandom()
     }
 }
 

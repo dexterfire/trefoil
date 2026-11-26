@@ -64,11 +64,31 @@ class EncryptedShellCacheStoreTest {
     }
 
     @Test fun everyWriteUsesAFreshNonce() = test {
-        store.put(shell)
-        val first = entryFile().readBytes()
-        store.put(shell.copy(savedAtMillis = 2_001))
-        val second = entryFile().readBytes()
-        assertFalse(first.copyOfRange(1, 13).contentEquals(second.copyOfRange(1, 13)))
+        // Not the platform PRNG: the cipher must draw a new nonce for every seal, and the envelope must carry it.
+        // Production draws these bytes from SecureRandom; the source is scripted here so the check is deterministic.
+        //
+        // A second write over the same entry cannot be exercised under Robolectric on Windows: AtomicFile's rename of
+        // the finished .new file over an existing base fails there, the store reports that write as uncommitted and
+        // keeps the old file (aWriteWhoseRenameFailedIsNotCommitted covers that path). The freshness invariant is
+        // therefore asserted where the nonce is produced: the cipher.
+        val drawn = mutableListOf<ByteArray>()
+        val scriptedCipher = ShellCacheCipher(keys) {
+            ByteArray(12) { index -> (drawn.size * 16 + index).toByte() }.also { drawn += it }
+        }
+        val scripted = EncryptedShellCacheStore(dir, scriptedCipher)
+        assertTrue("the first write commits", scripted.put(shell))
+        val stored = entryFile().readBytes()
+        assertEquals("one nonce per seal", 1, drawn.size)
+        assertArrayEquals(drawn[0], stored.copyOfRange(1, 13))
+
+        val aad = "trefoil.shell-cache.v1:env".encodeToByteArray()
+        val payload = ByteArray(32) { it.toByte() }
+        val one = scriptedCipher.seal(payload, aad)
+        val two = scriptedCipher.seal(payload, aad)
+        assertEquals("one nonce per seal", 3, drawn.size)
+        assertArrayEquals(drawn[1], one.copyOfRange(1, 13))
+        assertArrayEquals(drawn[2], two.copyOfRange(1, 13))
+        assertFalse("consecutive seals never share a nonce", drawn[1].contentEquals(drawn[2]))
     }
 
     @Test fun aWriteWhoseRenameFailedIsNotCommitted() = test {

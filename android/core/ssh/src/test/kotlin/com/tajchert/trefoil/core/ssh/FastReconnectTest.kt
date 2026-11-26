@@ -3,6 +3,7 @@ package com.tajchert.trefoil.core.ssh
 import com.tajchert.trefoil.core.model.SshAuthMethod
 import kotlinx.coroutines.*
 import org.junit.Assert.*
+import org.junit.Assume
 import org.junit.Test
 import java.io.File
 import java.io.IOException
@@ -14,6 +15,20 @@ class FastReconnectTest {
     private fun TunnelIntegrationTest.Fixture.saved() = input().copy(savedEnvironmentId = "fixture")
     private suspend fun TunnelIntegrationTest.Fixture.hostKey() =
         try { SshTunnelConnector().open(saved(), null); error("Missing trust rejection") } catch (e: SshHostKeyException) { e.presented }
+
+    /**
+     * The script is POSIX sh over a POSIX pid (`cat --`, `tr`, `grep -o`, `kill -0`): Windows has neither, so the check
+     * runs only where it is meaningful and is skipped there instead of failing. Linux, macOS and CI keep running it.
+     */
+    private fun hasPosixShell(): Boolean {
+        if (System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)) return false
+        return try {
+            val probe = ProcessBuilder("sh", "-c", "exit 0").redirectErrorStream(true).start()
+            val answered = try { probe.waitFor(5, TimeUnit.SECONDS) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); false }
+            if (!answered) probe.destroy()
+            answered && probe.exitValue() == 0
+        } catch (_: IOException) { false }
+    }
 
     @Test fun savedReconnectUsesOneExecAndNoExecutableLookup() = runBlocking {
         TunnelIntegrationTest.Fixture().use { fixture ->
@@ -153,6 +168,7 @@ class FastReconnectTest {
     }
 
     @Test(timeout = 30_000) fun runtimeReadScriptVerifiesTheSnapshotPidInRealShell() {
+        Assume.assumeTrue("No POSIX sh with POSIX pids on this machine", hasPosixShell())
         val live = ProcessHandle.current().pid()
         val dir = kotlin.io.path.createTempDirectory("runtime-read").toFile()
         try {
