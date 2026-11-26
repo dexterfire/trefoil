@@ -72,7 +72,7 @@ class ShellReviewFixesTest {
 
     @Test fun usageSitsInTheEndRegionBesideTheThreadList() {
         setApp(start = ShellStart(showUsage = true), fold = bookFold)
-        assertSides(compose.onNodeWithText("Fixture thread"), compose.onNodeWithText("Limits & usage"))
+        assertSides(compose.onNodeWithText("Fixture thread"), compose.onNodeWithText("Лимиты и использование"))
         assertNothingUnderTheHinge(bookFold, 673f)
     }
 
@@ -107,7 +107,7 @@ class ShellReviewFixesTest {
         setApp(start = ShellStart(showUsage = true), fold = fold)
         compose.onNodeWithContentDescription("Trefoil, show threads").assertExists()
         compose.onNodeWithContentDescription("Back").assertDoesNotExist()
-        assertSides(compose.onNodeWithText("Fixture thread"), compose.onNodeWithText("Limits & usage"), fold)
+        assertSides(compose.onNodeWithText("Fixture thread"), compose.onNodeWithText("Лимиты и использование"), fold)
         assertNothingUnderTheHinge(fold, 841f)
     }
 
@@ -115,14 +115,14 @@ class ShellReviewFixesTest {
         setApp(start = ShellStart(showUsage = true), fold = bookFold)
         compose.onNodeWithContentDescription("Back").assertExists()
         systemBack()
-        compose.onNodeWithText("Limits & usage").assertDoesNotExist()
+        compose.onNodeWithText("Лимиты и использование").assertDoesNotExist()
         compose.onNodeWithText("Pick a thread").assertExists()
     }
 
     @Test fun pickingAThreadInTheStartRegionGoesToThreadsWithThatThread() {
         setApp(start = ShellStart(showUsage = true), fold = bookFold)
         compose.onNodeWithText("Fixture thread").performClick()
-        compose.onNodeWithText("Limits & usage").assertDoesNotExist()
+        compose.onNodeWithText("Лимиты и использование").assertDoesNotExist()
         assertEquals(listOf("t"), selectedThreads)
     }
 
@@ -136,7 +136,7 @@ class ShellReviewFixesTest {
     @Test @Config(sdk = [35], qualifiers = "w1280dp-h800dp") fun aFlatWindowStillGivesTheDestinationTheWholeWidthBesideTheRail() {
         setApp(start = ShellStart(showUsage = true))
         compose.onNodeWithText("Fixture thread").assertDoesNotExist()
-        val usage = compose.onNodeWithText("Limits & usage").getUnclippedBoundsInRoot()
+        val usage = compose.onNodeWithText("Лимиты и использование").getUnclippedBoundsInRoot()
         assertTrue("usage starts at ${usage.left}", usage.left < 200.dp)
     }
 

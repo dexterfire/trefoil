@@ -120,7 +120,7 @@ internal val LimitNumberMinWidth = 340.dp
 internal val RouteIconMinWidth = 340.dp
 internal val CollapseMinWidth = 360.dp
 
-private fun limitChipTooltip(percent: Int?) = if (percent == null) "Лимиты и использование" else "Лимиты и использование · осталось $percent%"
+private fun limitChipTooltip(percent: Int?) = limitChipDescription(percent)
 
 /** Current machine: status dot + environment name + chevron. Opens Machines. */
 @Composable

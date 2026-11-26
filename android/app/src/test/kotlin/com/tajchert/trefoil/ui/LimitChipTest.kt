@@ -45,7 +45,7 @@ class LimitChipTest {
     }
 
     @Test fun descriptionNamesTheLowestLimitWhenKnown() {
-        assertEquals("Limits and usage, lowest limit 38% left", limitChipDescription(38))
-        assertEquals("Limits and usage", limitChipDescription(null))
+        assertEquals("Лимиты и использование · осталось 38%", limitChipDescription(38))
+        assertEquals("Лимиты и использование", limitChipDescription(null))
     }
 }

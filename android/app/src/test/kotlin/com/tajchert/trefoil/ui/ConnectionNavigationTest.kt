@@ -25,13 +25,13 @@ class ConnectionNavigationTest {
     private fun setApp(state: ClientState, onOpenUsage: () -> Unit) = compose.setContent {
         TrefoilApp(state, listOf(environment), { _, _, _ -> }, {}, {}, {}, {}, { _, _, _ -> }, null, {}, {}, {}, {}, {}, {}, {}, onOpenUsage = onOpenUsage)
     }
-    private fun limitChip() = compose.onNode(hasContentDescription("Limits and usage", substring = true) and hasClickAction())
+    private fun limitChip() = compose.onNode(hasContentDescription("Лимиты и использование", substring = true) and hasClickAction())
 
     @Test fun limitsAndUsageOpensFromOverflowMenu() {
         var opened = 0
         setApp(limited) { opened++ }
         compose.onNodeWithContentDescription("Меню").performClick()
-        compose.onNodeWithText("Limits & usage").performClick()
+        compose.onNodeWithText("Лимиты и использование").performClick()
         compose.onNodeWithText("Offline · showing last known data").assertDoesNotExist()
         compose.runOnIdle { assertEquals(1, opened) }
     }
@@ -39,22 +39,22 @@ class ConnectionNavigationTest {
     @Test fun limitChipShowsTightestLimitAndOpensTheScreen() {
         var opened = 0
         setApp(limited) { opened++ }
-        compose.onNodeWithContentDescription("Limits and usage, lowest limit 38% left").assertHasClickAction()
+        compose.onNodeWithContentDescription("Лимиты и использование · осталось 38%").assertHasClickAction()
         compose.onNodeWithText("38%").assertExists()
         limitChip().performClick()
-        compose.onNodeWithText("Limits & usage").assertExists()
+        compose.onNodeWithText("Лимиты и использование").assertExists()
         compose.runOnIdle { assertEquals(1, opened) }
     }
 
     @Test @Config(sdk = [35], qualifiers = "w320dp-h800dp") fun limitChipDropsItsNumberOnNarrowHeaders() {
         setApp(limited) {}
-        compose.onNodeWithContentDescription("Limits and usage, lowest limit 38% left").assertHasClickAction()
+        compose.onNodeWithContentDescription("Лимиты и использование · осталось 38%").assertHasClickAction()
         compose.onNodeWithText("38%").assertDoesNotExist()
     }
 
     @Test fun limitChipWithoutDataIsIconOnly() {
         setApp(fixture.copy(canReadUsage = true)) {}
-        compose.onNodeWithContentDescription("Limits and usage").assertHasClickAction()
+        compose.onNodeWithContentDescription("Лимиты и использование").assertHasClickAction()
         compose.onAllNodesWithText("%", substring = true).assertCountEquals(0)
     }
 
@@ -76,7 +76,7 @@ class ConnectionNavigationTest {
         var opened = 0
         setApp(limited.copy(connection = ConnectionStatus.Disconnected, canReadUsage = false)) { opened++ }
         compose.onNodeWithContentDescription("Меню").performClick()
-        compose.onNodeWithText("Limits & usage").performClick()
+        compose.onNodeWithText("Лимиты и использование").performClick()
         compose.onNodeWithText("Offline · showing last known data").assertExists()
         compose.runOnIdle { assertEquals(0, opened) }
     }

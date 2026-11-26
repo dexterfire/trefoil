@@ -135,7 +135,7 @@ internal val ShortcutTable: List<ShortcutEntry> = listOf(
     ShortcutEntry(ShortcutId.GoThreads, "Threads", GroupNavigation, listOf(ctrl(Key.One, "1"))),
     ShortcutEntry(ShortcutId.GoScreens, "Screens", GroupNavigation, listOf(ctrl(Key.Two, "2"))),
     ShortcutEntry(ShortcutId.GoServers, "Dev servers", GroupNavigation, listOf(ctrl(Key.Three, "3"))),
-    ShortcutEntry(ShortcutId.GoUsage, "Limits & usage", GroupNavigation, listOf(ctrl(Key.Four, "4"))),
+    ShortcutEntry(ShortcutId.GoUsage, "Лимиты и использование", GroupNavigation, listOf(ctrl(Key.Four, "4"))),
 
     ShortcutEntry(ShortcutId.MachineSwitcher, "Switch machine", GroupNavigation, listOf(ctrl(Key.M, "M", shift = true))),
 

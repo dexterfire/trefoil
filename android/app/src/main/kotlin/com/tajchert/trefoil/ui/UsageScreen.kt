@@ -54,7 +54,7 @@ import com.tajchert.trefoil.ui.adaptive.handPointer
 import com.tajchert.trefoil.ui.adaptive.focusRing
 
 /**
- * Full-pane "Limits & usage" page: Limits | Cost | Tokens for the connected environment.
+ * Full-pane "Лимиты и использование" page: Limits | Cost | Tokens for the connected environment.
  * Limits come from [ClientState.providers]; cost/tokens from [usage]. While disconnected or without usage access
  * it shows cached data only and calls none of the fetch callbacks ([onRefresh], [onSelectRange], [onRetry]).
  */
@@ -94,8 +94,8 @@ internal fun UsageScreen(
             ) {
                 if (onBack != null) TfIconButton(TfIcons.Back, "Back", onBack, iconSize = 22.dp, tint = c.text)
                 Column(Modifier.weight(1f).padding(start = if (onBack != null) 4.dp else 12.dp)) {
-                    if (paneTitle) Text("Limits & usage", Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineSmall, color = c.text)
-                    else Text("Limits & usage", style = TrefoilType.rowTitle, color = c.text)
+                    if (paneTitle) Text("Лимиты и использование", Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineSmall, color = c.text)
+                    else Text("Лимиты и использование", style = TrefoilType.rowTitle, color = c.text)
                     state.environment?.name?.let { Text(it, style = TrefoilType.meta, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 }
                 if (!offline) TfIconButton(TfIcons.Refresh, "Refresh usage", onRefresh, iconSize = 22.dp, tint = c.text)

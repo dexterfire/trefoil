@@ -65,7 +65,7 @@ class UsageScreenTest {
         var backs = 0
         var refreshes = 0
         compose.setContent { TrefoilTheme { UsageScreen(state, UsageUiState(), { backs++ }, { refreshes++ }, { selected = it }, {}) } }
-        compose.onNodeWithText("Limits & usage").assertExists()
+        compose.onNodeWithText("Лимиты и использование").assertExists()
         compose.onNodeWithText("Mac mini").assertExists()
         compose.onNodeWithContentDescription("Back").performClick()
         compose.onNodeWithContentDescription("Refresh usage").performClick()

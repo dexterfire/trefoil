@@ -115,7 +115,7 @@ internal fun ColumnScope.ShellMenuItems(state: ClientState, actions: ShellAction
         leadingIcon = { Icon(TfIcons.Screens, null, Modifier.size(20.dp)) }, onClick = { close(); actions.onScreens.invoke() })
     if (actions.onDevServers != null) DropdownMenuItem(text = { Text("Dev servers") }, enabled = !state.busy,
         leadingIcon = { Icon(TfIcons.Globe, null, Modifier.size(20.dp)) }, onClick = { close(); actions.onDevServers.invoke() })
-    if (actions.onUsage != null) DropdownMenuItem(text = { Text("Limits & usage") },
+    if (actions.onUsage != null) DropdownMenuItem(text = { Text("Лимиты и использование") },
         leadingIcon = { Icon(TfIcons.Gauge, null, Modifier.size(20.dp)) }, onClick = { close(); actions.onUsage.invoke() })
     DropdownMenuItem(text = { Text("Machines") }, leadingIcon = { Icon(TfIcons.Desktop, null, Modifier.size(20.dp)) },
         onClick = { close(); actions.onMachines() })

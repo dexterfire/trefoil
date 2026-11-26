@@ -55,7 +55,7 @@ private fun isModelScopedWindow(driver: String, window: UsageLimitWindow): Boole
     driver == "claudeAgent" && window.id.startsWith("seven_day_")
 
 internal fun limitChipDescription(percent: Int?): String =
-    if (percent == null) "Limits and usage" else "Limits and usage, lowest limit $percent% left"
+    if (percent == null) "Лимиты и использование" else "Лимиты и использование · осталось $percent%"
 
 /**
  * Thread-list header entry to Limits & usage: ring gauge plus the tightest "NN% left", or the gauge icon alone

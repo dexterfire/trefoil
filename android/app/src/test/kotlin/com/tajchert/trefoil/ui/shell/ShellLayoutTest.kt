@@ -90,10 +90,10 @@ class ShellLayoutTest {
     @Test fun usageBesideTheRailReturnsToThreadsOnBack() {
         setApp()
         railItem("Usage").performClick()
-        compose.onNodeWithText("Limits & usage").assertExists()
+        compose.onNodeWithText("Лимиты и использование").assertExists()
         rail().assertExists()
         systemBack()
-        compose.onNodeWithText("Limits & usage").assertDoesNotExist()
+        compose.onNodeWithText("Лимиты и использование").assertDoesNotExist()
         compose.onNodeWithText("Fixture thread").assertExists()
     }
 
@@ -101,9 +101,9 @@ class ShellLayoutTest {
         val restore = StateRestorationTester(compose)
         restore.setContent { app(fixture, ShellStart()) }
         railItem("Usage").performClick()
-        compose.onNodeWithText("Limits & usage").assertExists()
+        compose.onNodeWithText("Лимиты и использование").assertExists()
         restore.emulateSavedInstanceStateRestore()
-        compose.onNodeWithText("Limits & usage").assertExists()
+        compose.onNodeWithText("Лимиты и использование").assertExists()
     }
 
     @Test @Config(sdk = [35], qualifiers = "w673dp-h841dp") fun separatingFoldLeavesTheHingeEmpty() {

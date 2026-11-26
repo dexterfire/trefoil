@@ -107,7 +107,7 @@ class UsageAdaptiveTest {
         val cards = compose.onAllNodesWithTag("usage-limit-card")
         cards.assertCountEquals(2)
         assertEquals(cards[0].getBoundsInRoot().top, cards[1].getBoundsInRoot().top)
-        compose.onNodeWithText("Limits & usage").assert(SemanticsMatcher.keyIsDefined(androidx.compose.ui.semantics.SemanticsProperties.Heading))
+        compose.onNodeWithText("Лимиты и использование").assert(SemanticsMatcher.keyIsDefined(androidx.compose.ui.semantics.SemanticsProperties.Heading))
     }
 
     @Test fun backArrowStaysWhenAHandlerIsGiven() {

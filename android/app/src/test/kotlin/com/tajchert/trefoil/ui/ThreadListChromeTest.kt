@@ -74,7 +74,7 @@ class ThreadListChromeTest {
         compose.onNodeWithContentDescription("Меню").assertDoesNotExist()
         compose.onNodeWithContentDescription("Новый тред").assertDoesNotExist()
         compose.onNodeWithContentDescription("Открыть навигацию").assertDoesNotExist()
-        compose.onNode(hasContentDescription("Limits and usage", substring = true)).assertDoesNotExist()
+        compose.onNode(hasContentDescription("Лимиты и использование", substring = true)).assertDoesNotExist()
         compose.onNodeWithContentDescription("Скрыть список тредов").performClick()
         assertEquals(1, collapses)
     }
@@ -91,7 +91,7 @@ class ThreadListChromeTest {
         compose.onNodeWithContentDescription("Открыть навигацию").performClick()
         assertEquals(1, navigations)
         compose.onNodeWithContentDescription("Сменить машину").assertExists()
-        compose.onNode(hasContentDescription("Limits and usage", substring = true)).assertExists()
+        compose.onNode(hasContentDescription("Лимиты и использование", substring = true)).assertExists()
         compose.onNodeWithContentDescription("Поиск").assertExists()
         // The menu replaces the overflow button, and the list is too narrow for a collapse button.
         compose.onNodeWithContentDescription("Меню").assertDoesNotExist()
