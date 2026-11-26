@@ -50,17 +50,26 @@ internal fun composerSuggestions(state: ClientState, token: ComposerToken?, limi
     val query = token.query.lowercase()
     val all = if (token.sigil == '/') {
         state.providers.flatMap { provider ->
-            provider.slashCommands.map { ComposerSuggestion(ComposerSuggestionKind.Command, it.name, "/" + it.name, it.description ?: it.inputHint) }
+            provider.slashCommands.map { command ->
+                val suggestion = ComposerSuggestion(ComposerSuggestionKind.Command, command.name, "/" + command.name, command.description ?: command.inputHint)
+                suggestion to suggestion.name.lowercase()
+            }
         }
     } else {
+        // T3's composerSkillSearch: a skill matches its name, displayName, shortDescription and description, case-insensitively;
+        // the projection folds displayName and shortDescription into `label` and both short fields into `description`.
         state.providers.flatMap { provider ->
-            provider.skills.filter { it.invocable }.map { ComposerSuggestion(ComposerSuggestionKind.Skill, it.name, "$" + it.name, it.description) }
+            provider.skills.filter { it.invocable }.map { skill ->
+                val suggestion = ComposerSuggestion(ComposerSuggestionKind.Skill, skill.name, "$" + skill.name, skill.description)
+                suggestion to listOfNotNull(skill.name, skill.label, skill.description).joinToString("\n").lowercase()
+            }
         }
     }
-    return all.distinctBy { it.name }
-        .filter { query.isEmpty() || it.name.lowercase().contains(query) }
-        .sortedWith(compareBy({ if (it.name.lowercase().startsWith(query)) 0 else 1 }, { it.name.lowercase() }))
+    return all.distinctBy { it.first.name }
+        .filter { query.isEmpty() || it.second.contains(query) }
+        .sortedWith(compareBy({ if (it.first.name.lowercase().startsWith(query)) 0 else 1 }, { it.first.name.lowercase() }))
         .take(limit)
+        .map { it.first }
 }
 
 /** [text] with the token replaced by [name] and a trailing space, and the caret after it, ready for the next word. */
