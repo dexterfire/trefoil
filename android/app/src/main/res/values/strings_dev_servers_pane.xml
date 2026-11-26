@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="ports_detail_empty">Open a dev server to see it here</string>
+    <!-- Русский по умолчанию; английский — в values-en/strings_dev_servers_pane.xml. -->
+    <string name="ports_detail_empty">Откройте dev-сервер, и он появится здесь</string>
 </resources>
