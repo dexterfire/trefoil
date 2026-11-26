@@ -314,7 +314,10 @@ class KeepAliveLifecycleTest {
     private fun loseForwardInTheBackgroundAndReturn(): String {
         openForwardExternally()
         model.pause(); advance(1_000)
-        mutable.value = mutable.value.copy(portForwards = listOf(forward.copy(status = PortForwardStatus.Failed, localPort = null))); advance(0)
+        mutable.value = mutable.value.copy(portForwards = listOf(forward.copy(status = PortForwardStatus.Failed, localPort = null)))
+        // The loss is recorded by the coordinator's state collector, not by publishing the state: wait for the record
+        // before the app returns to the foreground instead of assuming one main-loop pass.
+        idleUntil { model.portForwards.stoppedNotices.value["fixture"]?.lost?.isNotEmpty() == true }
         model.resume()
         return model.notice.value!!
     }
@@ -433,7 +436,9 @@ class KeepAliveLifecycleTest {
     @Test fun aLossOnAnotherMachineIsNotAnnouncedHere() {
         openForwardExternally()
         model.pause()
-        mutable.value = mutable.value.copy(environment = environment.copy(id = "other", name = "Other"), portForwards = emptyList()); advance(0)
+        mutable.value = mutable.value.copy(environment = environment.copy(id = "other", name = "Other"), portForwards = emptyList())
+        // Same as loseForwardInTheBackgroundAndReturn: the loss is the collector's record, not the state write.
+        idleUntil { model.portForwards.stoppedNotices.value["fixture"]?.lost?.isNotEmpty() == true }
         model.resume()
         assertNull(model.notice.value)
         assertNotNull(model.portForwards.stoppedNotices.value["fixture"])
