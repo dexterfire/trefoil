@@ -296,7 +296,9 @@ class PortForwardSessionTest {
             while (next >= 0 && drained++ < 1_000_000) next = input.read(); next } catch (_: IOException) { -1 }
         assertEquals(-1, result)
     }
-    private fun assertRefused(port: Int) {
+    /** The listener closes synchronously, but a connection that raced the close can still be accepted for a moment. */
+    private suspend fun assertRefused(port: Int) {
+        withTimeoutOrNull(5_000) { while (try { Socket(loopback, port).close(); true } catch (_: ConnectException) { false }) delay(2) }
         try { Socket(loopback, port).close(); fail("Listener on $port is still open") } catch (_: ConnectException) {}
     }
 }

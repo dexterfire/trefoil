@@ -194,7 +194,7 @@ class PortForwardingTest {
             waitFor { forwarder.snapshot().status == PortForwardStatus.Failed }
             assertEquals(expected, forwarder.snapshot().error)
             assertNull(forwarder.snapshot().localUrl)
-            awaitRefused(port)
+            assertRefused(port)
             // Unauthorized retries once with a fresh ticket before failing.
             assertEquals(if (expected == PortForwardError.Unauthorized) 2 else 1, f.mints.get())
         }
@@ -549,16 +549,13 @@ class PortForwardingTest {
         catch (_: IOException) { -1 }
         assertEquals(-1, result)
     }
-    private fun assertRefused(port: Int) {
-        try { Socket(loopback, port).close(); fail("Listener on $port is still open") } catch (_: ConnectException) {}
-    }
     /**
-     * [LoopbackPortForwarder.recordFailure] publishes Failed before it closes the listeners, so the port can still accept
-     * for a moment. Wait for the close (condition, not a sleep), then keep the same refusal assertion.
+     * The listener closes synchronously, but a connection that raced the close can still be accepted for a moment on a
+     * loaded runner: wait for the refusal (condition, not a sleep), then keep the same assertion.
      */
-    private suspend fun awaitRefused(port: Int) {
+    private suspend fun assertRefused(port: Int) {
         withTimeoutOrNull(5_000) { while (try { Socket(loopback, port).close(); true } catch (_: ConnectException) { false }) delay(2) }
-        assertRefused(port)
+        try { Socket(loopback, port).close(); fail("Listener on $port is still open") } catch (_: ConnectException) {}
     }
     private suspend fun waitFor(condition: () -> Boolean) = withTimeout(5_000) { while (!condition()) delay(10) }
 }
