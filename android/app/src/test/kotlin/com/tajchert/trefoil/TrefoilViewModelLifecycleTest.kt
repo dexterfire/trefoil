@@ -108,9 +108,14 @@ class TrefoilViewModelLifecycleTest {
     @Test fun socketLostDuringGraceStartsNormalReconnectOnResume() {
         model.pause(); advance(1_000)
         mutable.value = mutable.value.copy(connection = ConnectionStatus.Error, canWrite = false, error = "Connection lost")
-        model.resume()
-        assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
-        assertTrue(model.connectionAttempt.value.id > 0)
+        // The resume starts the attempt; pin the lock it takes so the fixture host cannot settle it into Failed first.
+        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
+        assertTrue(mutex.tryLock())
+        try {
+            model.resume()
+            assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+            assertTrue(model.connectionAttempt.value.id > 0)
+        } finally { mutex.unlock(); advance(0) }
     }
 
     @Test fun repeatedPauseDoesNotExtendGrace() {
@@ -175,8 +180,13 @@ class TrefoilViewModelLifecycleTest {
         val other = SavedEnvironment("other", "Other", "https://other.invalid", "other")
         @Suppress("UNCHECKED_CAST")
         (field("_environments").get(model) as MutableStateFlow<List<SavedEnvironment>>).value = listOf(environment, other)
-        model.selectMachine(other)
-        assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+        // Pin the attempt's lock for the phase check only: the close below has to be free to run.
+        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
+        assertTrue(mutex.tryLock())
+        try {
+            model.selectMachine(other)
+            assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+        } finally { mutex.unlock() }
         val deadline = System.currentTimeMillis() + 5_000
         while (client.millisSinceLastPong() != null && System.currentTimeMillis() < deadline) { shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(5) }
         // The previous machine's socket is gone before the new machine is tried.
@@ -234,10 +244,15 @@ class TrefoilViewModelLifecycleTest {
         advance(LINK_CHECK_TIMEOUT_MS - 1)
         assertEquals(ConnectionStatus.Connected, model.state.value.connection)
         assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
-        advance(1)
-        // Dropped and already walking the plan: no initial 2 s backoff.
-        assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
-        assertTrue(model.connectionAttempt.value.id > 0)
+        // Dropped and already walking the plan: no initial 2 s backoff. Pin the lock the attempt takes so the phase
+        // cannot settle into Failed before the check.
+        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
+        assertTrue(mutex.tryLock())
+        try {
+            advance(1)
+            assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+            assertTrue(model.connectionAttempt.value.id > 0)
+        } finally { mutex.unlock(); advance(0) }
     }
 
     /** Connected on the public address of a machine that also has a learned LAN address; returns the preflighted routes. */
