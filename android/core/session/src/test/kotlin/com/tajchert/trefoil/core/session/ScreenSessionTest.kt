@@ -64,7 +64,9 @@ class ScreenSessionTest {
         }
         suspend fun connect() {
             client.connect(SavedEnvironment(environmentId, "Fixture", server.url("/").toString(), "bearer-secret"))
-            withTimeout(5000) { client.state.first { it.canWrite || (scopes == "\"orchestration:read\"" && it.connection == ConnectionStatus.Connected) } }
+            // `refreshScreens`/`screenAccess` need the synchronized shell, which Connected alone does not imply: the shell
+            // chunk and the config reply travel on one socket, and its handler runs off the test's thread.
+            withTimeout(5000) { client.state.first { it.connection == ConnectionStatus.Connected && it.shellLive } }
             client.selectThread("t")
             if (scopes.contains("orchestration:operate")) withTimeout(5000) { client.state.first { it.canWrite } }
         }

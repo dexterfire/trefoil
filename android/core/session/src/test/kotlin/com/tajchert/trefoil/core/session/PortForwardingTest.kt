@@ -18,6 +18,7 @@ import java.net.Socket
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CyclicBarrier
+import java.util.concurrent.Semaphore
 import kotlin.concurrent.thread
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -193,7 +194,7 @@ class PortForwardingTest {
             waitFor { forwarder.snapshot().status == PortForwardStatus.Failed }
             assertEquals(expected, forwarder.snapshot().error)
             assertNull(forwarder.snapshot().localUrl)
-            assertRefused(port)
+            awaitRefused(port)
             // Unauthorized retries once with a fresh ticket before failing.
             assertEquals(if (expected == PortForwardError.Unauthorized) 2 else 1, f.mints.get())
         }
@@ -234,7 +235,7 @@ class PortForwardingTest {
             val extra = f.open(forwarder)
             assertEquals(-1, extra.getInputStream().read())
             assertEquals(MAX_TUNNEL_CONNECTIONS, f.server.requestCount)
-            open.first().close()
+            open.first().apply { setSoLinger(true, 0) }.close()
             waitFor { forwarder.snapshot().activeConnections == MAX_TUNNEL_CONNECTIONS - 1 }
             assertEquals("hello", f.open(forwarder).readText(5))
             forwarder.close()
@@ -458,7 +459,7 @@ class PortForwardingTest {
             forwarder.close()
             sockets.forEach { assertClosed(it) }
             assertRefused(port)
-            withTimeout(5_000) { while (f.serverClosed.get() < 3) delay(10) }
+            assertTrue("The server still holds a tunnel", f.awaitServerClosed(3))
             assertEquals(0, forwarder.snapshot().activeConnections)
         }
     }
@@ -494,6 +495,17 @@ class PortForwardingTest {
         val upgrades = AtomicInteger()
         @Volatile var mintFailure: PortForwardError? = null
         val serverClosed = AtomicInteger()
+        /** Released once per tunnel the server saw end, so a test waits on the signal instead of polling. */
+        private val serverClosedSignal = Semaphore(0)
+        /** True when [count] tunnels ended before the deadline; the deadline only guards a real hang. */
+        fun awaitServerClosed(count: Int, timeoutMillis: Long = 15_000): Boolean {
+            val deadline = System.currentTimeMillis() + timeoutMillis
+            repeat(count) {
+                val remaining = deadline - System.currentTimeMillis()
+                if (remaining <= 0 || !serverClosedSignal.tryAcquire(remaining, TimeUnit.MILLISECONDS)) return false
+            }
+            return true
+        }
         val http: OkHttpClient = OkHttpClient.Builder().readTimeout(0, TimeUnit.MILLISECONDS).build()
         val tickets = MediaTicketCache {
             mintFailure?.let { throw MediaTicketUnavailable(it) }
@@ -503,8 +515,8 @@ class PortForwardingTest {
         val echo = object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) { webSocket.send("hello".encodeUtf8()); webSocket.send("text!") }
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) { webSocket.send(bytes) }
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(1000, null); serverClosed.incrementAndGet() }
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { serverClosed.incrementAndGet() }
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(1000, null); serverClosed.incrementAndGet(); serverClosedSignal.release() }
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { serverClosed.incrementAndGet(); serverClosedSignal.release() }
         }
         init {
             server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
@@ -539,6 +551,14 @@ class PortForwardingTest {
     }
     private fun assertRefused(port: Int) {
         try { Socket(loopback, port).close(); fail("Listener on $port is still open") } catch (_: ConnectException) {}
+    }
+    /**
+     * [LoopbackPortForwarder.recordFailure] publishes Failed before it closes the listeners, so the port can still accept
+     * for a moment. Wait for the close (condition, not a sleep), then keep the same refusal assertion.
+     */
+    private suspend fun awaitRefused(port: Int) {
+        withTimeoutOrNull(5_000) { while (try { Socket(loopback, port).close(); true } catch (_: ConnectException) { false }) delay(2) }
+        assertRefused(port)
     }
     private suspend fun waitFor(condition: () -> Boolean) = withTimeout(5_000) { while (!condition()) delay(10) }
 }

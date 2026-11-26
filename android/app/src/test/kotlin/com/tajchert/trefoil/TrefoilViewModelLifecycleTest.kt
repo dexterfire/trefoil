@@ -66,9 +66,15 @@ class TrefoilViewModelLifecycleTest {
     @Test fun stalePongReconnectsEvenWhenStateIsConnected() {
         model.pause()
         setPongAge(20_001)
-        model.resume()
-        assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
-        assertTrue(model.connectionAttempt.value.id > 0)
+        // The assertion is about "a reconnect started", not about how fast the fixture host fails: pin the attempt behind
+        // the connection lock it takes first, so it cannot settle into Failed on a looper pass before the assertion.
+        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
+        assertTrue(mutex.tryLock())
+        try {
+            model.resume(); advance(0)
+            assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+            assertTrue(model.connectionAttempt.value.id > 0)
+        } finally { mutex.unlock(); advance(0) }
     }
 
     @Test fun resumeWithinGraceKeepsLiveSessionAndDoesNotStartAConnectionAttempt() {
@@ -150,8 +156,12 @@ class TrefoilViewModelLifecycleTest {
     @Test fun reselectingAStaleLiveMachineReconnects() {
         armLiveConnection()
         setPongAge(RETAINED_CONNECTION_FRESHNESS_MS + 1)
-        model.selectMachine(environment)
-        assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
+        assertTrue(mutex.tryLock())
+        try {
+            model.selectMachine(environment); advance(0)
+            assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+        } finally { mutex.unlock(); advance(0) }
     }
 
     @Test fun selectingADifferentMachineClosesTheCurrentSession() {
@@ -192,8 +202,13 @@ class TrefoilViewModelLifecycleTest {
         armLiveConnection()
         dropConnection(); advance(30_000)
         assertEquals(ConnectionAttempt(), model.connectionAttempt.value)
-        model.onDefaultNetwork(2); advance(2_000)
-        assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+        // Same pin: the episode's first attempt runs without the initial backoff, so only the lock keeps it in Testing.
+        val mutex = field("connectionMutex").get(model) as kotlinx.coroutines.sync.Mutex
+        assertTrue(mutex.tryLock())
+        try {
+            model.onDefaultNetwork(2); advance(0)
+            assertEquals(ConnectionPhase.Testing, model.connectionAttempt.value.phase)
+        } finally { mutex.unlock(); advance(0) }
     }
 
     private fun pings() = sent.count { it.contains("\"Ping\"") }

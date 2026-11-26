@@ -69,7 +69,11 @@ class VaultWritesTest {
 
     private fun start() {
         model = TrefoilViewModel(RuntimeEnvironment.getApplication(), store)
-        awaitTrue { model.environments.value == listOf(alpha, beta) }
+        // `saveRenewedToken` awaits the model's startup vault read, and that continuation needs the main looper — which a
+        // `runBlocking` on this thread stops. Wait for it here, while the looper is still being idled.
+        val initialized = TrefoilViewModel::class.java.getDeclaredField("initialized")
+            .apply { isAccessible = true }.get(model) as kotlinx.coroutines.Deferred<*>
+        awaitTrue { model.environments.value == listOf(alpha, beta) && initialized.isCompleted }
     }
 
     private val servers = mutableListOf<HangingServer>()
