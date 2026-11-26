@@ -56,8 +56,12 @@ private fun ReadmeConversation(state: ClientState, showAgentsChip: Boolean = fal
 @Preview(showBackground = true, widthDp = 400, heightDp = 880, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun Readme_Threads_Dark() {
-    // Thread rows count time from the real clock, so they use relative fixture times instead of the frozen clock.
-    TrefoilTheme(darkTheme = true) { ThreadList(rx.threadListState(), select = {}, create = {}) }
+    // ThreadList honors LocalFixedClock, so the frozen fixture clock keeps every relative label and the group order stable.
+    TrefoilTheme(darkTheme = true) {
+        CompositionLocalProvider(LocalFixedClock provides ScreenshotFixtures.listClock()) {
+            ThreadList(rx.threadListState(), select = {}, create = {})
+        }
+    }
 }
 
 @PreviewTest
@@ -109,8 +113,8 @@ fun Readme_Usage_Dark() {
 }
 
 /**
- * The whole app around the full thread list: the README's tablet and foldable images. The selected thread is one without a live
- * timer: the list counts from the real clock and the conversation from the frozen one, and one thread cannot satisfy both.
+ * The whole app around the full thread list: the README's tablet and foldable images. The frozen fixture clock now
+ * serves both surfaces: the thread list (via ThreadList honoring LocalFixedClock) and the conversation's live timers.
  */
 @Composable
 private fun ReadmeShell(state: ClientState) {

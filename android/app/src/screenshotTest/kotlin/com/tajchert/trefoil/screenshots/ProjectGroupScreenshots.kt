@@ -142,3 +142,18 @@ fun ProjectAppearance_Picked_Dark() {
         Box(Modifier.fillMaxSize()) { ProjectAppearanceSheet("trefoil", ProjectIcon.byId("rocket"), ProjectColor.byId("amber"), onPickIcon = {}, onPickColor = {}, onClose = {}) }
     }
 }
+
+/** The grouped list at a narrow phone width: Russian chrome and the jump chip stay inside the window. */
+@PreviewTest
+@Preview(showBackground = true, widthDp = 360, heightDp = 800)
+@Composable
+fun ThreadList_GroupedNarrow_Light() {
+    TrefoilTheme(darkTheme = false) { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, preferences = groupedPrefs) }
+}
+
+@PreviewTest
+@Preview(showBackground = true, widthDp = 360, heightDp = 800, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun ThreadList_GroupedNarrow_Dark() {
+    TrefoilTheme(darkTheme = true) { ThreadList(ScreenshotFixtures.connectedState(), select = {}, create = {}, preferences = groupedPrefs) }
+}

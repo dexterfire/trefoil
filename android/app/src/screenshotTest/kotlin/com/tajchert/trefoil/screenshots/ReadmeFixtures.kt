@@ -89,11 +89,15 @@ object ReadmeFixtures {
     )
 
     // ---- Orchestration conversation: Fable fans one task out to four providers ----
-    /** Frozen "now" for live timers: 4m 12s into the run. */
-    val now: Long = Instant.parse("2026-01-01T10:04:12Z").toEpochMilli()
+    /** Frozen now for live timers: 4m 12s into the run. Derived from the shared fixture base so one frozen clock serves
+     * both the conversation and the thread list, and every run of the suite renders the same string. */
+    val now: Long get() = ScreenshotFixtures.listClock()
     private const val RUN = "run-w"
-    private const val RUN_STARTED = "2026-01-01T10:00:00Z"
-    private fun at(seconds: Int) = Instant.parse(RUN_STARTED).plusSeconds(seconds.toLong()).toString()
+    private fun at(seconds: Int): String {
+        val started = ScreenshotFixtures.listClock() - 4 * 60_000 - 12_000
+        return java.time.Instant.ofEpochMilli(started + seconds * 1000L).toString()
+    }
+    private val RUN_STARTED: String get() = at(0)
 
     private val widgetThread = fx.thread("t-widget", "Multi-provider usage widget", updatedMinutesAgo = 1, branch = "feat/usage-widget")
         .copy(status = "running", activeRunId = RUN, latestRunId = RUN, activityRunStartedAt = RUN_STARTED, activityRunStartedAtPresent = true,
@@ -192,7 +196,7 @@ object ReadmeFixtures {
     )
 
     // ---- Limits: four providers, Antigravity last ----
-    private val usageNow = System.currentTimeMillis()
+    private val usageNow = ScreenshotFixtures.listClock()
     // +30s keeps "in 2h 5m" labels stable while rendering.
     private fun resetIn(minutes: Long) = Instant.ofEpochMilli(usageNow + minutes * 60_000 + 30_000).toString()
     private val checked = Instant.ofEpochMilli(usageNow - 2 * 60_000).toString()

@@ -13,10 +13,18 @@ import java.time.Instant
 
 /**
  * Fake data for preview screenshot tests. Never put real machines, tokens, threads or conversation
- * content here. Times are relative to render time ([ago]) so relative labels ("5m", "2h") stay stable.
+ * content here. Times all derive from one instant captured when the object initializes ([base]): relative labels
+ * ("5m", "2h") stay stable for [listClock], and anchors land on whole-minute boundaries, so sort order is a
+ * deterministic tie-break instead of a race between two ago() calls landing in the same millisecond.
  */
 object ScreenshotFixtures {
-    fun ago(minutes: Long): String = Instant.now().minusSeconds(minutes * 60).toString()
+    /** One wall-clock instant every fixture timestamp derives from; captured once per test JVM. */
+    private val base: Long = System.currentTimeMillis()
+
+    /** A frozen now for [LocalFixedClock]: mid-minute past [base], so "N minutes ago" reads as exactly N. */
+    fun listClock(): Long = base + 30_000
+
+    fun ago(minutes: Long): String = Instant.ofEpochMilli(base - minutes * 60_000).toString()
 
     val workstation = SavedEnvironment(id = "env-workstation", name = "Workstation", baseUrl = "https://workstation.example.test", accessToken = "fake-token")
     val laptop = SavedEnvironment(id = "env-laptop", name = "Laptop", baseUrl = "https://laptop.example.test", accessToken = "fake-token")
